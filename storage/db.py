@@ -3,7 +3,10 @@ SQLite connection + schema initialisation.
 All tables use CREATE TABLE IF NOT EXISTS — safe to call on every startup.
 """
 import sqlite3
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.labs_config import DB_PATH
 
