@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} — Labs</title>
+  <link rel="stylesheet" href="/static/labs.css">
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    <nav>
+      <a href="/labs">Dashboard</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>{{ title }}</h1>
+
+    <form method="post" action="{{ action_url }}" class="bot-form">
+
+      <!-- Core identity -->
+      <section class="form-section">
+        <h2>Identity</h2>
+        <div class="form-row">
+          <label>Name
+            <input type="text" name="name" value="{{ bot.name if bot else '' }}" required>
+          </label>
+          <label>Underlying
+            <select name="underlying">
+              {% for u in underlyings %}
+                <option value="{{ u }}" {{ 'selected' if bot and bot.underlying == u }}>{{ u }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Strategy Type
+            <select name="strategy_type" id="strategy_type">
+              {% for s in strategy_types %}
+                <option value="{{ s }}" {{ 'selected' if bot and bot.strategy_type == s }}>{{ s }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <!-- Indicator params -->
+      <section class="form-section">
+        <h2>Indicator Parameters</h2>
+        <div class="form-row">
+          <label>RSI Period
+            <input type="number" name="rsi_period" value="{{ bot.rsi_period if bot else 3 }}" min="1" max="50">
+          </label>
+          <label>EMA Fast Period
+            <input type="number" name="ema_fast_period" value="{{ bot.ema_fast_period if bot else 9 }}" min="1" max="200">
+          </label>
+          <label>EMA Slow Period
+            <input type="number" name="ema_slow_period" value="{{ bot.ema_slow_period if bot else 13 }}" min="1" max="200">
+          </label>
+          <label>SMA Period
+            <input type="number" name="sma_period" value="{{ bot.sma_period if bot else 50 }}" min="1" max="200">
+          </label>
+        </div>
+        <div class="form-row">
+          <label>RSI Oversold Threshold
+            <input type="number" name="rsi_oversold" value="{{ bot.rsi_oversold if bot else 25 }}" min="1" max="49" step="1">
+          </label>
+          <label>RSI Overbought Threshold
+            <input type="number" name="rsi_overbought" value="{{ bot.rsi_overbought if bot else 75 }}" min="51" max="99" step="1">
+          </label>
+        </div>
+      </section>
+
+      <!-- Entry rules -->
+      <section class="form-section">
+        <h2>Entry Rules <small>(all must be true — AND logic)</small></h2>
+        <div class="checkbox-grid">
+          {% for token in entry_rule_tokens %}
+            <label class="checkbox-label">
+              <input type="checkbox" name="entry_rules" value="{{ token }}"
+                {{ 'checked' if bot and token in bot.entry_rules }}>
+              {{ token }}
+            </label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <!-- Exit rules -->
+      <section class="form-section">
+        <h2>Exit Rules <small>(first match wins — OR logic, indicator-based)</small></h2>
+        <div class="checkbox-grid">
+          {% for token in exit_rule_tokens %}
+            <label class="checkbox-label">
+              <input type="checkbox" name="exit_rules" value="{{ token }}"
+                {{ 'checked' if bot and token in bot.exit_rules }}>
+              {{ token }}
+            </label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <!-- Risk / targets -->
+      <section class="form-section">
+        <h2>Risk &amp; Targets</h2>
+        <div class="form-row">
+          <label>Spot Target (pts) <small>blank = disabled</small>
+            <input type="number" name="spot_target_pts" value="{{ bot.spot_target_pts if bot and bot.spot_target_pts else '' }}" step="0.5">
+          </label>
+          <label>Spot SL (pts) <small>blank = disabled</small>
+            <input type="number" name="spot_sl_pts" value="{{ bot.spot_sl_pts if bot and bot.spot_sl_pts else '' }}" step="0.5">
+          </label>
+          <label>LTP Target (pts) <small>blank = disabled</small>
+            <input type="number" name="ltp_target_pts" value="{{ bot.ltp_target_pts if bot and bot.ltp_target_pts else '' }}" step="0.5">
+          </label>
+          <label>LTP SL (pts) <small>blank = disabled</small>
+            <input type="number" name="ltp_sl_pts" value="{{ bot.ltp_sl_pts if bot and bot.ltp_sl_pts else '' }}" step="0.5">
+          </label>
+        </div>
+      </section>
+
+      <!-- Trading controls -->
+      <section class="form-section">
+        <h2>Trading Controls</h2>
+        <div class="form-row">
+          <label>Max Trades / Day
+            <input type="number" name="max_trades_per_day" value="{{ bot.max_trades_per_day if bot else 3 }}" min="1" max="20">
+          </label>
+          <label>Session Start (HH:MM IST)
+            <input type="text" name="session_start" value="{{ bot.session_start if bot else '09:20' }}" pattern="\d{2}:\d{2}">
+          </label>
+          <label>Session End (HH:MM IST)
+            <input type="text" name="session_end" value="{{ bot.session_end if bot else '15:15' }}" pattern="\d{2}:\d{2}">
+          </label>
+          <label class="checkbox-label inline">
+            <input type="checkbox" name="allow_reentry" value="1" {{ 'checked' if bot and bot.allow_reentry }}>
+            Allow Re-entry
+          </label>
+        </div>
+      </section>
+
+      <!-- Contract selection -->
+      <section class="form-section">
+        <h2>Contract Selection</h2>
+        <div class="form-row">
+          <label>Expiry Mode
+            <select name="expiry_mode">
+              {% for m in expiry_modes %}
+                <option value="{{ m }}" {{ 'selected' if bot and bot.expiry_mode == m }}>{{ m }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Strike Mode
+            <select name="strike_mode">
+              {% for m in strike_modes %}
+                <option value="{{ m }}" {{ 'selected' if bot and bot.strike_mode == m }}>{{ m }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Strike Offset (pts)
+            <input type="number" name="strike_offset_pts" value="{{ bot.strike_offset_pts if bot else 0 }}" step="50">
+          </label>
+          <label class="checkbox-label inline">
+            <input type="checkbox" name="hold_same_contract" value="1" {{ 'checked' if not bot or bot.hold_same_contract }}>
+            Hold Same Contract Until Exit
+          </label>
+        </div>
+      </section>
+
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">Save Bot</button>
+        <a href="/labs" class="btn-secondary">Cancel</a>
+      </div>
+    </form>
+  </main>
+</div>
+<script src="/static/labs.js"></script>
+</body>
+</html>

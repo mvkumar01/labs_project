@@ -1,0 +1,12 @@
+data/live/
+data/archive/
+storage/labs.db
+storage/state/
+config/zerodha_token.json
+# zerodha_creds.json is intentionally tracked (private repo)
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log

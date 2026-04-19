@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Labs — Bot Dashboard</title>
+  <link rel="stylesheet" href="/static/labs.css">
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    <nav>
+      <a href="/labs">Dashboard</a>
+      <a href="/labs/new" class="btn-primary">+ New Bot</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Bots</h1>
+
+    {% if not bots %}
+      <p class="empty">No bots yet. <a href="/labs/new">Create one.</a></p>
+    {% else %}
+    <table class="bot-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Underlying</th>
+          <th>Strategy</th>
+          <th>Status</th>
+          <th>Today P&amp;L</th>
+          <th>Total P&amp;L</th>
+          <th>Open Position</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bots %}
+        <tr class="row-{{ b.status }}">
+          <td><a href="/labs/{{ b.bot_id }}">{{ b.name }}</a></td>
+          <td>{{ b.underlying }}</td>
+          <td>{{ b.strategy_type }}</td>
+          <td><span class="badge badge-{{ b.status }}">{{ b.status }}</span></td>
+          <td class="{{ 'green' if b.today_pnl_rs > 0 else ('red' if b.today_pnl_rs < 0 else '') }}">
+            ₹{{ "{:,.0f}".format(b.today_pnl_rs) }}
+          </td>
+          <td class="{{ 'green' if b.total_pnl_rs > 0 else ('red' if b.total_pnl_rs < 0 else '') }}">
+            ₹{{ "{:,.0f}".format(b.total_pnl_rs) }}
+          </td>
+          <td>{{ b.open_position or '—' }}</td>
+          <td class="actions">
+            <a href="/labs/{{ b.bot_id }}">Detail</a>
+            {% if b.status != 'archived' %}
+              <form method="post" action="/labs/{{ b.bot_id }}/status" style="display:inline">
+                <button type="submit">{{ 'Pause' if b.status == 'active' else 'Activate' }}</button>
+              </form>
+              <form method="post" action="/labs/{{ b.bot_id }}/clone" style="display:inline">
+                <button type="submit">Clone</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </main>
+</div>
+<script src="/static/labs.js"></script>
+</body>
+</html>

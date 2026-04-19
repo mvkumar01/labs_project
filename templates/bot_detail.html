@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ bot.name }} — Labs</title>
+  <link rel="stylesheet" href="/static/labs.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    <nav>
+      <a href="/labs">Dashboard</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Title + actions -->
+    <div class="detail-header">
+      <div>
+        <h1>{{ bot.name }}</h1>
+        <p class="meta">
+          {{ bot.underlying }} &nbsp;·&nbsp; {{ bot.strategy_type }} &nbsp;·&nbsp;
+          <span class="badge badge-{{ bot.status }}">{{ bot.status }}</span>
+        </p>
+      </div>
+      <div class="detail-actions">
+        {% if bot.status != 'archived' %}
+          <form method="post" action="/labs/{{ bot.bot_id }}/status" style="display:inline">
+            <button class="btn-secondary">{{ 'Pause' if bot.status == 'active' else 'Activate' }}</button>
+          </form>
+          {% if bot.status == 'paused' %}
+            <a href="/labs/{{ bot.bot_id }}/edit" class="btn-secondary">Edit</a>
+          {% endif %}
+          <form method="post" action="/labs/{{ bot.bot_id }}/clone" style="display:inline">
+            <button class="btn-secondary">Clone</button>
+          </form>
+          <form method="post" action="/labs/{{ bot.bot_id }}/archive"
+                style="display:inline"
+                onsubmit="return confirm('Archive this bot?')">
+            <button class="btn-danger">Archive</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Stats row -->
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="stat-label">Total Trades</div>
+        <div class="stat-value">{{ stats.total_trades }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Win %</div>
+        <div class="stat-value">{{ stats.win_pct if stats.total_trades else '—' }}%</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total P&amp;L</div>
+        <div class="stat-value {{ 'green' if stats.total_pnl_rs > 0 else 'red' }}">
+          ₹{{ "{:,.0f}".format(stats.total_pnl_rs) if stats.total_trades else '—' }}
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Hold</div>
+        <div class="stat-value">{{ stats.avg_hold_mins if stats.total_trades else '—' }} min</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Open Position</div>
+        <div class="stat-value small">{{ position.symbol if position else '—' }}</div>
+      </div>
+    </div>
+
+    <!-- Equity curve -->
+    <section class="chart-section">
+      <h2>Equity Curve</h2>
+      <canvas id="equityChart" height="80"></canvas>
+    </section>
+
+    <!-- Config summary -->
+    <section class="config-summary">
+      <h2>Configuration</h2>
+      <div class="config-grid">
+        <div><span class="cfg-key">RSI Period</span><span>{{ bot.rsi_period }}</span></div>
+        <div><span class="cfg-key">EMA Fast</span><span>{{ bot.ema_fast_period }}</span></div>
+        <div><span class="cfg-key">EMA Slow</span><span>{{ bot.ema_slow_period }}</span></div>
+        <div><span class="cfg-key">SMA Period</span><span>{{ bot.sma_period }}</span></div>
+        <div><span class="cfg-key">RSI Oversold</span><span>{{ bot.rsi_oversold }}</span></div>
+        <div><span class="cfg-key">RSI Overbought</span><span>{{ bot.rsi_overbought }}</span></div>
+        <div><span class="cfg-key">Spot Target</span><span>{{ bot.spot_target_pts or '—' }}</span></div>
+        <div><span class="cfg-key">Spot SL</span><span>{{ bot.spot_sl_pts or '—' }}</span></div>
+        <div><span class="cfg-key">LTP Target</span><span>{{ bot.ltp_target_pts or '—' }}</span></div>
+        <div><span class="cfg-key">LTP SL</span><span>{{ bot.ltp_sl_pts or '—' }}</span></div>
+        <div><span class="cfg-key">Max Trades/Day</span><span>{{ bot.max_trades_per_day }}</span></div>
+        <div><span class="cfg-key">Session</span><span>{{ bot.session_start }} – {{ bot.session_end }}</span></div>
+        <div><span class="cfg-key">Expiry Mode</span><span>{{ bot.expiry_mode }}</span></div>
+        <div><span class="cfg-key">Strike Mode</span><span>{{ bot.strike_mode }}</span></div>
+        <div><span class="cfg-key">Strike Offset</span><span>{{ bot.strike_offset_pts }} pts</span></div>
+        <div><span class="cfg-key">Entry Rules</span><span>{{ bot.entry_rules | join(', ') or '—' }}</span></div>
+        <div><span class="cfg-key">Exit Rules</span><span>{{ bot.exit_rules | join(', ') or '—' }}</span></div>
+      </div>
+    </section>
+
+    <!-- Trade log -->
+    <section>
+      <h2>Trade Log</h2>
+      <div class="table-wrap">
+        <table id="tradeTable" class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th><th>Side</th><th>Symbol</th><th>Entry</th><th>Exit</th>
+              <th>Entry LTP</th><th>Exit LTP</th><th>P&amp;L pts</th><th>P&amp;L ₹</th>
+              <th>Exit Reason</th><th>Hold (min)</th>
+            </tr>
+          </thead>
+          <tbody id="tradeBody"><tr><td colspan="11">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Signal log -->
+    <section>
+      <h2>Signal Log</h2>
+      <div class="table-wrap">
+        <table id="signalTable" class="data-table">
+          <thead>
+            <tr>
+              <th>Time</th><th>Signal</th><th>Bar Close</th><th>RSI</th><th>Acted</th><th>Skip Reason</th>
+            </tr>
+          </thead>
+          <tbody id="signalBody"><tr><td colspan="6">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+  const BOT_ID = "{{ bot.bot_id }}";
+</script>
+<script src="/static/labs.js"></script>
+</body>
+</html>
