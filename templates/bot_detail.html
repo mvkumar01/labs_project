@@ -97,8 +97,7 @@
         <div><span class="cfg-key">Expiry Mode</span><span>{{ bot.expiry_mode }}</span></div>
         <div><span class="cfg-key">Strike Mode</span><span>{{ bot.strike_mode }}</span></div>
         <div><span class="cfg-key">Strike Offset</span><span>{{ bot.strike_offset_pts }} pts</span></div>
-        <div><span class="cfg-key">Entry Rules</span><span>{{ bot.entry_rules | join(', ') or '—' }}</span></div>
-        <div><span class="cfg-key">Exit Rules</span><span>{{ bot.exit_rules | join(', ') or '—' }}</span></div>
+        <div><span class="cfg-key">Legs</span><span>{{ legs | length }} configured</span></div>
       </div>
     </section>
 
