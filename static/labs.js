@@ -316,9 +316,11 @@ async function loadTradeLog() {
   }
 
   tbody.innerHTML = trades.map(t => {
-    const pnlPts = parseFloat(t.pnl_pts);
-    const pnlRs  = parseFloat(t.pnl_rs);
-    const cls    = pnlRs > 0 ? "green" : (pnlRs < 0 ? "red" : "");
+    const pnlPts  = parseFloat(t.pnl_pts);
+    const grossRs = parseFloat(t.pnl_rs);
+    const charges = parseFloat(t.charges ?? 0);
+    const netRs   = parseFloat(t.net_pnl_rs ?? grossRs);
+    const cls     = netRs > 0 ? "green" : (netRs < 0 ? "red" : "");
     return `
       <tr>
         <td>${t.trade_date}</td>
@@ -329,7 +331,9 @@ async function loadTradeLog() {
         <td>${t.entry_ltp.toFixed(2)}</td>
         <td>${t.exit_ltp.toFixed(2)}</td>
         <td class="${cls}">${pnlPts > 0 ? "+" : ""}${pnlPts.toFixed(1)}</td>
-        <td class="${cls}">₹${pnlRs > 0 ? "+" : ""}${pnlRs.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+        <td>${grossRs > 0 ? "+" : ""}${grossRs.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+        <td style="color:#94a3b8">−${charges.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+        <td class="${cls}">₹${netRs > 0 ? "+" : ""}${netRs.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
         <td>${t.exit_reason}</td>
         <td>${t.holding_mins}</td>
       </tr>`;

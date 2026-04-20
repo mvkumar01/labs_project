@@ -100,6 +100,8 @@ def init_db() -> None:
             qty             INTEGER NOT NULL,
             pnl_pts         REAL NOT NULL,
             pnl_rs          REAL NOT NULL,
+            charges         REAL NOT NULL DEFAULT 0,
+            net_pnl_rs      REAL NOT NULL DEFAULT 0,
             exit_reason     TEXT NOT NULL,
             holding_mins    INTEGER NOT NULL,
             signal_at_entry REAL,
@@ -150,10 +152,18 @@ def init_db() -> None:
             UNIQUE(bot_id, leg_code)
         );
         """)
-    # Safe migration: add leg_code column to positions if missing
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
-    if "leg_code" not in cols:
+    # Safe migrations
+    pos_cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
+    if "leg_code" not in pos_cols:
         conn.execute("ALTER TABLE positions ADD COLUMN leg_code TEXT")
+        conn.commit()
+
+    trade_cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()]
+    if "charges" not in trade_cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN charges REAL NOT NULL DEFAULT 0")
+        conn.commit()
+    if "net_pnl_rs" not in trade_cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN net_pnl_rs REAL NOT NULL DEFAULT 0")
         conn.commit()
 
     conn.close()

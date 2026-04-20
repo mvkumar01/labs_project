@@ -18,7 +18,7 @@ def get_today_pnl(bot_id: str, conn=None) -> float:
         conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rs), 0) as total FROM trades WHERE bot_id=? AND trade_date=?",
+            "SELECT COALESCE(SUM(net_pnl_rs), 0) as total FROM trades WHERE bot_id=? AND trade_date=?",
             (bot_id, today),
         ).fetchone()
         return float(row["total"])
@@ -33,7 +33,7 @@ def get_total_pnl(bot_id: str, conn=None) -> float:
         conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT COALESCE(SUM(pnl_rs), 0) as total FROM trades WHERE bot_id=?",
+            "SELECT COALESCE(SUM(net_pnl_rs), 0) as total FROM trades WHERE bot_id=?",
             (bot_id,),
         ).fetchone()
         return float(row["total"])
@@ -50,7 +50,7 @@ def get_trade_log(bot_id: str, limit: int = 200, conn=None) -> list[dict]:
         rows = conn.execute("""
             SELECT trade_id, trade_date, underlying, side, symbol, strike, expiry,
                    entry_time, exit_time, entry_ltp, exit_ltp, entry_spot, exit_spot,
-                   pnl_pts, pnl_rs, exit_reason, holding_mins
+                   pnl_pts, pnl_rs, charges, net_pnl_rs, exit_reason, holding_mins
             FROM trades WHERE bot_id=?
             ORDER BY exit_time DESC LIMIT ?
         """, (bot_id, limit)).fetchall()
@@ -83,7 +83,7 @@ def get_equity_curve(bot_id: str, conn=None) -> list[dict]:
         conn = get_conn()
     try:
         rows = conn.execute("""
-            SELECT trade_date, SUM(pnl_rs) as day_pnl
+            SELECT trade_date, SUM(net_pnl_rs) as day_pnl
             FROM trades WHERE bot_id=?
             GROUP BY trade_date ORDER BY trade_date ASC
         """, (bot_id,)).fetchall()
@@ -128,11 +128,11 @@ def get_all_bots_summary(conn=None) -> list[dict]:
         for b in bots:
             bid = b["bot_id"]
             today_row = conn.execute(
-                "SELECT COALESCE(SUM(pnl_rs),0) as p FROM trades WHERE bot_id=? AND trade_date=?",
+                "SELECT COALESCE(SUM(net_pnl_rs),0) as p FROM trades WHERE bot_id=? AND trade_date=?",
                 (bid, today),
             ).fetchone()
             total_row = conn.execute(
-                "SELECT COALESCE(SUM(pnl_rs),0) as p FROM trades WHERE bot_id=?",
+                "SELECT COALESCE(SUM(net_pnl_rs),0) as p FROM trades WHERE bot_id=?",
                 (bid,),
             ).fetchone()
             pos_row = conn.execute(
@@ -160,16 +160,16 @@ def get_performance_stats(bot_id: str, conn=None) -> dict:
         conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT pnl_rs, holding_mins, exit_reason FROM trades WHERE bot_id=?",
+            "SELECT pnl_rs, net_pnl_rs, charges, holding_mins, exit_reason FROM trades WHERE bot_id=?",
             (bot_id,),
         ).fetchall()
         if not rows:
             return {"total_trades": 0, "wins": 0, "losses": 0, "win_pct": 0,
                     "total_pnl_rs": 0, "avg_hold_mins": 0, "exit_reasons": {}}
         total  = len(rows)
-        wins   = sum(1 for r in rows if r["pnl_rs"] > 0)
-        losses = sum(1 for r in rows if r["pnl_rs"] <= 0)
-        total_pnl = sum(r["pnl_rs"] for r in rows)
+        wins   = sum(1 for r in rows if r["net_pnl_rs"] > 0)
+        losses = sum(1 for r in rows if r["net_pnl_rs"] <= 0)
+        total_pnl = sum(r["net_pnl_rs"] for r in rows)
         avg_hold  = sum(r["holding_mins"] for r in rows) / total
         exit_reasons = {}
         for r in rows:

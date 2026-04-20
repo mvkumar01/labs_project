@@ -149,10 +149,18 @@ def close_position(
     exit_time  = datetime.strptime(now_s, "%Y-%m-%d %H:%M:%S")
     hold_mins  = max(int((exit_time - entry_time).total_seconds() / 60), 0)
 
-    # P&L direction: CE profits when LTP rises, PE profits when LTP rises too
-    # (we bought the option, so any LTP increase = profit regardless of side)
-    pnl_pts = exit_ltp - float(position["entry_ltp"])
-    pnl_rs  = pnl_pts * int(position["lot_size"]) * int(position["qty"])
+    # P&L — long buy: profit = exit LTP - entry LTP
+    B       = float(position["entry_ltp"])
+    S       = exit_ltp
+    Q       = int(position["lot_size"]) * int(position["qty"])
+    pnl_pts = S - B
+    pnl_rs  = pnl_pts * Q
+
+    # Charges: flat ₹40 + STT + transaction tax
+    # Turnover = (B + S) × Q
+    turnover = (B + S) * Q
+    charges  = round(40 + 0.00053 * turnover + 0.001 * (S * Q), 2)
+    net_pnl_rs = round(pnl_rs - charges, 2)
 
     trade = {
         "trade_id":        str(uuid.uuid4()),
@@ -173,6 +181,8 @@ def close_position(
         "qty":             int(position["qty"]),
         "pnl_pts":         round(pnl_pts, 2),
         "pnl_rs":          round(pnl_rs, 2),
+        "charges":         charges,
+        "net_pnl_rs":      net_pnl_rs,
         "exit_reason":     exit_reason,
         "holding_mins":    hold_mins,
         "signal_at_entry": None,
@@ -189,8 +199,8 @@ def close_position(
                     :trade_id, :bot_id, :trade_date, :underlying, :side,
                     :symbol, :strike, :expiry, :entry_time, :exit_time,
                     :entry_ltp, :exit_ltp, :entry_spot, :exit_spot,
-                    :lot_size, :qty, :pnl_pts, :pnl_rs, :exit_reason,
-                    :holding_mins, :signal_at_entry, :created_at
+                    :lot_size, :qty, :pnl_pts, :pnl_rs, :charges, :net_pnl_rs,
+                    :exit_reason, :holding_mins, :signal_at_entry, :created_at
                 )
             """, trade)
             conn.execute(
