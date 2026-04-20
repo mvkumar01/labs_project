@@ -10,17 +10,15 @@
 <div class="page">
   <header class="topbar">
     <span class="logo">Labs</span>
-    <nav>
-      <a href="/labs">Dashboard</a>
-    </nav>
+    <nav><a href="/labs">Dashboard</a></nav>
   </header>
 
   <main>
     <h1>{{ title }}</h1>
 
-    <form method="post" action="{{ action_url }}" class="bot-form">
+    <form method="post" action="{{ action_url }}" class="bot-form" id="botForm">
 
-      <!-- Core identity -->
+      <!-- ── Identity ──────────────────────────────────────────────────── -->
       <section class="form-section">
         <h2>Identity</h2>
         <div class="form-row">
@@ -34,8 +32,8 @@
               {% endfor %}
             </select>
           </label>
-          <label>Strategy Type
-            <select name="strategy_type" id="strategy_type">
+          <label>Strategy Type <small>(classic fallback — ignored if legs defined)</small>
+            <select name="strategy_type">
               {% for s in strategy_types %}
                 <option value="{{ s }}" {{ 'selected' if bot and bot.strategy_type == s }}>{{ s }}</option>
               {% endfor %}
@@ -44,101 +42,104 @@
         </div>
       </section>
 
-      <!-- Indicator params -->
+      <!-- ── Enable Legs ───────────────────────────────────────────────── -->
       <section class="form-section">
-        <h2>Indicator Parameters</h2>
-        <div class="form-row">
-          <label>RSI Period
-            <input type="number" name="rsi_period" value="{{ bot.rsi_period if bot else 3 }}" min="1" max="50">
-          </label>
-          <label>EMA Fast Period
-            <input type="number" name="ema_fast_period" value="{{ bot.ema_fast_period if bot else 9 }}" min="1" max="200">
-          </label>
-          <label>EMA Slow Period
-            <input type="number" name="ema_slow_period" value="{{ bot.ema_slow_period if bot else 13 }}" min="1" max="200">
-          </label>
-          <label>SMA Period
-            <input type="number" name="sma_period" value="{{ bot.sma_period if bot else 50 }}" min="1" max="200">
-          </label>
-        </div>
-        <div class="form-row">
-          <label>RSI Oversold Threshold
-            <input type="number" name="rsi_oversold" value="{{ bot.rsi_oversold if bot else 25 }}" min="1" max="49" step="1">
-          </label>
-          <label>RSI Overbought Threshold
-            <input type="number" name="rsi_overbought" value="{{ bot.rsi_overbought if bot else 75 }}" min="51" max="99" step="1">
-          </label>
-        </div>
-      </section>
-
-      <!-- Entry rules -->
-      <section class="form-section">
-        <h2>Entry Rules <small>(all must be true — AND logic)</small></h2>
-        <div class="checkbox-grid">
-          {% for token in entry_rule_tokens %}
-            <label class="checkbox-label">
-              <input type="checkbox" name="entry_rules" value="{{ token }}"
-                {{ 'checked' if bot and token in bot.entry_rules }}>
-              {{ token }}
+        <h2>Strategy Legs</h2>
+        <p class="hint">Enable at least one leg. Each leg runs an independent entry/exit cycle.</p>
+        <div class="leg-toggles">
+          {% for code in leg_codes %}
+            {% set label = 'Call Leg 1' if code == 'C1' else 'Call Leg 2' if code == 'C2' else 'Put Leg 1' if code == 'P1' else 'Put Leg 2' %}
+            <label class="toggle-pill" id="toggle-{{ code }}">
+              <input type="checkbox" name="leg_{{ code }}_enabled" value="1"
+                     id="chk_{{ code }}"
+                     onchange="toggleLegCard('{{ code }}', this.checked)"
+                     {{ 'checked' if legs.get(code) and legs[code].is_enabled }}>
+              <span class="{{ 'ce-pill' if code.startswith('C') else 'pe-pill' }}">
+                {{ code }} — {{ label }}
+              </span>
             </label>
           {% endfor %}
         </div>
       </section>
 
-      <!-- Exit rules -->
-      <section class="form-section">
-        <h2>Exit Rules <small>(first match wins — OR logic, indicator-based)</small></h2>
-        <div class="checkbox-grid">
-          {% for token in exit_rule_tokens %}
-            <label class="checkbox-label">
-              <input type="checkbox" name="exit_rules" value="{{ token }}"
-                {{ 'checked' if bot and token in bot.exit_rules }}>
-              {{ token }}
-            </label>
-          {% endfor %}
-        </div>
-      </section>
+      <!-- ── Leg Cards ─────────────────────────────────────────────────── -->
+      {% for code in leg_codes %}
+        {% set leg = legs.get(code) %}
+        {% set side_label = 'CALL' if code.startswith('C') else 'PUT' %}
+        {% set color_cls  = 'leg-call' if code.startswith('C') else 'leg-put' %}
 
-      <!-- Risk / targets -->
-      <section class="form-section">
-        <h2>Risk &amp; Targets</h2>
-        <div class="form-row">
-          <label>Spot Target (pts) <small>blank = disabled</small>
-            <input type="number" name="spot_target_pts" value="{{ bot.spot_target_pts if bot and bot.spot_target_pts else '' }}" step="0.5">
-          </label>
-          <label>Spot SL (pts) <small>blank = disabled</small>
-            <input type="number" name="spot_sl_pts" value="{{ bot.spot_sl_pts if bot and bot.spot_sl_pts else '' }}" step="0.5">
-          </label>
-          <label>LTP Target (pts) <small>blank = disabled</small>
-            <input type="number" name="ltp_target_pts" value="{{ bot.ltp_target_pts if bot and bot.ltp_target_pts else '' }}" step="0.5">
-          </label>
-          <label>LTP SL (pts) <small>blank = disabled</small>
-            <input type="number" name="ltp_sl_pts" value="{{ bot.ltp_sl_pts if bot and bot.ltp_sl_pts else '' }}" step="0.5">
-          </label>
-        </div>
-      </section>
+        <div class="leg-card {{ color_cls }}" id="legCard_{{ code }}"
+             style="{{ '' if leg and leg.is_enabled else 'display:none' }}">
 
-      <!-- Trading controls -->
-      <section class="form-section">
-        <h2>Trading Controls</h2>
-        <div class="form-row">
-          <label>Max Trades / Day
-            <input type="number" name="max_trades_per_day" value="{{ bot.max_trades_per_day if bot else 3 }}" min="1" max="20">
-          </label>
-          <label>Session Start (HH:MM IST)
-            <input type="text" name="session_start" value="{{ bot.session_start if bot else '09:20' }}" pattern="\d{2}:\d{2}">
-          </label>
-          <label>Session End (HH:MM IST)
-            <input type="text" name="session_end" value="{{ bot.session_end if bot else '15:15' }}" pattern="\d{2}:\d{2}">
-          </label>
-          <label class="checkbox-label inline">
-            <input type="checkbox" name="allow_reentry" value="1" {{ 'checked' if bot and bot.allow_reentry }}>
-            Allow Re-entry
-          </label>
-        </div>
-      </section>
+          <div class="leg-card-header">
+            <span class="leg-badge {{ color_cls }}">{{ code }}</span>
+            <span>{{ side_label }} Leg — {{ 'Call' if code.startswith('C') else 'Put' }} {{ '1' if code in ('C1','P1') else '2' }}</span>
+          </div>
 
-      <!-- Contract selection -->
+          <!-- Hidden JSON fields -->
+          <input type="hidden" name="leg_{{ code }}_entry_conditions"
+                 id="leg_{{ code }}_entry_json"
+                 value="{{ leg.entry_conditions_json if leg else '[]' }}">
+          <input type="hidden" name="leg_{{ code }}_entry_gates"
+                 id="leg_{{ code }}_gate_json"
+                 value="{{ leg.entry_gates_json if leg else '[]' }}">
+          <input type="hidden" name="leg_{{ code }}_exit_conditions"
+                 id="leg_{{ code }}_exit_json"
+                 value="{{ leg.exit_conditions_json if leg else '[]' }}">
+          <input type="hidden" name="leg_{{ code }}_stoploss_conditions"
+                 id="leg_{{ code }}_stoploss_json"
+                 value="{{ leg.stoploss_conditions_json if leg else '[]' }}">
+
+          <!-- A: Entry Conditions -->
+          <div class="leg-section">
+            <div class="leg-section-hdr">
+              <span class="sec-label">A&nbsp;&nbsp;Entry Conditions</span>
+              <label class="logic-label">Logic
+                <select name="leg_{{ code }}_entry_logic" class="logic-select">
+                  <option value="AND" {{ 'selected' if not leg or leg.entry_logic == 'AND' }}>AND</option>
+                  <option value="OR"  {{ 'selected' if leg and leg.entry_logic == 'OR' }}>OR</option>
+                </select>
+              </label>
+              <button type="button" class="btn-add"
+                      onclick="addRow('{{ code }}','entry')">+ Add Condition</button>
+            </div>
+            <div class="cond-rows" id="{{ code }}_entry_rows"></div>
+          </div>
+
+          <!-- B: Entry Gates -->
+          <div class="leg-section">
+            <div class="leg-section-hdr">
+              <span class="sec-label">B&nbsp;&nbsp;Entry Gates <small>(AND — all must pass)</small></span>
+              <button type="button" class="btn-add"
+                      onclick="addRow('{{ code }}','gate')">+ Add Gate</button>
+            </div>
+            <div class="cond-rows" id="{{ code }}_gate_rows"></div>
+          </div>
+
+          <!-- C: Exit Conditions -->
+          <div class="leg-section">
+            <div class="leg-section-hdr">
+              <span class="sec-label">C&nbsp;&nbsp;Exit Conditions <small>(first match wins)</small></span>
+              <button type="button" class="btn-add"
+                      onclick="addRow('{{ code }}','exit')">+ Add Exit</button>
+            </div>
+            <div class="cond-rows" id="{{ code }}_exit_rows"></div>
+          </div>
+
+          <!-- D: Stoploss -->
+          <div class="leg-section">
+            <div class="leg-section-hdr">
+              <span class="sec-label">D&nbsp;&nbsp;Stoploss <small>(checked every tick — first match)</small></span>
+              <button type="button" class="btn-add"
+                      onclick="addRow('{{ code }}','stoploss')">+ Add Stoploss</button>
+            </div>
+            <div class="cond-rows" id="{{ code }}_stoploss_rows"></div>
+          </div>
+
+        </div>
+      {% endfor %}
+
+      <!-- ── Contract Selection ─────────────────────────────────────────── -->
       <section class="form-section">
         <h2>Contract Selection</h2>
         <div class="form-row">
@@ -157,22 +158,53 @@
             </select>
           </label>
           <label>Strike Offset (pts)
-            <input type="number" name="strike_offset_pts" value="{{ bot.strike_offset_pts if bot else 0 }}" step="50">
+            <input type="number" name="strike_offset_pts"
+                   value="{{ bot.strike_offset_pts if bot else 0 }}" step="50">
           </label>
           <label class="checkbox-label inline">
-            <input type="checkbox" name="hold_same_contract" value="1" {{ 'checked' if not bot or bot.hold_same_contract }}>
-            Hold Same Contract Until Exit
+            <input type="checkbox" name="hold_same_contract" value="1"
+                   {{ 'checked' if not bot or bot.hold_same_contract }}>
+            Hold same contract until exit
+          </label>
+        </div>
+      </section>
+
+      <!-- ── Trade Controls ────────────────────────────────────────────── -->
+      <section class="form-section">
+        <h2>Trade Controls</h2>
+        <div class="form-row">
+          <label>Max Trades / Day
+            <input type="number" name="max_trades_per_day"
+                   value="{{ bot.max_trades_per_day if bot else 3 }}" min="1" max="20">
+          </label>
+          <label>Session Start (HH:MM IST)
+            <input type="text" name="session_start"
+                   value="{{ bot.session_start if bot else '09:20' }}" pattern="\d{2}:\d{2}">
+          </label>
+          <label>Session End (HH:MM IST)
+            <input type="text" name="session_end"
+                   value="{{ bot.session_end if bot else '15:15' }}" pattern="\d{2}:\d{2}">
+          </label>
+          <label class="checkbox-label inline">
+            <input type="checkbox" name="allow_reentry" value="1"
+                   {{ 'checked' if bot and bot.allow_reentry }}>
+            Allow Re-entry
           </label>
         </div>
       </section>
 
       <div class="form-actions">
-        <button type="submit" class="btn-primary">Save Bot</button>
+        <button type="submit" class="btn-primary" onclick="serializeAllLegs()">Save Bot</button>
         <a href="/labs" class="btn-secondary">Cancel</a>
       </div>
     </form>
   </main>
 </div>
+
+<!-- Seed existing leg data for JS to populate rows -->
+<script>
+const EXISTING_LEGS = {{ legs | tojson }};
+</script>
 <script src="/static/labs.js"></script>
 </body>
 </html>

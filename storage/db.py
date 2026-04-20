@@ -135,7 +135,27 @@ def init_db() -> None:
             avg_hold_mins   REAL,
             UNIQUE(bot_id, trade_date)
         );
+
+        CREATE TABLE IF NOT EXISTS lab_bot_legs (
+            id                      TEXT PRIMARY KEY,
+            bot_id                  TEXT NOT NULL REFERENCES bots(bot_id),
+            leg_code                TEXT NOT NULL,
+            is_enabled              INTEGER NOT NULL DEFAULT 1,
+            entry_logic             TEXT NOT NULL DEFAULT 'AND',
+            entry_conditions_json   TEXT NOT NULL DEFAULT '[]',
+            entry_gates_json        TEXT NOT NULL DEFAULT '[]',
+            exit_conditions_json    TEXT NOT NULL DEFAULT '[]',
+            stoploss_conditions_json TEXT NOT NULL DEFAULT '[]',
+            created_at              TEXT NOT NULL,
+            UNIQUE(bot_id, leg_code)
+        );
         """)
+    # Safe migration: add leg_code column to positions if missing
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(positions)").fetchall()]
+    if "leg_code" not in cols:
+        conn.execute("ALTER TABLE positions ADD COLUMN leg_code TEXT")
+        conn.commit()
+
     conn.close()
     print(f"[labs-db] Schema ready: {DB_PATH}")
 

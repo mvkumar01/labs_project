@@ -1,9 +1,8 @@
 """
-Resamples 1-min OHLCV data to 5-min completed bars.
+Resamples 1-min OHLCV data to completed bars at any supported timeframe.
 
-Session: 09:15–15:30 IST.
-Bar labels are bar-close times: 09:20, 09:25, ..., 15:30.
-The currently-open bar is excluded — only completed bars are returned.
+Supported timeframes: 1m, 5m, 10m, 15m.
+Bar labels are bar-close times. Only completed bars are returned.
 """
 from datetime import datetime
 
@@ -12,20 +11,35 @@ import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
 
+_TF_MINUTES = {"1m": 1, "5m": 5, "10m": 10, "15m": 15}
 
-def to_5min(df_1min: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+
+def get_resampled_data(df_1min: pd.DataFrame, timeframe: str, now: datetime | None = None) -> pd.DataFrame:
     """
-    df_1min: DataFrame with DatetimeIndex (IST, tz-naive) and columns
-             [open, high, low, close, volume].
+    Resample df_1min (DatetimeIndex, tz-naive IST) to any supported timeframe.
+    Returns only completed bars (bar-close < now).
 
-    Returns a 5-min OHLCV DataFrame with the same columns, indexed by bar-close time.
-    Only completed bars (bar-close < current time) are returned.
+    timeframe: '1m' | '5m' | '10m' | '15m'
     """
     if df_1min.empty:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-    # Resample: label=right gives bar-close label
-    resampled = df_1min.resample("5min", label="right", closed="right").agg({
+    if now is None:
+        now = datetime.now()
+    if hasattr(now, "tzinfo") and now.tzinfo is not None:
+        now = now.astimezone(IST).replace(tzinfo=None)
+
+    minutes = _TF_MINUTES.get(timeframe)
+    if minutes is None:
+        raise ValueError(f"Unsupported timeframe: {timeframe!r}. Use one of {list(_TF_MINUTES)}")
+
+    if minutes == 1:
+        # Return all 1-min bars whose timestamp < now
+        completed = df_1min[df_1min.index < now].copy()
+        return completed
+
+    rule = f"{minutes}min"
+    resampled = df_1min.resample(rule, label="right", closed="right").agg({
         "open":   "first",
         "high":   "max",
         "low":    "min",
@@ -33,13 +47,9 @@ def to_5min(df_1min: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
         "volume": "sum",
     }).dropna(subset=["close"])
 
-    if now is None:
-        now = datetime.now()
+    return resampled[resampled.index < now]
 
-    # Strip tz from now if present so comparison works with tz-naive index
-    if hasattr(now, "tzinfo") and now.tzinfo is not None:
-        now = now.astimezone(IST).replace(tzinfo=None)
 
-    # Keep only bars whose close time is strictly before now
-    completed = resampled[resampled.index < now]
-    return completed
+# Keep backward-compatible alias used by strategy_runner
+def to_5min(df_1min: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+    return get_resampled_data(df_1min, "5m", now=now)

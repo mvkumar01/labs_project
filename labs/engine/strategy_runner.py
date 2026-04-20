@@ -1,9 +1,10 @@
 """
 Labs strategy runner.
 Runs every 60 seconds during market hours.
-Processes all active bots: evaluates entry/exit signals, manages paper positions.
 
-PA scheduled task: python labs/engine/strategy_runner.py
+Two evaluation paths:
+  - Leg-based  (bots with rows in lab_bot_legs) — uses condition_evaluator
+  - Classic    (bots without legs)              — uses Strategy class registry
 """
 import json
 import logging
@@ -23,10 +24,11 @@ from config.labs_config import (
     COLLECTOR_INTERVAL_SECS, LOG_DIR,
 )
 from labs.engine.data_loader import load_spot_1min, load_options_1min, latest_ltp
-from labs.engine.resampler import to_5min
+from labs.engine.resampler import get_resampled_data, to_5min
 from labs.engine.indicator_engine import compute_all
 from labs.engine.position_manager import check_exit
 from labs.engine.paper_executor import open_position, close_position
+from labs.engine.condition_evaluator import TFCache, evaluate_entry, evaluate_gates, evaluate_exits
 from labs.strategies.registry import get_strategy
 from storage.db import get_conn, init_db
 
@@ -43,21 +45,17 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-
-def _market_open(now: datetime) -> bool:
-    t = now.strftime("%H:%M")
-    return MARKET_OPEN <= t <= MARKET_CLOSE
+LEG_SIDES = {"C1": "CE", "C2": "CE", "P1": "PE", "P2": "PE"}
 
 
-def _past_eod_cutoff(now: datetime) -> bool:
-    return now.strftime("%H:%M") >= EOD_CUTOFF
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _market_open(now): return MARKET_OPEN <= now.strftime("%H:%M") <= MARKET_CLOSE
+def _past_eod(now):    return now.strftime("%H:%M") >= EOD_CUTOFF
+def _at_5min_close(now): return (now.minute % 5 == 0) and (now.second < 5)
 
 
-def _next_minute_boundary(now: datetime) -> datetime:
-    return (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-
-
-def _load_active_bots(conn) -> list[dict]:
+def _load_active_bots(conn):
     rows = conn.execute("""
         SELECT b.*, p.rsi_period, p.ema_fast_period, p.ema_slow_period, p.sma_period,
                p.rsi_oversold, p.rsi_overbought, p.entry_rules_json, p.exit_rules_json,
@@ -70,36 +68,145 @@ def _load_active_bots(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _load_open_position(conn, bot_id: str) -> dict | None:
+def _load_legs(conn, bot_id):
+    rows = conn.execute(
+        "SELECT * FROM lab_bot_legs WHERE bot_id = ? AND is_enabled = 1", (bot_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _open_position_for_leg(conn, bot_id, leg_code):
     row = conn.execute(
-        "SELECT * FROM positions WHERE bot_id = ? AND status = 'open'", (bot_id,)
+        "SELECT * FROM positions WHERE bot_id=? AND leg_code=? AND status='open'",
+        (bot_id, leg_code),
     ).fetchone()
     return dict(row) if row else None
 
 
-def _daily_trade_count(conn, bot_id: str, trade_date: str) -> int:
+def _open_position_classic(conn, bot_id):
     row = conn.execute(
-        "SELECT COUNT(*) as n FROM trades WHERE bot_id = ? AND trade_date = ?",
+        "SELECT * FROM positions WHERE bot_id=? AND status='open'", (bot_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _daily_trades(conn, bot_id, trade_date):
+    r = conn.execute(
+        "SELECT COUNT(*) as n FROM trades WHERE bot_id=? AND trade_date=?",
         (bot_id, trade_date),
     ).fetchone()
-    return row["n"] if row else 0
+    return r["n"] if r else 0
 
 
-def _build_params(bot: dict) -> dict:
-    params = dict(bot)
-    params["entry_rules"] = json.loads(bot.get("entry_rules_json", "[]"))
-    params["exit_rules"]  = json.loads(bot.get("exit_rules_json",  "[]"))
-    return params
+def _build_params(bot):
+    p = dict(bot)
+    p["entry_rules"] = json.loads(bot.get("entry_rules_json", "[]"))
+    p["exit_rules"]  = json.loads(bot.get("exit_rules_json",  "[]"))
+    return p
 
 
-def _is_5min_bar_close(now: datetime) -> bool:
-    """True when we are within 5 seconds of a 5-minute boundary (bar just closed)."""
-    minute = now.minute
-    second = now.second
-    return (minute % 5 == 0) and (second < 5)
+# ── Leg-based processing ──────────────────────────────────────────────────────
+
+def _process_leg(
+    leg, bot, trade_date, now,
+    tf_cache, df_1min, options_df,
+    current_spot, kite, conn,
+):
+    leg_code   = leg["leg_code"]
+    side       = LEG_SIDES[leg_code]
+    entry_conds = json.loads(leg["entry_conditions_json"])
+    entry_gates = json.loads(leg["entry_gates_json"])
+    exit_conds  = json.loads(leg["exit_conditions_json"])
+    sl_conds    = json.loads(leg["stoploss_conditions_json"])
+    entry_logic = leg.get("entry_logic", "AND")
+
+    position = _open_position_for_leg(conn, bot["bot_id"], leg_code)
+
+    if position:
+        current_ltp = latest_ltp(options_df, position["symbol"])
+        if current_ltp is None:
+            current_ltp = float(position["entry_ltp"])
+
+        if _past_eod(now):
+            trade = close_position(position, current_ltp, current_spot, "eod", conn=conn)
+            log.info(f"[{bot['bot_id']}:{leg_code}] EOD exit pnl={trade['pnl_pts']:+.1f}pts")
+            return
+
+        # Stoploss checked first
+        sl_hit = evaluate_exits(sl_conds, tf_cache, position, current_ltp, current_spot)
+        if sl_hit:
+            trade = close_position(position, current_ltp, current_spot, f"sl:{sl_hit}", conn=conn)
+            log.info(f"[{bot['bot_id']}:{leg_code}] SL({sl_hit}) pnl={trade['pnl_pts']:+.1f}pts")
+            return
+
+        # Then exit conditions (only on bar close for indicator exits)
+        if _at_5min_close(now):
+            ex_hit = evaluate_exits(exit_conds, tf_cache, position, current_ltp, current_spot)
+            if ex_hit:
+                trade = close_position(position, current_ltp, current_spot, f"exit:{ex_hit}", conn=conn)
+                log.info(f"[{bot['bot_id']}:{leg_code}] Exit({ex_hit}) pnl={trade['pnl_pts']:+.1f}pts")
+        return
+
+    # Flat — only enter on 5-min bar close
+    if not _at_5min_close(now):
+        return
+
+    session_start = bot.get("session_start", "09:20")
+    session_end   = bot.get("session_end", "15:15")
+    t = now.strftime("%H:%M")
+    if not (session_start <= t <= session_end):
+        return
+    if _past_eod(now):
+        return
+
+    max_trades = int(bot.get("max_trades_per_day", 3))
+    if _daily_trades(conn, bot["bot_id"], trade_date) >= max_trades:
+        return
+
+    if not evaluate_entry(entry_conds, entry_logic, tf_cache):
+        return
+    if not evaluate_gates(entry_gates, tf_cache):
+        return
+
+    params = _build_params(bot)
+    bar_ts = str(get_resampled_data(df_1min, "5m", now=now).index[-1])
+    new_pos = open_position(
+        kite, {**bot, "underlying": bot["underlying"]}, params, side,
+        bar_ts, current_spot, None, options_df, conn=conn,
+    )
+    if new_pos:
+        # Patch leg_code into the just-inserted position row
+        conn.execute(
+            "UPDATE positions SET leg_code=? WHERE position_id=?",
+            (leg_code, new_pos["position_id"])
+        )
+        conn.commit()
+        log.info(f"[{bot['bot_id']}:{leg_code}] OPEN {side} spot={current_spot:.0f} ltp={new_pos['entry_ltp']:.2f}")
+    else:
+        log.warning(f"[{bot['bot_id']}:{leg_code}] Signal but no contract at spot={current_spot:.0f}")
 
 
-def process_bot(bot: dict, trade_date: str, now: datetime, kite, conn) -> None:
+def process_bot_with_legs(bot, legs, trade_date, now, kite, conn):
+    underlying = bot["underlying"]
+    df_1min    = load_spot_1min(underlying, trade_date)
+    if df_1min.empty:
+        return
+
+    options_df   = load_options_1min(underlying, trade_date)
+    current_spot = float(df_1min.iloc[-1]["close"])
+    tf_cache     = TFCache(df_1min, now)
+
+    for leg in legs:
+        try:
+            _process_leg(leg, bot, trade_date, now, tf_cache, df_1min,
+                         options_df, current_spot, kite, conn)
+        except Exception as exc:
+            log.error(f"[{bot['bot_id']}:{leg['leg_code']}] {exc}", exc_info=True)
+
+
+# ── Classic processing (unchanged from original) ──────────────────────────────
+
+def process_bot_classic(bot, trade_date, now, kite, conn):
     params     = _build_params(bot)
     underlying = bot["underlying"]
     strategy   = get_strategy(bot["strategy_type"])
@@ -108,17 +215,14 @@ def process_bot(bot: dict, trade_date: str, now: datetime, kite, conn) -> None:
     session_end   = params.get("session_end",   "15:15")
     t = now.strftime("%H:%M")
 
-    # Load raw data
-    df_1min  = load_spot_1min(underlying, trade_date)
+    df_1min = load_spot_1min(underlying, trade_date)
     if df_1min.empty:
         return
 
-    # Resample to 5-min completed bars
     df_5min_raw = to_5min(df_1min, now=now)
     if df_5min_raw.empty:
         return
 
-    # Compute indicators; inject thresholds as helper columns so base.py can read them
     df_5min = compute_all(
         df_5min_raw,
         rsi_period=params["rsi_period"],
@@ -131,60 +235,53 @@ def process_bot(bot: dict, trade_date: str, now: datetime, kite, conn) -> None:
 
     current_spot = float(df_1min.iloc[-1]["close"])
     options_df   = load_options_1min(underlying, trade_date)
+    at_5min      = _at_5min_close(now)
 
-    at_5min_close = _is_5min_bar_close(now)
-
-    # --- Check open position first ---
-    position = _load_open_position(conn, bot["bot_id"])
+    position = _open_position_classic(conn, bot["bot_id"])
 
     if position:
-        current_ltp = latest_ltp(options_df, position["symbol"])
-        if current_ltp is None:
-            current_ltp = float(position["entry_ltp"])  # fallback
-
-        # EOD forced exit
-        if _past_eod_cutoff(now):
+        current_ltp = latest_ltp(options_df, position["symbol"]) or float(position["entry_ltp"])
+        if _past_eod(now):
             trade = close_position(position, current_ltp, current_spot, "eod", conn=conn)
-            log.info(f"[{bot['bot_id']}] EOD exit  pnl={trade['pnl_pts']:+.1f}pts")
+            log.info(f"[{bot['bot_id']}] EOD exit pnl={trade['pnl_pts']:+.1f}pts")
             return
-
-        exit_reason = check_exit(
-            position, current_ltp, current_spot,
-            df_5min, params, strategy,
-            check_indicator=at_5min_close,
-        )
+        exit_reason = check_exit(position, current_ltp, current_spot, df_5min, params, strategy, check_indicator=at_5min)
         if exit_reason:
             trade = close_position(position, current_ltp, current_spot, exit_reason, conn=conn)
-            log.info(f"[{bot['bot_id']}] Exit({exit_reason})  pnl={trade['pnl_pts']:+.1f}pts")
+            log.info(f"[{bot['bot_id']}] Exit({exit_reason}) pnl={trade['pnl_pts']:+.1f}pts")
         return
 
-    # --- Flat: evaluate entry (only on 5-min bar close) ---
-    if not at_5min_close:
+    if not at_5min:
         return
     if not (session_start <= t <= session_end):
         return
-    if _past_eod_cutoff(now):
+    if _past_eod(now):
         return
-
-    max_trades = params.get("max_trades_per_day", 3)
-    if _daily_trade_count(conn, bot["bot_id"], trade_date) >= max_trades:
+    if _daily_trades(conn, bot["bot_id"], trade_date) >= int(params.get("max_trades_per_day", 3)):
         return
 
     signal_side = strategy.entry_signal(df_5min, params)
     if signal_side is None:
         return
 
-    signal_val = float(df_5min.iloc[-1].get("rsi", 0))
     bar_ts     = str(df_5min.index[-1])
-
-    new_pos = open_position(
-        kite, bot, params, signal_side, bar_ts,
-        current_spot, signal_val, options_df, conn=conn,
-    )
+    signal_val = float(df_5min.iloc[-1].get("rsi", 0))
+    new_pos = open_position(kite, bot, params, signal_side, bar_ts, current_spot, signal_val, options_df, conn=conn)
     if new_pos:
-        log.info(f"[{bot['bot_id']}] OPEN {signal_side}  spot={current_spot:.0f}  ltp={new_pos['entry_ltp']:.2f}")
+        log.info(f"[{bot['bot_id']}] OPEN {signal_side} spot={current_spot:.0f} ltp={new_pos['entry_ltp']:.2f}")
     else:
-        log.warning(f"[{bot['bot_id']}] Signal={signal_side} but no contract found at spot={current_spot:.0f}")
+        log.warning(f"[{bot['bot_id']}] Signal={signal_side} but no contract at spot={current_spot:.0f}")
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+
+def process_bot(bot, trade_date, now, kite, conn):
+    """Route to leg-based or classic path based on whether legs are configured."""
+    legs = _load_legs(conn, bot["bot_id"])
+    if legs:
+        process_bot_with_legs(bot, legs, trade_date, now, kite, conn)
+    else:
+        process_bot_classic(bot, trade_date, now, kite, conn)
 
 
 def run():
@@ -205,18 +302,16 @@ def run():
 
         conn = get_conn()
         try:
-            bots = _load_active_bots(conn)
-            for bot in bots:
+            for bot in _load_active_bots(conn):
                 try:
                     process_bot(bot, trade_date, now, kite, conn)
                 except Exception as exc:
-                    log.error(f"[{bot['bot_id']}] Error: {exc}", exc_info=True)
+                    log.error(f"[{bot['bot_id']}] {exc}", exc_info=True)
         finally:
             conn.close()
 
-        elapsed    = (datetime.now(IST) - now).total_seconds()
-        sleep_for  = max(COLLECTOR_INTERVAL_SECS - elapsed, 1)
-        time.sleep(sleep_for)
+        elapsed   = (datetime.now(IST) - now).total_seconds()
+        time.sleep(max(COLLECTOR_INTERVAL_SECS - elapsed, 1))
 
 
 if __name__ == "__main__":

@@ -5,9 +5,10 @@ import json
 
 from flask import Blueprint, render_template, request, redirect, url_for, jsonify
 
-from config.labs_config import UNDERLYINGS, STRATEGY_TYPES, ENTRY_RULE_TOKENS, EXIT_RULE_TOKENS, EXPIRY_MODES, STRIKE_MODES
+from config.labs_config import UNDERLYINGS, STRATEGY_TYPES, EXPIRY_MODES, STRIKE_MODES
 from labs.services.bot_service import (
     list_bots, get_bot, create_bot, update_bot, update_status, clone_bot,
+    save_legs, get_legs, LEG_CODES,
 )
 from labs.services.metrics_service import (
     get_all_bots_summary, get_trade_log, get_signal_log,
@@ -16,61 +17,53 @@ from labs.services.metrics_service import (
 
 labs_bp = Blueprint("labs", __name__, url_prefix="/labs")
 
+_FORM_DEFAULTS = dict(
+    underlyings=list(UNDERLYINGS.keys()),
+    strategy_types=STRATEGY_TYPES,
+    expiry_modes=EXPIRY_MODES,
+    strike_modes=STRIKE_MODES,
+    leg_codes=LEG_CODES,
+)
 
-# ---------------------------------------------------------------------------
-# Dashboard
-# ---------------------------------------------------------------------------
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
 
 @labs_bp.route("/")
 def dashboard():
-    summary = get_all_bots_summary()
-    return render_template("labs.html", bots=summary)
+    return render_template("labs.html", bots=get_all_bots_summary())
 
 
-# ---------------------------------------------------------------------------
-# Create bot
-# ---------------------------------------------------------------------------
+# ── Create ───────────────────────────────────────────────────────────────────
 
 @labs_bp.route("/new", methods=["GET", "POST"])
 def new_bot():
     if request.method == "POST":
-        data = _form_to_dict(request.form)
-        bot  = create_bot(data)
+        data  = _form_to_dict(request.form)
+        bot   = create_bot(data)
+        legs  = _parse_legs(request.form)
+        if legs:
+            save_legs(bot["bot_id"], legs)
         return redirect(url_for("labs.bot_detail", bot_id=bot["bot_id"]))
 
-    return render_template(
-        "bot_form.html",
-        bot=None,
-        underlyings=list(UNDERLYINGS.keys()),
-        strategy_types=STRATEGY_TYPES,
-        entry_rule_tokens=ENTRY_RULE_TOKENS,
-        exit_rule_tokens=EXIT_RULE_TOKENS,
-        expiry_modes=EXPIRY_MODES,
-        strike_modes=STRIKE_MODES,
-        action_url=url_for("labs.new_bot"),
-        title="Create Bot",
-    )
+    return render_template("bot_form.html", bot=None, legs={},
+                           action_url=url_for("labs.new_bot"),
+                           title="Create Bot", **_FORM_DEFAULTS)
 
 
-# ---------------------------------------------------------------------------
-# Bot detail
-# ---------------------------------------------------------------------------
+# ── Detail ───────────────────────────────────────────────────────────────────
 
 @labs_bp.route("/<bot_id>")
 def bot_detail(bot_id):
-    bot   = get_bot(bot_id)
+    bot = get_bot(bot_id)
     if bot is None:
         return "Bot not found", 404
     stats = get_performance_stats(bot_id)
     pos   = get_open_position(bot_id)
-    bot["entry_rules"] = json.loads(bot.get("entry_rules_json", "[]"))
-    bot["exit_rules"]  = json.loads(bot.get("exit_rules_json",  "[]"))
-    return render_template("bot_detail.html", bot=bot, stats=stats, position=pos)
+    legs  = {lg["leg_code"]: lg for lg in get_legs(bot_id)}
+    return render_template("bot_detail.html", bot=bot, stats=stats, position=pos, legs=legs)
 
 
-# ---------------------------------------------------------------------------
-# Edit bot
-# ---------------------------------------------------------------------------
+# ── Edit ─────────────────────────────────────────────────────────────────────
 
 @labs_bp.route("/<bot_id>/edit", methods=["GET", "POST"])
 def edit_bot(bot_id):
@@ -83,27 +76,17 @@ def edit_bot(bot_id):
     if request.method == "POST":
         data = _form_to_dict(request.form)
         update_bot(bot_id, data)
+        legs = _parse_legs(request.form)
+        save_legs(bot_id, legs)
         return redirect(url_for("labs.bot_detail", bot_id=bot_id))
 
-    bot["entry_rules"] = json.loads(bot.get("entry_rules_json", "[]"))
-    bot["exit_rules"]  = json.loads(bot.get("exit_rules_json",  "[]"))
-    return render_template(
-        "bot_form.html",
-        bot=bot,
-        underlyings=list(UNDERLYINGS.keys()),
-        strategy_types=STRATEGY_TYPES,
-        entry_rule_tokens=ENTRY_RULE_TOKENS,
-        exit_rule_tokens=EXIT_RULE_TOKENS,
-        expiry_modes=EXPIRY_MODES,
-        strike_modes=STRIKE_MODES,
-        action_url=url_for("labs.edit_bot", bot_id=bot_id),
-        title=f"Edit — {bot['name']}",
-    )
+    legs = {lg["leg_code"]: lg for lg in get_legs(bot_id)}
+    return render_template("bot_form.html", bot=bot, legs=legs,
+                           action_url=url_for("labs.edit_bot", bot_id=bot_id),
+                           title=f"Edit — {bot['name']}", **_FORM_DEFAULTS)
 
 
-# ---------------------------------------------------------------------------
-# Clone / status / archive
-# ---------------------------------------------------------------------------
+# ── Clone / status / archive ─────────────────────────────────────────────────
 
 @labs_bp.route("/<bot_id>/clone", methods=["POST"])
 def clone(bot_id):
@@ -114,7 +97,7 @@ def clone(bot_id):
 
 @labs_bp.route("/<bot_id>/status", methods=["POST"])
 def toggle_status(bot_id):
-    bot    = get_bot(bot_id)
+    bot = get_bot(bot_id)
     if bot is None:
         return "Not found", 404
     if bot["status"] == "archived":
@@ -130,50 +113,60 @@ def archive(bot_id):
     return redirect(url_for("labs.dashboard"))
 
 
-# ---------------------------------------------------------------------------
-# JSON APIs
-# ---------------------------------------------------------------------------
+# ── JSON APIs ────────────────────────────────────────────────────────────────
 
 @labs_bp.route("/api/summary")
 def api_summary():
     return jsonify(get_all_bots_summary())
 
-
 @labs_bp.route("/api/<bot_id>/trades")
 def api_trades(bot_id):
-    limit = int(request.args.get("limit", 200))
-    return jsonify(get_trade_log(bot_id, limit=limit))
-
+    return jsonify(get_trade_log(bot_id, limit=int(request.args.get("limit", 200))))
 
 @labs_bp.route("/api/<bot_id>/signals")
 def api_signals(bot_id):
-    limit = int(request.args.get("limit", 200))
-    return jsonify(get_signal_log(bot_id, limit=limit))
-
+    return jsonify(get_signal_log(bot_id, limit=int(request.args.get("limit", 200))))
 
 @labs_bp.route("/api/<bot_id>/equity")
 def api_equity(bot_id):
     return jsonify(get_equity_curve(bot_id))
 
-
 @labs_bp.route("/api/<bot_id>/stats")
 def api_stats(bot_id):
     return jsonify(get_performance_stats(bot_id))
 
+@labs_bp.route("/api/<bot_id>/legs")
+def api_legs(bot_id):
+    return jsonify(get_legs(bot_id))
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _form_to_dict(form) -> dict:
-    d = dict(form)
-    # Multi-select fields come as lists; convert others to scalar
-    for key, val in d.items():
-        if isinstance(val, list) and key not in ("entry_rules_json", "exit_rules_json"):
-            d[key] = val[0] if val else ""
-    # Convert checkbox multi-select lists to JSON strings
-    entry_rules = form.getlist("entry_rules")
-    exit_rules  = form.getlist("exit_rules")
-    d["entry_rules_json"] = json.dumps(entry_rules)
-    d["exit_rules_json"]  = json.dumps(exit_rules)
+    d = {}
+    for key in form.keys():
+        if key.startswith("leg_"):
+            continue                   # legs handled separately
+        vals = form.getlist(key)
+        d[key] = vals[0] if len(vals) == 1 else vals
+    # Keep old-style rule fields as JSON for backward compat
+    d["entry_rules_json"] = json.dumps(form.getlist("entry_rules"))
+    d["exit_rules_json"]  = json.dumps(form.getlist("exit_rules"))
     return d
+
+
+def _parse_legs(form) -> list[dict]:
+    """Extract per-leg config from form fields."""
+    legs = []
+    for code in LEG_CODES:
+        if not form.get(f"leg_{code}_enabled"):
+            continue
+        legs.append({
+            "leg_code":                code,
+            "entry_logic":             form.get(f"leg_{code}_entry_logic", "AND"),
+            "entry_conditions_json":   form.get(f"leg_{code}_entry_conditions", "[]"),
+            "entry_gates_json":        form.get(f"leg_{code}_entry_gates", "[]"),
+            "exit_conditions_json":    form.get(f"leg_{code}_exit_conditions", "[]"),
+            "stoploss_conditions_json": form.get(f"leg_{code}_stoploss_conditions", "[]"),
+        })
+    return legs

@@ -245,7 +245,76 @@ def clone_bot(source_bot_id: str, new_name: str | None = None, conn=None) -> dic
             "version":      new_version,
             "cloned_from":  source_bot_id,
         }
-        return create_bot({**source, **overrides}, conn=conn)
+        new_bot = create_bot({**source, **overrides}, conn=conn)
+        # Copy legs from source to new bot
+        source_legs = get_legs(source_bot_id, conn=conn)
+        if source_legs:
+            save_legs(new_bot_id, source_legs, conn=conn)
+        return new_bot
+    finally:
+        if close:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Leg CRUD
+# ---------------------------------------------------------------------------
+
+LEG_CODES = ["C1", "C2", "P1", "P2"]
+
+
+def save_legs(bot_id: str, legs_data: list[dict], conn=None) -> None:
+    """
+    Upsert all legs for a bot.
+    legs_data: list of dicts with keys matching lab_bot_legs columns.
+    Legs not present in legs_data are disabled (not deleted).
+    """
+    close = conn is None
+    if conn is None:
+        conn = get_conn()
+    now = _now()
+    try:
+        with conn:
+            # Disable all existing legs first, then re-enable those in legs_data
+            conn.execute("UPDATE lab_bot_legs SET is_enabled=0 WHERE bot_id=?", (bot_id,))
+            for leg in legs_data:
+                leg_code = leg["leg_code"]
+                conn.execute("""
+                    INSERT INTO lab_bot_legs
+                        (id, bot_id, leg_code, is_enabled, entry_logic,
+                         entry_conditions_json, entry_gates_json,
+                         exit_conditions_json, stoploss_conditions_json, created_at)
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bot_id, leg_code) DO UPDATE SET
+                        is_enabled=1,
+                        entry_logic=excluded.entry_logic,
+                        entry_conditions_json=excluded.entry_conditions_json,
+                        entry_gates_json=excluded.entry_gates_json,
+                        exit_conditions_json=excluded.exit_conditions_json,
+                        stoploss_conditions_json=excluded.stoploss_conditions_json
+                """, (
+                    str(uuid.uuid4()), bot_id, leg_code,
+                    leg.get("entry_logic", "AND"),
+                    _to_json(leg.get("entry_conditions_json", "[]")),
+                    _to_json(leg.get("entry_gates_json", "[]")),
+                    _to_json(leg.get("exit_conditions_json", "[]")),
+                    _to_json(leg.get("stoploss_conditions_json", "[]")),
+                    now,
+                ))
+    finally:
+        if close:
+            conn.close()
+
+
+def get_legs(bot_id: str, conn=None) -> list[dict]:
+    close = conn is None
+    if conn is None:
+        conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM lab_bot_legs WHERE bot_id=? ORDER BY leg_code", (bot_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         if close:
             conn.close()
