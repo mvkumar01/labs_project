@@ -271,7 +271,7 @@ def delete_bot(bot_id: str, conn=None) -> None:
             conn.execute("DELETE FROM trades WHERE bot_id=?", (bot_id,))
             conn.execute("DELETE FROM positions WHERE bot_id=?", (bot_id,))
             conn.execute("DELETE FROM signals WHERE bot_id=?", (bot_id,))
-            conn.execute("DELETE FROM daily_summaries WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM daily_summary WHERE bot_id=?", (bot_id,))
             conn.execute("DELETE FROM bot_params WHERE bot_id=?", (bot_id,))
             conn.execute("DELETE FROM bots WHERE bot_id=?", (bot_id,))
     finally:
