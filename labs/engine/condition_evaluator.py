@@ -5,10 +5,14 @@ Condition JSON format:
     {"type": "rsi_lt", "timeframe": "5m", "params": {"period": 3, "value": 30}, "enabled": true}
 
 Supports:
-    Entry conditions:  rsi_gt, rsi_lt, ema_gt, ema_lt, adx_diplus_gt_diminus, adx_diminus_gt_diplus
-    Entry gates:       spot_gt_sma, spot_lt_sma, spot_above_sma_by, spot_below_sma_by, ema_gt, ema_lt
+    Entry conditions:  rsi_gt, rsi_lt, ema_gt, ema_lt, sma_gt, sma_lt,
+                       adx_diplus_gt_diminus, adx_diminus_gt_diplus
+    Entry gates:       spot_gt_sma, spot_lt_sma, spot_above_sma_by, spot_below_sma_by,
+                       ema_gt, ema_lt, sma_gt, sma_lt
     Exit/SL:           spot_gain_gte, spot_loss_gte, ltp_gain_gte, ltp_loss_gte,
-                       rsi_gt, rsi_lt, ema_gt, ema_lt, sma_gt_spot, sma_lt_spot
+                       spot_gt_sma, spot_lt_sma,
+                       rsi_gt, rsi_lt, ema_gt, ema_lt, sma_gt, sma_lt,
+                       sma_gt_spot, sma_lt_spot
 """
 import math
 from typing import Any
@@ -91,6 +95,16 @@ def evaluate_condition(
             period = int(params.get("period", 14))
             _, dip, dim = adx_values(df, period)
             return (not math.isnan(dim)) and dim > dip
+
+        case "sma_gt":
+            pa = int(params.get("period_a", 9))
+            pb = int(params.get("period_b", 21))
+            return sma_value(df, pa) > sma_value(df, pb)
+
+        case "sma_lt":
+            pa = int(params.get("period_a", 9))
+            pb = int(params.get("period_b", 21))
+            return sma_value(df, pa) < sma_value(df, pb)
 
         # ── GATE: spot vs SMA ─────────────────────────────────────────────
         case "spot_gt_sma":

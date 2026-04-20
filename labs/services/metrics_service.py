@@ -164,7 +164,8 @@ def get_performance_stats(bot_id: str, conn=None) -> dict:
             (bot_id,),
         ).fetchall()
         if not rows:
-            return {"total_trades": 0}
+            return {"total_trades": 0, "wins": 0, "losses": 0, "win_pct": 0,
+                    "total_pnl_rs": 0, "avg_hold_mins": 0, "exit_reasons": {}}
         total  = len(rows)
         wins   = sum(1 for r in rows if r["pnl_rs"] > 0)
         losses = sum(1 for r in rows if r["pnl_rs"] <= 0)
