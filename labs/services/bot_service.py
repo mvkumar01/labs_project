@@ -257,6 +257,29 @@ def clone_bot(source_bot_id: str, new_name: str | None = None, conn=None) -> dic
 
 
 # ---------------------------------------------------------------------------
+# Delete
+# ---------------------------------------------------------------------------
+
+def delete_bot(bot_id: str, conn=None) -> None:
+    """Permanently delete a bot and all associated data."""
+    close = conn is None
+    if conn is None:
+        conn = get_conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM lab_bot_legs WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM trades WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM positions WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM signals WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM daily_summaries WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM bot_params WHERE bot_id=?", (bot_id,))
+            conn.execute("DELETE FROM bots WHERE bot_id=?", (bot_id,))
+    finally:
+        if close:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Leg CRUD
 # ---------------------------------------------------------------------------
 

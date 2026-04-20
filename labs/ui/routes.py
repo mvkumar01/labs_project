@@ -7,7 +7,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, jsonif
 
 from config.labs_config import UNDERLYINGS, STRATEGY_TYPES, EXPIRY_MODES, STRIKE_MODES
 from labs.services.bot_service import (
-    list_bots, get_bot, create_bot, update_bot, update_status, clone_bot,
+    list_bots, get_bot, create_bot, update_bot, update_status, clone_bot, delete_bot,
     save_legs, get_legs, LEG_CODES,
 )
 from labs.services.metrics_service import (
@@ -110,6 +110,17 @@ def toggle_status(bot_id):
 @labs_bp.route("/<bot_id>/archive", methods=["POST"])
 def archive(bot_id):
     update_status(bot_id, "archived")
+    return redirect(url_for("labs.dashboard"))
+
+
+@labs_bp.route("/<bot_id>/delete", methods=["POST"])
+def delete(bot_id):
+    bot = get_bot(bot_id)
+    if bot is None:
+        return "Not found", 404
+    if bot["status"] == "active":
+        return "Pause the bot before deleting.", 400
+    delete_bot(bot_id)
     return redirect(url_for("labs.dashboard"))
 
 
