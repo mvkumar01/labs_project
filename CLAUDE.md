@@ -43,7 +43,7 @@ labs_project/
 │   │   ├── condition_evaluator.py  TFCache + per-condition evaluators (entry/gate/exit/SL)
 │   │   ├── data_loader.py          CSV → DataFrame for spot + options
 │   │   ├── indicator_engine.py     RSI, EMA, SMA, ADX/DI+/DI−, ATR; single-value helpers
-│   │   ├── paper_executor.py       open_position / close_position → DB
+│   │   ├── paper_executor.py       open_position / close_position → DB; charges computation
 │   │   ├── position_manager.py     Exit checks: LTP SL/target, spot SL/target, indicator
 │   │   ├── resampler.py            get_resampled_data(df_1min, tf, now) → 1m/5m/10m/15m
 │   │   └── strategy_runner.py      Main 60s loop: leg-based or classic path per bot
@@ -57,7 +57,7 @@ labs_project/
 │   │   └── trend_pullback.py
 │   │
 │   ├── services/
-│   │   ├── bot_service.py          CRUD for bots + legs (save_legs, get_legs, clone_bot)
+│   │   ├── bot_service.py          CRUD for bots + legs (save_legs, get_legs, clone_bot, delete_bot)
 │   │   └── metrics_service.py      P&L, trade log, signal log, equity curve, stats
 │   │
 │   └── ui/
@@ -91,9 +91,33 @@ Seven tables in `storage/labs.db`:
 | `bot_params` | All tunable params (RSI periods, EMA, session times, expiry mode…) |
 | `lab_bot_legs` | Per-leg JSON condition sets for multi-leg bots |
 | `positions` | Open paper positions (entry_ltp, entry_spot, symbol, side, leg_code) |
-| `trades` | Completed trades (entry+exit LTP, pnl_pts, pnl_rs, exit_reason) |
+| `trades` | Completed trades (entry+exit LTP, pnl_pts, pnl_rs, charges, net_pnl_rs, exit_reason) |
 | `signals` | Every evaluated signal (whether acted on or skipped) |
-| `daily_summaries` | Per-bot daily P&L rollup (written by eod_maintenance.py) |
+| `daily_summary` | Per-bot daily P&L rollup (written by eod_maintenance.py) |
+
+**Important:** The table is `daily_summary` (singular), not `daily_summaries`.
+
+### trades key columns
+```
+pnl_pts     — option points: exit_ltp − entry_ltp
+pnl_rs      — gross rupees: pnl_pts × lot_size × qty
+charges     — brokerage + taxes (see formula below)
+net_pnl_rs  — pnl_rs − charges  ← used in all P&L metrics and display
+```
+
+### Charges formula
+```
+Q        = lot_size × qty
+Turnover = (entry_ltp + exit_ltp) × Q
+Charges  = 40 + 0.00053 × Turnover + 0.001 × (exit_ltp × Q)
+```
+
+### Lot sizes (as of Apr 2026)
+| Underlying | Lot size | Strike step |
+|---|---|---|
+| NIFTY | 65 | 50 |
+| BANKNIFTY | 15 | 100 |
+| SENSEX | 20 | 100 |
 
 ### lab_bot_legs schema
 ```sql
@@ -112,6 +136,12 @@ CREATE TABLE lab_bot_legs (
 );
 ```
 
+### Safe migrations in init_db()
+Each startup checks for missing columns and adds them — safe to call repeatedly:
+- `positions.leg_code` (TEXT)
+- `trades.charges` (REAL DEFAULT 0)
+- `trades.net_pnl_rs` (REAL DEFAULT 0)
+
 ---
 
 ## 4. Bot Architecture
@@ -120,12 +150,12 @@ CREATE TABLE lab_bot_legs (
 
 **Leg-based path** (activated when `lab_bot_legs` rows exist for a bot):
 - Each bot has up to 4 independent legs: `C1`, `C2` (CE/call legs), `P1`, `P2` (PE/put legs)
-- Each leg has 4 condition sections (each stored as JSON array):
+- Each leg has 4 condition sections (stored as JSON arrays):
   - **Entry Conditions** — AND or OR logic
   - **Entry Gates** — all must pass (AND-only)
-  - **Exit Conditions** — first match wins
+  - **Exit Conditions** — first match wins (checked at 5-min bar close only)
   - **Stoploss Conditions** — checked every tick, first match wins
-- Evaluated by `condition_evaluator.py`; SL checked every tick, exits only at 5-min bar close
+- Evaluated by `condition_evaluator.py`
 
 **Classic path** (no legs configured):
 - Uses Strategy class from `labs/strategies/registry.py`
@@ -135,16 +165,28 @@ CREATE TABLE lab_bot_legs (
 
 | Section | Supported types |
 |---|---|
-| Entry | `rsi_lt`, `rsi_gt`, `ema_gt`, `ema_lt`, `adx_diplus_gt_diminus`, `adx_diminus_gt_diplus` |
-| Gate | `spot_gt_sma`, `spot_lt_sma`, `spot_above_sma_by`, `spot_below_sma_by`, `ema_gt`, `ema_lt` |
-| Exit / SL | `spot_gain_gte`, `spot_loss_gte`, `ltp_gain_gte`, `ltp_loss_gte`, `rsi_gt`, `rsi_lt`, `ema_gt`, `ema_lt`, `sma_gt_spot`, `sma_lt_spot` |
+| Entry | `rsi_lt`, `rsi_gt`, `ema_gt`, `ema_lt`, `sma_gt`, `sma_lt`, `adx_diplus_gt_diminus`, `adx_diminus_gt_diplus` |
+| Gate | `spot_gt_sma`, `spot_lt_sma`, `spot_above_sma_by`, `spot_below_sma_by`, `ema_gt`, `ema_lt`, `sma_gt`, `sma_lt` |
+| Exit | `spot_gain_gte`, `spot_loss_gte`, `ltp_gain_gte`, `ltp_loss_gte`, `spot_gt_sma`, `spot_lt_sma`, `rsi_gt`, `rsi_lt`, `ema_gt`, `ema_lt`, `sma_gt`, `sma_lt`, `sma_gt_spot`, `sma_lt_spot` |
+| Stoploss | `spot_loss_gte`, `ltp_loss_gte`, `spot_gain_gte`, `ltp_gain_gte`, `spot_gt_sma`, `spot_lt_sma`, `rsi_gt`, `rsi_lt`, `sma_gt`, `sma_lt` |
 
-Every condition JSON object: `{"type": "rsi_lt", "timeframe": "5m", "params": {"period": 3, "value": 30}, "enabled": true}`
+- `ema_gt` / `ema_lt` — EMA(period_a) vs EMA(period_b)
+- `sma_gt` / `sma_lt` — SMA(period_a) vs SMA(period_b) (labelled "MA" in the UI)
+- `spot_gt_sma` / `spot_lt_sma` — current spot vs SMA(period)
 
-Supported timeframes: `1m`, `5m`, `10m`, `15m` — all resampled from 1-min live data via `TFCache`.
+Every condition JSON: `{"type": "rsi_lt", "timeframe": "5m", "params": {"period": 3, "value": 30}, "enabled": true}`
+
+Supported timeframes: `1m`, `5m`, `10m`, `15m` — resampled from 1-min live data via `TFCache`.
+
+**To add a new condition type:** add a `case` to `condition_evaluator.py` AND an entry to `CONDITION_DEFS` in `static/labs.js`.
 
 ### Contract selection
-Bot-level settings: `expiry_mode` (nearest_weekly / nearest_monthly), `strike_mode` (atm / otm1 / itm1), `strike_offset_pts`, `hold_same_contract`.
+Bot-level settings: `expiry_mode` (nearest_weekly / next_weekly / monthly), `strike_mode` (atm / itm_N / otm_N), `strike_offset_pts`, `hold_same_contract`.
+
+### Bot status lifecycle
+- `paused` → can be edited, activated, cloned, or deleted
+- `active` → monitored by strategy_runner; cannot be edited or deleted
+- `archived` → not monitored; visible on dashboard but cannot change status; can be deleted
 
 ---
 
@@ -177,17 +219,19 @@ Never use plain `git pull` on PA — runtime-generated files (token, db) block t
 - All DB functions accept `conn=None`; open+close their own connection when None
 - Never re-implement indicator logic inline — use helpers from `indicator_engine.py` (`rsi_value`, `ema_value`, `sma_value`, `adx_values`)
 - Never re-implement resampling inline — use `get_resampled_data()` from `resampler.py`
+- All P&L metrics use `net_pnl_rs` — never sum `pnl_rs` directly in queries
 - New condition types: add to `condition_evaluator.py` `match` block AND to `CONDITION_DEFS` in `labs.js`
 
 ---
 
 ## 7. Hard Rules
 
-1. **Never place real orders** — this is paper trading only. `paper_executor.py` must never call `kite.place_order()`.
+1. **Never place real orders** — `paper_executor.py` must never call `kite.place_order()`.
 2. **Never modify `data/live/`** — raw market data, source of truth.
-3. **Do not run `run_collector.py` or `strategy_runner.py` locally** — PA-only; local runs cause duplicate data writes.
-4. **`zerodha_creds.json` is tracked** (private repo). Never commit it to a public repo.
+3. **Do not run `run_collector.py` or `strategy_runner.py` locally** — PA-only.
+4. **`zerodha_creds.json` is tracked** (private repo). Never commit to a public repo.
 5. **`zerodha_token.json` is gitignored** — regenerated daily by PA.
+6. **Table is `daily_summary`** (singular) — not `daily_summaries`. Use exact name in all queries.
 
 ---
 
