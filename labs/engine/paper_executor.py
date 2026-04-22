@@ -112,7 +112,11 @@ def open_position(
     try:
         with conn:
             conn.execute("""
-                INSERT INTO positions VALUES (
+                INSERT INTO positions (
+                    position_id, bot_id, trade_date, underlying, side,
+                    symbol, strike, expiry, entry_time, entry_ltp,
+                    entry_spot, lot_size, qty, status
+                ) VALUES (
                     :position_id, :bot_id, :trade_date, :underlying, :side,
                     :symbol, :strike, :expiry, :entry_time, :entry_ltp,
                     :entry_spot, :lot_size, :qty, :status
