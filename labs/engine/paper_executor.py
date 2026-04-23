@@ -3,6 +3,7 @@ Paper trading executor.
 Writes fills to SQLite — no real orders are sent.
 """
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,7 @@ from collector.instruments import build_option_symbols
 from config.labs_config import UNDERLYINGS
 
 IST = pytz.timezone("Asia/Kolkata")
+log = logging.getLogger(__name__)
 
 
 def _now_ist() -> str:
@@ -77,12 +79,20 @@ def open_position(
     """
     contract = _resolve_contract(kite, bot, params, signal_side, spot)
     if contract is None:
+        log.warning(
+            f"[{bot['bot_id']}] open_position rejected: no matching contract "
+            f"side={signal_side} spot={spot:.0f}"
+        )
         return None
 
     # Get LTP from latest options snapshot
     from labs.engine.data_loader import latest_ltp
     ltp = latest_ltp(options_df, contract["symbol"])
     if ltp is None or ltp == 0:
+        log.warning(
+            f"[{bot['bot_id']}] open_position rejected: missing LTP "
+            f"symbol={contract['symbol']}"
+        )
         return None
 
     trade_date  = datetime.now(IST).strftime("%Y-%m-%d")

@@ -71,6 +71,7 @@ def generate_and_save_token() -> dict:
     creds = _load_creds()
     kite  = KiteConnect(api_key=creds["api_key"])
 
+    print(f"[labs-auth] cwd={Path.cwd()} base={BASE_DIR}")
     request_token = _get_request_token(kite, creds)
     session_data  = kite.generate_session(request_token, api_secret=creds["api_secret"])
     access_token  = session_data["access_token"]

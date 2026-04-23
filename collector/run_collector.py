@@ -46,7 +46,7 @@ def _next_minute_boundary(now: datetime) -> datetime:
 
 
 def run():
-    log.info("Labs collector started.")
+    log.info(f"Labs collector started. cwd={Path.cwd()} base={BASE_DIR}")
     kite = get_kite()
 
     while True:
