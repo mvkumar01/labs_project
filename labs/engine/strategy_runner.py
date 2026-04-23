@@ -441,10 +441,11 @@ def run():
         )
 
         if not _market_open(now):
-            if now.strftime("%H:%M") > MARKET_CLOSE:
-                log.info("Market closed. Runner exiting.")
-                break
-            time.sleep(10)
+            sleep_for = 60
+            log.info(
+                f"Market closed. Runner sleeping {sleep_for}s before retry."
+            )
+            time.sleep(sleep_for)
             continue
 
         conn = get_conn()
