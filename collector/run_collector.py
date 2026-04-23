@@ -22,6 +22,8 @@ from collector.options_collector import collect_options
 from config.labs_config import UNDERLYINGS, MARKET_OPEN, MARKET_CLOSE, COLLECTOR_INTERVAL_SECS, LOG_DIR
 
 IST = pytz.timezone("Asia/Kolkata")
+MARKET_OPEN_TIME = datetime.strptime(MARKET_OPEN, "%H:%M").time()
+MARKET_CLOSE_TIME = datetime.strptime(MARKET_CLOSE, "%H:%M").time()
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
@@ -36,8 +38,8 @@ log = logging.getLogger(__name__)
 
 
 def _market_open(now: datetime) -> bool:
-    t = now.strftime("%H:%M")
-    return MARKET_OPEN <= t <= MARKET_CLOSE
+    t = now.time()
+    return MARKET_OPEN_TIME <= t <= MARKET_CLOSE_TIME
 
 
 def _next_minute_boundary(now: datetime) -> datetime:
@@ -52,13 +54,24 @@ def run():
     while True:
         now        = datetime.now(IST)
         trade_date = now.strftime("%Y-%m-%d")
+        market_open = _market_open(now)
+        log.info(
+            "loop now=%s tz=%s hms=%s MARKET_OPEN=%s MARKET_CLOSE=%s market_open=%s",
+            now.isoformat(),
+            now.tzinfo,
+            now.strftime("%H:%M:%S"),
+            MARKET_OPEN,
+            MARKET_CLOSE,
+            market_open,
+        )
 
-        if not _market_open(now):
-            if now.strftime("%H:%M") > MARKET_CLOSE:
-                log.info("Market closed. Collector exiting.")
-                break
-            wait = (_next_minute_boundary(now) - now).total_seconds()
-            time.sleep(max(wait, 5))
+        if not market_open:
+            wait = max((_next_minute_boundary(now) - now).total_seconds(), 5)
+            log.info(
+                "Market closed. Collector sleeping %.1fs before retry.",
+                wait,
+            )
+            time.sleep(wait)
             continue
 
         ts = now.replace(second=0, microsecond=0)
