@@ -430,9 +430,9 @@ def process_bot(bot, trade_date, now, kite, conn):
 def run():
     init_db()
     log.info(f"Labs strategy runner started. cwd={Path.cwd()} base={BASE_DIR}")
-    kite = get_kite()
 
     while True:
+        kite = get_kite()
         now        = datetime.now(IST)
         trade_date = now.strftime("%Y-%m-%d")
         log.info(

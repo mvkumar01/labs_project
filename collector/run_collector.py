@@ -49,9 +49,9 @@ def _next_minute_boundary(now: datetime) -> datetime:
 
 def run():
     log.info(f"Labs collector started. cwd={Path.cwd()} base={BASE_DIR}")
-    kite = get_kite()
 
     while True:
+        kite = get_kite()
         now        = datetime.now(IST)
         trade_date = now.strftime("%Y-%m-%d")
         market_open = _market_open(now)
