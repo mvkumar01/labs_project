@@ -11,6 +11,12 @@ document.addEventListener("DOMContentLoaded", () => {
     loadEquityChart();
     loadTradeLog();
     loadSignalLog();
+
+    const tradeMoreBtn = document.getElementById("tradeMoreBtn");
+    if (tradeMoreBtn) tradeMoreBtn.addEventListener("click", loadMoreTrades);
+
+    const signalMoreBtn = document.getElementById("signalMoreBtn");
+    if (signalMoreBtn) signalMoreBtn.addEventListener("click", loadMoreSignals);
   }
 });
 
@@ -297,21 +303,28 @@ async function loadEquityChart() {
 
 // ── Trade log ────────────────────────────────────────────────────────────────
 
+const LOG_PAGE_SIZE = 50;
+let tradeLogLimit = LOG_PAGE_SIZE;
+let signalLogLimit = LOG_PAGE_SIZE;
+
 async function loadTradeLog() {
   const tbody = document.getElementById("tradeBody");
+  const btn = document.getElementById("tradeMoreBtn");
   if (!tbody) return;
 
   let trades;
   try {
-    const res = await fetch(`/labs/api/${BOT_ID}/trades`);
+    const res = await fetch(`/labs/api/${BOT_ID}/trades?limit=${tradeLogLimit}`);
     trades = await res.json();
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="11" style="color:#f87171">Failed to load.</td></tr>';
+    if (btn) btn.disabled = false;
     return;
   }
 
   if (!trades.length) {
     tbody.innerHTML = '<tr><td colspan="11" style="color:#64748b">No trades yet.</td></tr>';
+    if (btn) btn.style.display = "none";
     return;
   }
 
@@ -335,28 +348,43 @@ async function loadTradeLog() {
         <td style="color:#94a3b8">−${charges.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
         <td class="${cls}">₹${netRs > 0 ? "+" : ""}${netRs.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
         <td>${t.exit_reason}</td>
-        <td>${t.holding_mins}</td>
+      <td>${t.holding_mins}</td>
       </tr>`;
   }).join("");
+
+  if (btn) {
+    btn.style.display = trades.length >= tradeLogLimit ? "" : "none";
+    btn.disabled = false;
+  }
+}
+
+async function loadMoreTrades() {
+  const btn = document.getElementById("tradeMoreBtn");
+  if (btn) btn.disabled = true;
+  tradeLogLimit += LOG_PAGE_SIZE;
+  await loadTradeLog();
 }
 
 // ── Signal log ───────────────────────────────────────────────────────────────
 
 async function loadSignalLog() {
   const tbody = document.getElementById("signalBody");
+  const btn = document.getElementById("signalMoreBtn");
   if (!tbody) return;
 
   let signals;
   try {
-    const res = await fetch(`/labs/api/${BOT_ID}/signals`);
+    const res = await fetch(`/labs/api/${BOT_ID}/signals?limit=${signalLogLimit}`);
     signals = await res.json();
   } catch (e) {
     tbody.innerHTML = '<tr><td colspan="6" style="color:#f87171">Failed to load.</td></tr>';
+    if (btn) btn.disabled = false;
     return;
   }
 
   if (!signals.length) {
     tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b">No signals yet.</td></tr>';
+    if (btn) btn.style.display = "none";
     return;
   }
 
@@ -370,7 +398,19 @@ async function loadSignalLog() {
         <td>${parseFloat(s.bar_close).toFixed(0)}</td>
         <td>${s.rsi !== null ? parseFloat(s.rsi).toFixed(1) : "—"}</td>
         <td>${actedLabel}</td>
-        <td style="color:#64748b">${s.skip_reason || "—"}</td>
+      <td style="color:#64748b">${s.skip_reason || "—"}</td>
       </tr>`;
   }).join("");
+
+  if (btn) {
+    btn.style.display = signals.length >= signalLogLimit ? "" : "none";
+    btn.disabled = false;
+  }
+}
+
+async function loadMoreSignals() {
+  const btn = document.getElementById("signalMoreBtn");
+  if (btn) btn.disabled = true;
+  signalLogLimit += LOG_PAGE_SIZE;
+  await loadSignalLog();
 }
