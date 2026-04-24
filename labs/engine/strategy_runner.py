@@ -180,15 +180,70 @@ def _needs_sma50_warmup(legs: list[dict]) -> bool:
     return False
 
 
-def _log_warmup_if_needed(bot: dict, df_1min, now) -> bool:
+def _log_warmup_if_needed(bot: dict, df_1min, now, required_bars: int = 50) -> bool:
+    meta = getattr(df_1min, "attrs", {}).get("warmup", {}) or {}
     bars = len(get_resampled_data(df_1min, "5m", now=now))
-    if bars < 50:
+    ready = bars >= required_bars
+    log.info(
+        f"[{bot['bot_id']}:{bot['name']}] warmup symbol={bot['underlying']} "
+        f"live_rows={meta.get('live_rows', 0)} historical_rows_loaded={meta.get('historical_rows', 0)} "
+        f"completed_5m_bars={bars} SMA50 ready={'YES' if ready else 'NO'}"
+    )
+    if not ready:
         log.warning(
             f"[{bot['bot_id']}:{bot['name']}] insufficient warmup for SMA50 "
-            f"bars_available={bars} bars_required=50"
+            f"symbol={bot['underlying']} bars_available={bars} bars_required={required_bars}"
         )
-        return False
-    return True
+    return ready
+
+
+def _force_eod_square_off(conn, now) -> int:
+    if not _past_eod(now):
+        return 0
+
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status='open' ORDER BY trade_date, entry_time"
+    ).fetchall()
+    positions = [dict(r) for r in rows]
+    if not positions:
+        return 0
+
+    log.info(
+        f"EOD square-off triggered open_positions={len(positions)} "
+        f"now={now.strftime('%Y-%m-%d %H:%M:%S')} cutoff={EOD_CUTOFF}"
+    )
+
+    spot_cache: dict[str, float] = {}
+    options_cache: dict[str, object] = {}
+    closed = 0
+
+    for position in positions:
+        underlying = position["underlying"]
+        trade_date = position["trade_date"]
+
+        if underlying not in spot_cache:
+            spot_df = load_spot_1min(underlying, trade_date)
+            options_cache[underlying] = load_options_1min(underlying, trade_date)
+            if not spot_df.empty:
+                spot_cache[underlying] = float(spot_df.iloc[-1]["close"])
+            else:
+                spot_cache[underlying] = float(position["entry_spot"])
+
+        current_spot = spot_cache[underlying]
+        options_df = options_cache[underlying]
+        current_ltp = latest_ltp(options_df, position["symbol"])
+        if current_ltp is None:
+            current_ltp = float(position["entry_ltp"])
+
+        trade = close_position(position, current_ltp, current_spot, "eod", conn=conn)
+        log.info(
+            f"EOD square-off triggered symbol={position['symbol']} qty={position['qty']} "
+            f"exit_price={current_ltp:.2f} pnl={trade['pnl_pts']:+.1f}pts "
+            f"gross_rs={trade['pnl_rs']:+.2f} net_rs={trade['net_pnl_rs']:+.2f}"
+        )
+        closed += 1
+
+    return closed
 
 
 # ── Leg-based processing ──────────────────────────────────────────────────────
@@ -315,7 +370,7 @@ def _process_leg(
 
 def process_bot_with_legs(bot, legs, trade_date, now, kite, conn):
     underlying = bot["underlying"]
-    df_1min    = load_spot_1min_with_warmup(underlying, trade_date, min_rows=360, lookback_days=5)
+    df_1min    = load_spot_1min_with_warmup(underlying, trade_date, target_completed_bars=70, lookback_days=10)
     options_df  = load_options_1min(underlying, trade_date)
     log.info(
         f"[{bot['bot_id']}:{bot['name']}] active={bot['status']=='active'} "
@@ -351,7 +406,7 @@ def process_bot_classic(bot, trade_date, now, kite, conn):
     session_end   = params.get("session_end",   "15:15")
     t = now.strftime("%H:%M")
 
-    df_1min = load_spot_1min_with_warmup(underlying, trade_date, min_rows=360, lookback_days=5)
+    df_1min = load_spot_1min_with_warmup(underlying, trade_date, target_completed_bars=70, lookback_days=10)
     options_df = load_options_1min(underlying, trade_date)
     log.info(
         f"[{bot['bot_id']}:{bot['name']}] active={bot['status']=='active'} "
@@ -475,16 +530,21 @@ def run():
             f"market_open={_market_open(now)} 5m_close={_at_5min_close(now)}"
         )
 
-        if not _market_open(now):
-            sleep_for = 60
-            log.info(
-                f"Market closed. Runner sleeping {sleep_for}s before retry."
-            )
-            time.sleep(sleep_for)
-            continue
-
         conn = get_conn()
         try:
+            if _past_eod(now):
+                closed = _force_eod_square_off(conn, now)
+                if closed:
+                    log.info(f"EOD square-off complete closed_positions={closed}")
+
+            if not _market_open(now):
+                sleep_for = 60
+                log.info(
+                    f"Market closed. Runner sleeping {sleep_for}s before retry."
+                )
+                time.sleep(sleep_for)
+                continue
+
             bots = _load_active_bots(conn)
             log.info(f"active_bots={len(bots)}")
             for bot in bots:
@@ -499,6 +559,7 @@ def run():
         sleep_for = max((_next_minute_boundary(now) - datetime.now(IST)).total_seconds(), 1)
         log.info(f"sleeping {sleep_for:.1f}s")
         time.sleep(sleep_for)
+        continue
 
 
 if __name__ == "__main__":

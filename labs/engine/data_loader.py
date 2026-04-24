@@ -28,7 +28,7 @@ def load_spot_1min(underlying: str, trade_date: str) -> pd.DataFrame:
 def load_spot_1min_with_warmup(
     underlying: str,
     trade_date: str,
-    min_rows: int = 360,
+    target_completed_bars: int = 70,
     lookback_days: int = 5,
 ) -> pd.DataFrame:
     """
@@ -36,8 +36,10 @@ def load_spot_1min_with_warmup(
     1-min history for warmup. Keeps raw files untouched and preserves timestamps.
     """
     frames = []
-    seen_rows = 0
+    live_rows = 0
+    historical_rows = 0
     current = datetime.strptime(trade_date, "%Y-%m-%d").date()
+    min_rows = max(target_completed_bars * 5, 5)
 
     for delta in range(0, lookback_days + 1):
         day = current - timedelta(days=delta)
@@ -45,16 +47,34 @@ def load_spot_1min_with_warmup(
         if df.empty:
             continue
         frames.append(df)
-        seen_rows += len(df)
-        if seen_rows >= min_rows:
+        if day == current:
+            live_rows = len(df)
+        else:
+            historical_rows += len(df)
+        if live_rows + historical_rows >= min_rows:
             break
 
     if not frames:
-        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        empty.attrs["warmup"] = {
+            "underlying": underlying,
+            "trade_date": trade_date,
+            "live_rows": 0,
+            "historical_rows": 0,
+            "target_completed_bars": target_completed_bars,
+        }
+        return empty
 
     combined = pd.concat(reversed(frames), axis=0)
     combined = combined[~combined.index.duplicated(keep="last")]
     combined = combined.sort_index()
+    combined.attrs["warmup"] = {
+        "underlying": underlying,
+        "trade_date": trade_date,
+        "live_rows": live_rows,
+        "historical_rows": historical_rows,
+        "target_completed_bars": target_completed_bars,
+    }
     return combined
 
 

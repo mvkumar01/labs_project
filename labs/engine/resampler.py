@@ -39,7 +39,7 @@ def get_resampled_data(df_1min: pd.DataFrame, timeframe: str, now: datetime | No
         return completed
 
     rule = f"{minutes}min"
-    resampled = df_1min.resample(rule, label="right", closed="right").agg({
+    resampled = df_1min.resample(rule, label="left", closed="left").agg({
         "open":   "first",
         "high":   "max",
         "low":    "min",
@@ -47,7 +47,8 @@ def get_resampled_data(df_1min: pd.DataFrame, timeframe: str, now: datetime | No
         "volume": "sum",
     }).dropna(subset=["close"])
 
-    return resampled[resampled.index < now]
+    # With left-labeled bars, a bar is completed only after its right edge.
+    return resampled[(resampled.index + pd.Timedelta(minutes=minutes)) <= now]
 
 
 # Keep backward-compatible alias used by strategy_runner
