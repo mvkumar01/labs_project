@@ -34,6 +34,12 @@ STATE_DIR   = BASE_DIR / "storage" / "state"
 LOG_DIR     = BASE_DIR / "logs"
 TOKEN_PATH  = BASE_DIR / "config" / "zerodha_token.json"
 
+# Shared market-data store — consumed by both Labs and AlphaIMB.
+# Lives one level above both projects so neither owns it.
+SHARED_MARKET_DIR  = BASE_DIR.parent / "shared_market_data"
+SHARED_LIVE_DIR    = SHARED_MARKET_DIR / "live"
+SHARED_ARCHIVE_DIR = SHARED_MARKET_DIR / "archive"
+
 STRATEGY_TYPES = [
     "rsi_sma",
     "rsi_ema_sma",

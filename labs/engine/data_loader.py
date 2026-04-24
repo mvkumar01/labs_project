@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config.labs_config import DATA_DIR
+from config.labs_config import DATA_DIR, SHARED_LIVE_DIR
 
 
 def load_spot_1min(underlying: str, trade_date: str) -> pd.DataFrame:
@@ -80,10 +80,12 @@ def load_spot_1min_with_warmup(
 
 def load_options_1min(underlying: str, trade_date: str) -> pd.DataFrame:
     """
-    Returns all options rows for the date.  No index set — callers filter by timestamp.
+    Returns all options rows for the date from the shared market store.
+    Canonical columns: timestamp, underlying, tradingsymbol, strike, option_type,
+                       expiry, ltp, bid, ask, oi, volume, spot
     Returns empty DataFrame if the file doesn't exist.
     """
-    path = DATA_DIR / f"{trade_date}_{underlying}_options_1min.csv"
+    path = SHARED_LIVE_DIR / trade_date / f"{underlying}_options_1min.csv"
     if not path.exists():
         return pd.DataFrame()
 
@@ -92,8 +94,10 @@ def load_options_1min(underlying: str, trade_date: str) -> pd.DataFrame:
 
 
 def latest_ltp(options_df: pd.DataFrame, symbol: str) -> float | None:
-    """Return the most recent LTP for a given option symbol, or None."""
-    rows = options_df[options_df["symbol"] == symbol]
+    """Return the most recent LTP for a given option tradingsymbol, or None."""
+    if options_df.empty:
+        return None
+    rows = options_df[options_df["tradingsymbol"] == symbol]
     if rows.empty:
         return None
     return float(rows.iloc[-1]["ltp"])

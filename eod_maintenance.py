@@ -12,12 +12,13 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytz
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from config.labs_config import DATA_DIR, ARCHIVE_DIR, LOG_DIR
+from config.labs_config import DATA_DIR, ARCHIVE_DIR, LOG_DIR, SHARED_LIVE_DIR, SHARED_ARCHIVE_DIR
 from storage.db import get_conn, init_db
 
 IST      = pytz.timezone("Asia/Kolkata")
@@ -94,6 +95,69 @@ def archive_today(trade_date: str) -> Path | None:
     return archive_path
 
 
+# ── Archive shared market CSVs → parquet.gz ──────────────────────────────────
+
+def archive_shared_market(trade_date: str) -> int:
+    """
+    Converts each {UNDERLYING}_options_1min.csv in SHARED_LIVE_DIR/<trade_date>/
+    to a gzip-compressed Parquet file in SHARED_ARCHIVE_DIR/<trade_date>/,
+    then removes the source CSV.  Returns number of files archived.
+    """
+    day_dir = SHARED_LIVE_DIR / trade_date
+    if not day_dir.exists():
+        print(f"[eod] No shared market data for {trade_date} — nothing to archive.")
+        return 0
+
+    archive_day = SHARED_ARCHIVE_DIR / trade_date
+    archive_day.mkdir(parents=True, exist_ok=True)
+
+    count = 0
+    for csv_path in sorted(day_dir.glob("*_options_1min.csv")):
+        df = pd.read_csv(csv_path, parse_dates=["timestamp"])
+        out_path = archive_day / csv_path.name.replace(".csv", ".parquet.gz")
+        df.to_parquet(out_path, compression="gzip", index=False)
+        csv_path.unlink()
+        count += 1
+
+    if count:
+        # Remove empty date directory
+        try:
+            day_dir.rmdir()
+        except OSError:
+            pass
+        print(f"[eod] Archived {count} shared market files → {archive_day}")
+    return count
+
+
+# ── Purge old shared market date dirs ────────────────────────────────────────
+
+def purge_old_shared_market(keep_days: int = KEEP_DAYS) -> int:
+    """Remove shared live date directories older than keep_days."""
+    if not SHARED_LIVE_DIR.exists():
+        return 0
+    cutoff = datetime.now(IST).date() - timedelta(days=keep_days)
+    deleted = 0
+    for day_dir in SHARED_LIVE_DIR.iterdir():
+        if not day_dir.is_dir():
+            continue
+        try:
+            from datetime import date
+            dir_date = date.fromisoformat(day_dir.name)
+        except ValueError:
+            continue
+        if dir_date < cutoff:
+            for f in day_dir.glob("*.csv"):
+                f.unlink()
+            try:
+                day_dir.rmdir()
+            except OSError:
+                pass
+            deleted += 1
+    if deleted:
+        print(f"[eod] Removed {deleted} old shared market date dirs.")
+    return deleted
+
+
 # ── Purge old raw CSVs ───────────────────────────────────────────────────────
 
 def purge_old_files(keep_days: int = KEEP_DAYS) -> int:
@@ -135,6 +199,8 @@ def run():
 
     archive_today(trade_date)
     purge_old_files()
+    archive_shared_market(trade_date)
+    purge_old_shared_market()
     print("[eod] Done.")
 
 
