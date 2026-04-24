@@ -15,12 +15,15 @@ Supports:
                        sma_gt_spot, sma_lt_spot
 """
 import math
+import logging
 from typing import Any
 
 import pandas as pd
 
 from labs.engine.indicator_engine import rsi_value, ema_value, sma_value, adx_values
 from labs.engine.resampler import get_resampled_data
+
+log = logging.getLogger(__name__)
 
 
 # ── Cache of resampled DataFrames for one evaluation cycle ───────────────────
@@ -109,29 +112,35 @@ def evaluate_condition(
         # ── GATE: spot vs SMA ─────────────────────────────────────────────
         case "spot_gt_sma":
             period = int(params.get("period", 50))
-            return close > sma_value(df, period)
+            sma = sma_value(df, period)
+            return close > sma
 
         case "spot_lt_sma":
             period = int(params.get("period", 50))
-            return close < sma_value(df, period)
+            sma = sma_value(df, period)
+            return close < sma
 
         case "spot_above_sma_by":
             period = int(params.get("period", 50))
             value  = float(params.get("value", 0))
-            return (close - sma_value(df, period)) >= value
+            sma = sma_value(df, period)
+            return (close - sma) >= value
 
         case "spot_below_sma_by":
             period = int(params.get("period", 50))
             value  = float(params.get("value", 0))
-            return (close - sma_value(df, period)) <= -abs(value)
+            sma = sma_value(df, period)
+            return (close - sma) <= -abs(value)
 
         case "sma_gt_spot":
             period = int(params.get("period", 50))
-            return sma_value(df, period) > close
+            sma = sma_value(df, period)
+            return sma > close
 
         case "sma_lt_spot":
             period = int(params.get("period", 50))
-            return sma_value(df, period) < close
+            sma = sma_value(df, period)
+            return sma < close
 
         # ── EXIT / SL: spot P&L ───────────────────────────────────────────
         case "spot_gain_gte":
@@ -190,7 +199,50 @@ def evaluate_gates(
     enabled = [g for g in gates if g.get("enabled", True)]
     if not enabled:
         return True
-    return all(evaluate_condition(g, tf_cache) for g in enabled)
+
+    results = []
+    for gate in enabled:
+        ok = evaluate_condition(gate, tf_cache)
+        tf = gate.get("timeframe", "5m")
+        df = tf_cache.get(tf)
+        close = float(df.iloc[-1]["close"]) if not df.empty else None
+        params = gate.get("params", {})
+        details = {
+            "type": gate.get("type"),
+            "timeframe": tf,
+            "close": close,
+            "params": params,
+            "ok": ok,
+        }
+
+        if gate.get("type") in {"spot_gt_sma", "spot_lt_sma", "spot_above_sma_by", "spot_below_sma_by", "sma_gt_spot", "sma_lt_spot"}:
+            period = int(params.get("period", 50))
+            sma = sma_value(df, period) if not df.empty else math.nan
+            details["sma"] = sma
+            if gate.get("type") == "spot_above_sma_by":
+                details["delta"] = None if close is None or math.isnan(sma) else close - sma
+                details["threshold"] = float(params.get("value", 0))
+            elif gate.get("type") == "spot_below_sma_by":
+                details["delta"] = None if close is None or math.isnan(sma) else close - sma
+                details["threshold"] = -abs(float(params.get("value", 0)))
+            elif gate.get("type") in {"spot_gt_sma", "spot_lt_sma"}:
+                details["comparison"] = f"{close} {'>' if gate.get('type') == 'spot_gt_sma' else '<'} {sma}"
+            elif gate.get("type") in {"sma_gt_spot", "sma_lt_spot"}:
+                details["comparison"] = f"{sma} {'>' if gate.get('type') == 'sma_gt_spot' else '<'} {close}"
+
+        elif gate.get("type") in {"ema_gt", "ema_lt"}:
+            pa = int(params.get("period_a", 9))
+            pb = int(params.get("period_b", 21))
+            ema_a = ema_value(df, pa) if not df.empty else math.nan
+            ema_b = ema_value(df, pb) if not df.empty else math.nan
+            details["ema_a"] = ema_a
+            details["ema_b"] = ema_b
+            details["comparison"] = f"{ema_a} {'>' if gate.get('type') == 'ema_gt' else '<'} {ema_b}"
+
+        log.info("[gate] type=%s ok=%s details=%s", gate.get("type"), ok, details)
+        results.append(ok)
+
+    return all(results)
 
 
 def evaluate_exits(

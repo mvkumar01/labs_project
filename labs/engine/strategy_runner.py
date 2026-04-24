@@ -24,7 +24,12 @@ from config.labs_config import (
     UNDERLYINGS, MARKET_OPEN, EOD_CUTOFF, MARKET_CLOSE,
     COLLECTOR_INTERVAL_SECS, LOG_DIR,
 )
-from labs.engine.data_loader import load_spot_1min, load_options_1min, latest_ltp
+from labs.engine.data_loader import (
+    load_spot_1min,
+    load_spot_1min_with_warmup,
+    load_options_1min,
+    latest_ltp,
+)
 from labs.engine.resampler import get_resampled_data, to_5min
 from labs.engine.indicator_engine import compute_all
 from labs.engine.position_manager import check_exit
@@ -164,6 +169,28 @@ def _df_latest_ts(df):
     return None
 
 
+def _needs_sma50_warmup(legs: list[dict]) -> bool:
+    sma_gate_types = {"spot_gt_sma", "spot_lt_sma", "spot_above_sma_by", "spot_below_sma_by", "sma_gt_spot", "sma_lt_spot"}
+    for leg in legs:
+        for gate in json.loads(leg.get("entry_gates_json", "[]")):
+            if not gate.get("enabled", True):
+                continue
+            if gate.get("type") in sma_gate_types and int(gate.get("params", {}).get("period", 50)) >= 50:
+                return True
+    return False
+
+
+def _log_warmup_if_needed(bot: dict, df_1min, now) -> bool:
+    bars = len(get_resampled_data(df_1min, "5m", now=now))
+    if bars < 50:
+        log.warning(
+            f"[{bot['bot_id']}:{bot['name']}] insufficient warmup for SMA50 "
+            f"bars_available={bars} bars_required=50"
+        )
+        return False
+    return True
+
+
 # ── Leg-based processing ──────────────────────────────────────────────────────
 
 def _process_leg(
@@ -288,7 +315,7 @@ def _process_leg(
 
 def process_bot_with_legs(bot, legs, trade_date, now, kite, conn):
     underlying = bot["underlying"]
-    df_1min    = load_spot_1min(underlying, trade_date)
+    df_1min    = load_spot_1min_with_warmup(underlying, trade_date, min_rows=360, lookback_days=5)
     options_df  = load_options_1min(underlying, trade_date)
     log.info(
         f"[{bot['bot_id']}:{bot['name']}] active={bot['status']=='active'} "
@@ -297,6 +324,9 @@ def process_bot_with_legs(bot, legs, trade_date, now, kite, conn):
     )
     if df_1min.empty:
         log.info(f"[{bot['bot_id']}:{bot['name']}] skip: spot dataframe empty for {trade_date}")
+        return
+
+    if _needs_sma50_warmup(legs) and not _log_warmup_if_needed(bot, df_1min, now):
         return
 
     current_spot = float(df_1min.iloc[-1]["close"])
@@ -321,7 +351,7 @@ def process_bot_classic(bot, trade_date, now, kite, conn):
     session_end   = params.get("session_end",   "15:15")
     t = now.strftime("%H:%M")
 
-    df_1min = load_spot_1min(underlying, trade_date)
+    df_1min = load_spot_1min_with_warmup(underlying, trade_date, min_rows=360, lookback_days=5)
     options_df = load_options_1min(underlying, trade_date)
     log.info(
         f"[{bot['bot_id']}:{bot['name']}] active={bot['status']=='active'} "
@@ -330,6 +360,11 @@ def process_bot_classic(bot, trade_date, now, kite, conn):
     )
     if df_1min.empty:
         log.info(f"[{bot['bot_id']}:{bot['name']}] skip: spot dataframe empty for {trade_date}")
+        return
+
+    # If the strategy depends on 50-period SMA gates, keep the runner quiet until
+    # enough completed bars are available from the warmup window.
+    if not _log_warmup_if_needed(bot, df_1min, now):
         return
 
     df_5min_raw = to_5min(df_1min, now=now)

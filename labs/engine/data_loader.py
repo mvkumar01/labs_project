@@ -1,7 +1,7 @@
 """
 Reads raw 1-min CSV files from data/live/ into DataFrames.
 """
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +23,39 @@ def load_spot_1min(underlying: str, trade_date: str) -> pd.DataFrame:
     df = df.sort_values("timestamp").reset_index(drop=True)
     df.set_index("timestamp", inplace=True)
     return df
+
+
+def load_spot_1min_with_warmup(
+    underlying: str,
+    trade_date: str,
+    min_rows: int = 360,
+    lookback_days: int = 5,
+) -> pd.DataFrame:
+    """
+    Load today's spot file plus prior trading-day files until we have enough
+    1-min history for warmup. Keeps raw files untouched and preserves timestamps.
+    """
+    frames = []
+    seen_rows = 0
+    current = datetime.strptime(trade_date, "%Y-%m-%d").date()
+
+    for delta in range(0, lookback_days + 1):
+        day = current - timedelta(days=delta)
+        df = load_spot_1min(underlying, day.isoformat())
+        if df.empty:
+            continue
+        frames.append(df)
+        seen_rows += len(df)
+        if seen_rows >= min_rows:
+            break
+
+    if not frames:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    combined = pd.concat(reversed(frames), axis=0)
+    combined = combined[~combined.index.duplicated(keep="last")]
+    combined = combined.sort_index()
+    return combined
 
 
 def load_options_1min(underlying: str, trade_date: str) -> pd.DataFrame:
