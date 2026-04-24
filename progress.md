@@ -1,6 +1,6 @@
 # Labs Project — Build Progress
 
-## Current Status: Phase 3 (post-launch fixes) complete
+## Current Status: Phase 5 (shared market-data store migration) complete
 
 ---
 
@@ -80,6 +80,69 @@
 
 ### Full condition type reference (as of Apr 2026)
 
+---
+
+## Phase 5 — Shared Market-Data Store Migration  ✅ Complete
+
+**Goal:** Eliminate duplicate OI collection between Labs (1-min) and AlphaIMB (5-min). Labs collector becomes the single canonical writer; AlphaIMB reads from the shared store via a compatibility reader.
+
+**Commit:** `3637f87`
+
+### Architecture
+
+```
+~/shared_market_data/
+└── live/
+    └── YYYY-MM-DD/
+        └── {UNDERLYING}_options_1min.csv   ← written by Labs collector
+                                             ← read by AlphaIMB analytics.py
+```
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `config/labs_config.py` | Added `SHARED_MARKET_DIR`, `SHARED_LIVE_DIR`, `SHARED_ARCHIVE_DIR` paths |
+| `collector/options_collector.py` | Rewrites to canonical schema at shared path. Columns: `timestamp, underlying, tradingsymbol, strike, option_type, expiry, ltp, bid, ask, oi, volume, spot` |
+| `labs/engine/data_loader.py` | `load_options_1min()` reads from `SHARED_LIVE_DIR`; `latest_ltp()` filters on `tradingsymbol` column |
+| `eod_maintenance.py` | Added `archive_shared_market()` (CSV → parquet.gz) and `purge_old_shared_market()` |
+
+### Bug fixed during this phase
+
+| Bug | Root cause | Fix |
+|---|---|---|
+| Zero P&L on all leg-based bots | `INSERT INTO positions VALUES (...)` positional form used 14 values but table had 15 columns after `leg_code` was added via `ALTER TABLE` — raised `OperationalError` caught silently | Switched to explicit column-list INSERT in `paper_executor.py` |
+
+### Cross-project changes (alphaIMB repo)
+
+| File | Change |
+|---|---|
+| `shared_market_reader.py` | **NEW.** Reads shared 1-min CSV, filters to 5-min timestamps, maps columns to AlphaIMB format |
+| `analytics.py` | Replaced raw CSV read with `get_oi_dataframe()` call |
+| `codeC_live_capture.py` | Removed ~25-line OI bulk fetch block; kept meta init + NIFTY multi-chart refresh |
+
+---
+
+## Phase 4 — Live Stability, Warmup, and Recovery Fixes  ✅ Complete
+
+### Operational fixes
+
+| Commit | Fix | Detail |
+|---|---|---|
+| `fc2cb51` | Auto token reload | `auth/session_manager.py` now reloads `zerodha_token.json` when it changes so collector/runner can pick up a refreshed token without a restart |
+| `5633d09` | Keep runner alive outside market hours | Strategy runner no longer exits when the market is closed; it sleeps and continues until market hours begin |
+| `6b23497` | Keep collector alive outside market hours | Collector no longer exits on a closed-market check; it sleeps and retries instead of terminating |
+| `366aafc` | SMA50 warmup/backfill | Prior-session 1-minute spot history is loaded before live evaluation so 5-minute SMA50 gates can be ready from market open |
+| `6c0d95c` | EOD square-off | Runner force-closes open positions after `EOD_CUTOFF` even if entry logic/gates are not evaluated |
+| `4947693` | Harden EOD close | `paper_executor.close_position()` now always writes numeric `charges` and `net_pnl_rs`, uses explicit trade inserts, and includes one-time `eod_recovery.py` |
+| `7986c6f` | Detail page log paging | Trade and signal logs on the bot detail page now load in capped chunks with `Load more` controls instead of stretching the page indefinitely |
+
+### Live behavior notes
+
+- Runner logs now show per-bot warmup status, including live rows, historical rows loaded, completed 5m bars, and whether SMA50 is ready.
+- EOD recovery can be run manually with `python3 eod_recovery.py` after a code pull to clear any leftover open positions.
+- The current Labs web app URL is `labs-mvkumar01.pythonanywhere.com`.
+
 **Entry:** `rsi_lt`, `rsi_gt`, `ema_gt`, `ema_lt`, `sma_gt`, `sma_lt`, `adx_diplus_gt_diminus`, `adx_diminus_gt_diplus`
 
 **Gate:** `spot_gt_sma`, `spot_lt_sma`, `spot_above_sma_by`, `spot_below_sma_by`, `ema_gt`, `ema_lt`, `sma_gt`, `sma_lt`
@@ -94,7 +157,7 @@
 
 | Component | Status |
 |---|---|
-| Web app | ✅ Live — nifty-multi-mvkumar01.pythonanywhere.com |
+| Web app | ✅ Live — labs-mvkumar01.pythonanywhere.com |
 | Collector (always-on 241272) | ✅ Running |
 | Strategy runner (always-on 241278) | ✅ Running |
 | Token generation (scheduled 08:55 IST) | ✅ Configured |
