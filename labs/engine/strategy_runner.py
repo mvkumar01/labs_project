@@ -235,7 +235,16 @@ def _force_eod_square_off(conn, now) -> int:
         if current_ltp is None:
             current_ltp = float(position["entry_ltp"])
 
-        trade = close_position(position, current_ltp, current_spot, "eod", conn=conn)
+        try:
+            trade = close_position(position, current_ltp, current_spot, "eod", conn=conn)
+        except Exception as exc:
+            log.error(
+                f"EOD square-off failed symbol={position['symbol']} qty={position['qty']} "
+                f"exit_price={current_ltp:.2f} err={exc}",
+                exc_info=True,
+            )
+            continue
+
         log.info(
             f"EOD square-off triggered symbol={position['symbol']} qty={position['qty']} "
             f"exit_price={current_ltp:.2f} pnl={trade['pnl_pts']:+.1f}pts "

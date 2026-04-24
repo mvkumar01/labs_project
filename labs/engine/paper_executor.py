@@ -4,6 +4,7 @@ Writes fills to SQLite — no real orders are sent.
 """
 import json
 import logging
+import math
 import uuid
 from datetime import datetime
 from typing import Any
@@ -20,6 +21,14 @@ log = logging.getLogger(__name__)
 
 def _now_ist() -> str:
     return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        num = float(value)
+    except Exception:
+        return float(default)
+    return num if math.isfinite(num) else float(default)
 
 
 def _resolve_contract(kite, bot: dict, params: dict, signal_side: str, spot: float) -> dict | None:
@@ -164,17 +173,29 @@ def close_position(
     hold_mins  = max(int((exit_time - entry_time).total_seconds() / 60), 0)
 
     # P&L — long buy: profit = exit LTP - entry LTP
-    B       = float(position["entry_ltp"])
-    S       = exit_ltp
-    Q       = int(position["lot_size"]) * int(position["qty"])
-    pnl_pts = S - B
-    pnl_rs  = pnl_pts * Q
+    B       = _safe_float(position.get("entry_ltp"), 0.0)
+    S       = _safe_float(exit_ltp, 0.0)
+    Q       = int(position["lot_size"] or 0) * int(position["qty"] or 0)
+    pnl_pts = _safe_float(S - B, 0.0)
+    pnl_rs  = _safe_float(pnl_pts * Q, 0.0)
 
     # Charges: flat ₹40 + STT + transaction tax
     # Turnover = (B + S) × Q
-    turnover = (B + S) * Q
-    charges  = round(40 + 0.00053 * turnover + 0.001 * (S * Q), 2)
-    net_pnl_rs = round(pnl_rs - charges, 2)
+    try:
+        turnover = (B + S) * Q
+        charges  = round(40 + 0.00053 * turnover + 0.001 * (S * Q), 2)
+    except Exception as exc:
+        log.warning(
+            f"[{position['bot_id']}] close_position charges fallback=0.0 "
+            f"entry_price={B:.2f} exit_ltp={S:.2f} qty={Q} err={exc}"
+        )
+        charges = 0.0
+    if charges is None or not math.isfinite(float(charges)):
+        charges = 0.0
+
+    net_pnl_rs = _safe_float(round(float(pnl_rs) - float(charges), 2), 0.0)
+    if net_pnl_rs is None or not math.isfinite(float(net_pnl_rs)):
+        net_pnl_rs = 0.0
 
     trade = {
         "trade_id":        str(uuid.uuid4()),
@@ -203,13 +224,24 @@ def close_position(
         "created_at":      now_s,
     }
 
+    log.info(
+        f"[{position['bot_id']}] close_position entry_price={B:.2f} exit_ltp={S:.2f} "
+        f"pnl_rs={float(pnl_rs):+.2f} charges={float(charges):.2f} net_pnl_rs={float(net_pnl_rs):+.2f}"
+    )
+
     close_conn = conn is None
     if conn is None:
         conn = get_conn()
     try:
         with conn:
             conn.execute("""
-                INSERT INTO trades VALUES (
+                INSERT INTO trades (
+                    trade_id, bot_id, trade_date, underlying, side,
+                    symbol, strike, expiry, entry_time, exit_time,
+                    entry_ltp, exit_ltp, entry_spot, exit_spot,
+                    lot_size, qty, pnl_pts, pnl_rs, charges, net_pnl_rs,
+                    exit_reason, holding_mins, signal_at_entry, created_at
+                ) VALUES (
                     :trade_id, :bot_id, :trade_date, :underlying, :side,
                     :symbol, :strike, :expiry, :entry_time, :exit_time,
                     :entry_ltp, :exit_ltp, :entry_spot, :exit_spot,
