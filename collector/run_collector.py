@@ -3,8 +3,12 @@ Labs market-data collector.
 Runs every 60 seconds during 09:15–15:30 IST.
 Collects 1-min spot + options snapshots for NIFTY, BANKNIFTY, SENSEX.
 
-PA scheduled task: python collector/run_collector.py
+PA always-on task: python pa_run_collector.py
+Auth recovery: after AUTH_FAIL_LIMIT consecutive all-underlying auth failures,
+exits with code 1 so PythonAnywhere restarts the process and reloads the
+fresh token written by the 08:55 IST scheduled task.
 """
+import json
 import logging
 import sys
 import time
@@ -16,106 +20,156 @@ import pytz
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from auth.session_manager import get_kite
+import auth.session_manager as session_manager
 from collector.spot_collector import collect_spot
 from collector.options_collector import collect_options
-from config.labs_config import UNDERLYINGS, MARKET_OPEN, MARKET_CLOSE, COLLECTOR_INTERVAL_SECS, LOG_DIR
+from config.labs_config import (
+    UNDERLYINGS, MARKET_OPEN, MARKET_CLOSE,
+    COLLECTOR_INTERVAL_SECS, LOG_DIR,
+)
 
 IST = pytz.timezone("Asia/Kolkata")
-MARKET_OPEN_TIME = datetime.strptime(MARKET_OPEN, "%H:%M").time()
+MARKET_OPEN_TIME  = datetime.strptime(MARKET_OPEN,  "%H:%M").time()
 MARKET_CLOSE_TIME = datetime.strptime(MARKET_CLOSE, "%H:%M").time()
+
+# Exit after this many consecutive cycles where every underlying fails auth.
+# PA always-on restarts automatically; the fresh process reloads the token.
+AUTH_FAIL_LIMIT = 3
+
+# Zerodha error strings that identify an invalid/expired token.
+_AUTH_PHRASES = ("api_key", "access_token", "invalid token", "token exception")
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [collector] %(message)s",
     handlers=[
-        logging.FileHandler(LOG_DIR / f"collector_{datetime.now(IST).strftime('%Y-%m-%d')}.log"),
+        logging.FileHandler(
+            LOG_DIR / f"collector_{datetime.now(IST).strftime('%Y-%m-%d')}.log"
+        ),
         logging.StreamHandler(),
     ],
 )
 log = logging.getLogger(__name__)
 
-# Exit after this many consecutive all-underlying auth failures so PA restarts
-# the process and reloads the fresh token written by generate_token.py.
-_AUTH_FAIL_LIMIT = 10
-_AUTH_PHRASES = ("api_key", "access_token", "invalid token", "token exception")
 
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 def _is_auth_error(exc: Exception) -> bool:
     return any(p in str(exc).lower() for p in _AUTH_PHRASES)
 
 
 def _market_open(now: datetime) -> bool:
-    t = now.time()
+    t = now.replace(tzinfo=None).time()
     return MARKET_OPEN_TIME <= t <= MARKET_CLOSE_TIME
 
 
 def _next_minute_boundary(now: datetime) -> datetime:
-    """Return the next whole-minute datetime."""
     return (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
 
 
-def run():
-    log.info(f"Labs collector started. cwd={Path.cwd()} base={BASE_DIR}")
+def _log_token_info() -> None:
+    """Log the date embedded in the current token file for audit."""
+    try:
+        token_path = BASE_DIR / "config" / "zerodha_token.json"
+        data = json.loads(token_path.read_text())
+        generated_at = data.get("generated_at", "unknown")
+        log.info("Token file date: %s", generated_at)
+    except Exception as exc:
+        log.warning("Could not read token file for audit: %s", exc)
+
+
+# ── main loop ─────────────────────────────────────────────────────────────────
+
+def run() -> None:
+    log.info("Labs collector started. cwd=%s base=%s", Path.cwd(), BASE_DIR)
+
+    # Always start with a fresh token read — never inherit a cached/stale kite.
+    session_manager.reset()
+    _log_token_info()
 
     consecutive_auth_fails = 0
 
     while True:
-        kite = get_kite()
         now        = datetime.now(IST)
         trade_date = now.strftime("%Y-%m-%d")
-        market_open = _market_open(now)
+        is_open    = _market_open(now)
+
         log.info(
-            "loop now=%s tz=%s hms=%s MARKET_OPEN=%s MARKET_CLOSE=%s market_open=%s",
-            now.isoformat(),
-            now.tzinfo,
-            now.strftime("%H:%M:%S"),
-            MARKET_OPEN,
-            MARKET_CLOSE,
-            market_open,
+            "loop hms=%s market_open=%s auth_fail_streak=%d/%d",
+            now.strftime("%H:%M:%S"), is_open,
+            consecutive_auth_fails, AUTH_FAIL_LIMIT,
         )
 
-        if not market_open:
+        if not is_open:
             consecutive_auth_fails = 0
             wait = max((_next_minute_boundary(now) - now).total_seconds(), 5)
-            log.info(
-                "Market closed. Collector sleeping %.1fs before retry.",
-                wait,
-            )
+            log.info("Market closed — sleeping %.0fs.", wait)
             time.sleep(wait)
             continue
 
-        ts = now.replace(second=0, microsecond=0)
+        # get_kite() auto-reloads if the token file has changed on disk.
+        try:
+            kite = session_manager.get_kite()
+        except Exception as exc:
+            log.error("Failed to load kite session: %s", exc)
+            time.sleep(60)
+            continue
 
+        ts = now.replace(second=0, microsecond=0)
         auth_fails_this_cycle = 0
+        successes_this_cycle  = 0
+
         for underlying in UNDERLYINGS:
             try:
                 spot = collect_spot(kite, underlying, trade_date, ts)
-                log.info(f"{underlying} spot={spot:.2f}")
-
-                n = collect_options(kite, underlying, spot, trade_date, ts)
-                log.info(f"{underlying} options={n} rows written")
+                n    = collect_options(kite, underlying, spot, trade_date, ts)
+                log.info("%s ok — spot=%.2f options=%d rows", underlying, spot, n)
+                successes_this_cycle += 1
 
             except Exception as exc:
-                log.error(f"{underlying} collection error: {exc}", exc_info=False)
                 if _is_auth_error(exc):
+                    log.error(
+                        "%s auth error (streak=%d/%d): %s",
+                        underlying, consecutive_auth_fails + 1, AUTH_FAIL_LIMIT, exc,
+                    )
                     auth_fails_this_cycle += 1
+                else:
+                    log.error("%s collection error: %s", underlying, exc)
 
-        if auth_fails_this_cycle == len(UNDERLYINGS):
+        # ── auth failure accounting ───────────────────────────────────────────
+        all_auth_failed = (auth_fails_this_cycle == len(UNDERLYINGS))
+
+        if all_auth_failed:
             consecutive_auth_fails += 1
-            log.warning(
-                "All underlyings failed auth (%d/%d). PA will restart on exit.",
-                consecutive_auth_fails, _AUTH_FAIL_LIMIT,
-            )
-            if consecutive_auth_fails >= _AUTH_FAIL_LIMIT:
-                log.error("Auth failed for %d consecutive cycles — exiting for PA restart.", _AUTH_FAIL_LIMIT)
+            # Force a fresh token read on the next cycle — picks up the
+            # 08:55 IST token if it has been refreshed since last failure.
+            session_manager.reset()
+            _log_token_info()
+
+            if consecutive_auth_fails >= AUTH_FAIL_LIMIT:
+                log.critical(
+                    "Auth failed for %d consecutive cycles. "
+                    "Exiting with code 1 — PA will restart and reload token.",
+                    AUTH_FAIL_LIMIT,
+                )
                 sys.exit(1)
+
+            log.warning(
+                "All underlyings failed auth. streak=%d/%d. "
+                "Token reset — will retry next cycle.",
+                consecutive_auth_fails, AUTH_FAIL_LIMIT,
+            )
         else:
+            if consecutive_auth_fails:
+                log.info(
+                    "Auth recovered after %d failed cycle(s). streak reset.",
+                    consecutive_auth_fails,
+                )
             consecutive_auth_fails = 0
 
-        # Sleep until next minute boundary
-        elapsed = (datetime.now(IST) - now).total_seconds()
+        # ── sleep to next minute boundary ─────────────────────────────────────
+        elapsed   = (datetime.now(IST) - now).total_seconds()
         sleep_for = max(COLLECTOR_INTERVAL_SECS - elapsed, 1)
         time.sleep(sleep_for)
 
