@@ -36,6 +36,15 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Exit after this many consecutive all-underlying auth failures so PA restarts
+# the process and reloads the fresh token written by generate_token.py.
+_AUTH_FAIL_LIMIT = 10
+_AUTH_PHRASES = ("api_key", "access_token", "invalid token", "token exception")
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    return any(p in str(exc).lower() for p in _AUTH_PHRASES)
+
 
 def _market_open(now: datetime) -> bool:
     t = now.time()
@@ -49,6 +58,8 @@ def _next_minute_boundary(now: datetime) -> datetime:
 
 def run():
     log.info(f"Labs collector started. cwd={Path.cwd()} base={BASE_DIR}")
+
+    consecutive_auth_fails = 0
 
     while True:
         kite = get_kite()
@@ -66,6 +77,7 @@ def run():
         )
 
         if not market_open:
+            consecutive_auth_fails = 0
             wait = max((_next_minute_boundary(now) - now).total_seconds(), 5)
             log.info(
                 "Market closed. Collector sleeping %.1fs before retry.",
@@ -76,6 +88,7 @@ def run():
 
         ts = now.replace(second=0, microsecond=0)
 
+        auth_fails_this_cycle = 0
         for underlying in UNDERLYINGS:
             try:
                 spot = collect_spot(kite, underlying, trade_date, ts)
@@ -86,6 +99,20 @@ def run():
 
             except Exception as exc:
                 log.error(f"{underlying} collection error: {exc}", exc_info=False)
+                if _is_auth_error(exc):
+                    auth_fails_this_cycle += 1
+
+        if auth_fails_this_cycle == len(UNDERLYINGS):
+            consecutive_auth_fails += 1
+            log.warning(
+                "All underlyings failed auth (%d/%d). PA will restart on exit.",
+                consecutive_auth_fails, _AUTH_FAIL_LIMIT,
+            )
+            if consecutive_auth_fails >= _AUTH_FAIL_LIMIT:
+                log.error("Auth failed for %d consecutive cycles — exiting for PA restart.", _AUTH_FAIL_LIMIT)
+                sys.exit(1)
+        else:
+            consecutive_auth_fails = 0
 
         # Sleep until next minute boundary
         elapsed = (datetime.now(IST) - now).total_seconds()
