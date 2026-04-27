@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Backtest - Labs</title>
+  <link rel="stylesheet" href="/static/labs.css">
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    <nav>
+      <a href="/labs">Dashboard</a>
+      <a href="/labs/backtest">Backtest</a>
+      <a href="/labs/new" class="btn-primary">+ New Bot</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="detail-header">
+      <div>
+        <h1>Backtest</h1>
+        <p class="meta">Run Labs bot rules on collected historical data without writing to live trades.</p>
+      </div>
+    </div>
+
+    <section>
+      <div class="log-section-head">
+        <h2>Available Data</h2>
+        <button type="button" class="btn-secondary btn-small" id="refreshBacktestRanges">Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Underlying</th>
+              <th>First Date</th>
+              <th>Last Date</th>
+              <th>Trading Days</th>
+              <th>Spot</th>
+              <th>Options</th>
+              <th>SMA50 Warmup</th>
+            </tr>
+          </thead>
+          <tbody id="backtestRangesBody">
+            <tr><td colspan="7">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="form-section backtest-form-section">
+      <h2>Run Backtest</h2>
+      <form id="backtestForm">
+        <div class="form-row">
+          <label>
+            Bot
+            <select id="backtestBot" required>
+              {% for bot in bots %}
+                <option value="{{ bot.bot_id }}" data-underlying="{{ bot.underlying }}">{{ bot.name }} ({{ bot.underlying }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Underlying
+            <select id="backtestUnderlying" required>
+              {% for underlying in underlyings %}
+                <option value="{{ underlying }}">{{ underlying }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Start Date
+            <input type="date" id="backtestStart" required>
+          </label>
+          <label>
+            End Date
+            <input type="date" id="backtestEnd" required>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary" id="runBacktestBtn">Run Backtest</button>
+          <span class="hint" id="backtestStatus"></span>
+        </div>
+      </form>
+    </section>
+
+    <section id="backtestResults" style="display:none">
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-label">Total Trades</div>
+          <div class="stat-value" id="btTotalTrades">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Gross P&amp;L</div>
+          <div class="stat-value" id="btGrossPnl">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Charges</div>
+          <div class="stat-value" id="btCharges">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Net P&amp;L</div>
+          <div class="stat-value" id="btNetPnl">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Win Rate</div>
+          <div class="stat-value" id="btWinRate">0%</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Avg Trade</div>
+          <div class="stat-value" id="btAvgTrade">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Max Drawdown</div>
+          <div class="stat-value" id="btMaxDrawdown">0</div>
+        </div>
+      </div>
+
+      <section>
+        <h2>Day-wise P&amp;L</h2>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>Date</th><th>Trades</th><th>Gross</th><th>Charges</th><th>Net</th></tr>
+            </thead>
+            <tbody id="backtestDayBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Skipped Days / Reasons</h2>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>Date</th><th>Reason</th><th>Detail</th></tr>
+            </thead>
+            <tbody id="backtestSkippedBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <h2>Trade Log</h2>
+        <div class="table-wrap log-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Leg</th><th>Side</th><th>Symbol</th><th>Entry</th><th>Exit</th>
+                <th>Entry LTP</th><th>Exit LTP</th><th>P&amp;L pts</th><th>Gross</th>
+                <th>Charges</th><th>Net</th><th>Exit Reason</th><th>Hold</th>
+              </tr>
+            </thead>
+            <tbody id="backtestTradeBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+</div>
+<script>
+  const BACKTEST_PAGE = true;
+</script>
+<script src="/static/labs.js"></script>
+</body>
+</html>

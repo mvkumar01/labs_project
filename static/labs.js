@@ -18,6 +18,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const signalMoreBtn = document.getElementById("signalMoreBtn");
     if (signalMoreBtn) signalMoreBtn.addEventListener("click", loadMoreSignals);
   }
+
+  if (typeof BACKTEST_PAGE !== "undefined") {
+    initBacktestPage();
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -413,4 +417,186 @@ async function loadMoreSignals() {
   if (btn) btn.disabled = true;
   signalLogLimit += LOG_PAGE_SIZE;
   await loadSignalLog();
+}
+
+// Backtest page
+
+let backtestRanges = null;
+
+function initBacktestPage() {
+  const refreshBtn = document.getElementById("refreshBacktestRanges");
+  const form = document.getElementById("backtestForm");
+  const botSelect = document.getElementById("backtestBot");
+
+  if (refreshBtn) refreshBtn.addEventListener("click", loadBacktestRanges);
+  if (form) form.addEventListener("submit", runBacktest);
+  if (botSelect) {
+    botSelect.addEventListener("change", () => {
+      const selected = botSelect.options[botSelect.selectedIndex];
+      const underlying = selected ? selected.dataset.underlying : "";
+      const underlyingEl = document.getElementById("backtestUnderlying");
+      if (underlying && underlyingEl) underlyingEl.value = underlying;
+    });
+    botSelect.dispatchEvent(new Event("change"));
+  }
+
+  loadBacktestRanges();
+}
+
+async function loadBacktestRanges() {
+  const tbody = document.getElementById("backtestRangesBody");
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="7">Loading...</td></tr>';
+  try {
+    const res = await fetch("/labs/api/backtest/data-ranges");
+    backtestRanges = await res.json();
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:#f87171">Failed to scan data.</td></tr>';
+    return;
+  }
+
+  const rows = Object.entries(backtestRanges.underlyings || {});
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b">No market data found.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(([underlying, r]) => `
+    <tr>
+      <td>${underlying}</td>
+      <td>${r.first_date || "None"}</td>
+      <td>${r.last_date || "None"}</td>
+      <td>${r.trading_days || 0}</td>
+      <td>${_yesNo(r.spot_exists)} <span class="muted">(${r.spot_days || 0})</span></td>
+      <td>${_yesNo(r.options_exists)} <span class="muted">(${r.option_days || 0})</span></td>
+      <td>${_yesNo(r.sma50_warmup_possible)}</td>
+    </tr>
+  `).join("");
+
+  seedBacktestDates();
+}
+
+function seedBacktestDates() {
+  const underlyingEl = document.getElementById("backtestUnderlying");
+  const startEl = document.getElementById("backtestStart");
+  const endEl = document.getElementById("backtestEnd");
+  if (!backtestRanges || !underlyingEl || !startEl || !endEl) return;
+  const r = backtestRanges.underlyings[underlyingEl.value];
+  if (!r) return;
+  if (!startEl.value && r.first_date) startEl.value = r.first_date;
+  if (!endEl.value && r.last_date) endEl.value = r.last_date;
+}
+
+async function runBacktest(event) {
+  event.preventDefault();
+  const status = document.getElementById("backtestStatus");
+  const btn = document.getElementById("runBacktestBtn");
+  const payload = {
+    bot_id: document.getElementById("backtestBot").value,
+    underlying: document.getElementById("backtestUnderlying").value,
+    start_date: document.getElementById("backtestStart").value,
+    end_date: document.getElementById("backtestEnd").value,
+  };
+
+  if (status) status.textContent = "Running...";
+  if (btn) btn.disabled = true;
+
+  let result;
+  try {
+    const res = await fetch("/labs/api/backtest/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    result = await res.json();
+  } catch (e) {
+    if (status) status.textContent = "Backtest request failed.";
+    if (btn) btn.disabled = false;
+    return;
+  }
+
+  if (btn) btn.disabled = false;
+  if (!result.ok) {
+    if (status) status.textContent = result.error || "Backtest failed.";
+    return;
+  }
+
+  if (status) status.textContent = `Done. ${result.summary.total_trades} trades generated.`;
+  renderBacktestResults(result);
+}
+
+function renderBacktestResults(result) {
+  const section = document.getElementById("backtestResults");
+  if (section) section.style.display = "";
+  const s = result.summary || {};
+  _setText("btTotalTrades", s.total_trades || 0);
+  _setMoney("btGrossPnl", s.gross_pnl || 0);
+  _setMoney("btCharges", s.charges || 0);
+  _setMoney("btNetPnl", s.net_pnl || 0);
+  _setText("btWinRate", `${(s.win_rate || 0).toFixed(2)}%`);
+  _setMoney("btAvgTrade", s.average_trade || 0);
+  _setMoney("btMaxDrawdown", s.max_drawdown || 0);
+
+  const dayBody = document.getElementById("backtestDayBody");
+  if (dayBody) {
+    const rows = result.day_wise_pnl || [];
+    dayBody.innerHTML = rows.length ? rows.map(d => `
+      <tr>
+        <td>${d.date}</td><td>${d.trades}</td>
+        <td>${_money(d.gross_pnl)}</td><td>${_money(d.charges)}</td>
+        <td class="${d.net_pnl > 0 ? "green" : (d.net_pnl < 0 ? "red" : "")}">${_money(d.net_pnl)}</td>
+      </tr>
+    `).join("") : '<tr><td colspan="5" style="color:#64748b">No day-wise P&L.</td></tr>';
+  }
+
+  const skippedBody = document.getElementById("backtestSkippedBody");
+  if (skippedBody) {
+    const rows = result.skipped_days || [];
+    skippedBody.innerHTML = rows.length ? rows.map(r => `
+      <tr><td>${r.date || ""}</td><td>${r.reason || ""}</td><td>${r.symbol || r.leg_code || r.side || ""}</td></tr>
+    `).join("") : '<tr><td colspan="3" style="color:#64748b">No skipped days.</td></tr>';
+  }
+
+  const tradeBody = document.getElementById("backtestTradeBody");
+  if (tradeBody) {
+    const rows = result.trades || [];
+    tradeBody.innerHTML = rows.length ? rows.map(t => {
+      const net = Number(t.net_pnl_rs || 0);
+      const cls = net > 0 ? "green" : (net < 0 ? "red" : "");
+      return `
+        <tr>
+          <td>${t.trade_date}</td><td>${t.leg_code || ""}</td><td>${t.side}</td>
+          <td style="font-size:11px">${t.symbol}</td>
+          <td>${(t.entry_time || "").slice(11,16)}</td><td>${(t.exit_time || "").slice(11,16)}</td>
+          <td>${Number(t.entry_ltp).toFixed(2)}</td><td>${Number(t.exit_ltp).toFixed(2)}</td>
+          <td class="${cls}">${Number(t.pnl_pts).toFixed(2)}</td>
+          <td>${_money(t.pnl_rs)}</td><td>${_money(t.charges)}</td>
+          <td class="${cls}">${_money(net)}</td><td>${t.exit_reason}</td><td>${t.holding_mins}</td>
+        </tr>`;
+    }).join("") : '<tr><td colspan="14" style="color:#64748b">No trades generated.</td></tr>';
+  }
+}
+
+function _yesNo(value) {
+  return value ? '<span class="green">Yes</span>' : '<span class="red">No</span>';
+}
+
+function _money(value) {
+  const n = Number(value || 0);
+  const sign = n > 0 ? "+" : "";
+  return `₹${sign}${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
+
+function _setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function _setMoney(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const n = Number(value || 0);
+  el.textContent = _money(n);
+  el.classList.toggle("green", n > 0);
+  el.classList.toggle("red", n < 0);
 }

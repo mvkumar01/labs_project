@@ -14,6 +14,7 @@ from labs.services.metrics_service import (
     get_all_bots_summary, get_trade_log, get_signal_log,
     get_equity_curve, get_performance_stats, get_open_position,
 )
+from labs.engine.backtest import get_backtest_bots, scan_data_ranges, run_backtest
 
 labs_bp = Blueprint("labs", __name__, url_prefix="/labs")
 
@@ -31,6 +32,15 @@ _FORM_DEFAULTS = dict(
 @labs_bp.route("/")
 def dashboard():
     return render_template("labs.html", bots=get_all_bots_summary())
+
+
+@labs_bp.route("/backtest")
+def backtest_page():
+    return render_template(
+        "backtest.html",
+        bots=get_backtest_bots(),
+        underlyings=list(UNDERLYINGS.keys()),
+    )
 
 
 # ── Create ───────────────────────────────────────────────────────────────────
@@ -149,6 +159,33 @@ def api_stats(bot_id):
 @labs_bp.route("/api/<bot_id>/legs")
 def api_legs(bot_id):
     return jsonify(get_legs(bot_id))
+
+
+@labs_bp.route("/api/backtest/data-ranges")
+def api_backtest_data_ranges():
+    return jsonify(scan_data_ranges())
+
+
+@labs_bp.route("/api/backtest/run", methods=["POST"])
+def api_backtest_run():
+    data = request.get_json(silent=True) or {}
+    required = ["bot_id", "underlying", "start_date", "end_date"]
+    missing = [key for key in required if not data.get(key)]
+    if missing:
+        return jsonify({"ok": False, "error": f"Missing fields: {', '.join(missing)}"}), 400
+    try:
+        result = run_backtest(
+            data["bot_id"],
+            data["underlying"],
+            data["start_date"],
+            data["end_date"],
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Backtest failed: {exc}"}), 500
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

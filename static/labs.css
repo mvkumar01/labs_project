@@ -102,6 +102,7 @@ h2 { font-size: 15px; font-weight: 600; margin-bottom: 12px; color: #cbd5e1; }
 /* ── Colour helpers ───────────────────────────────────────── */
 .green { color: #4ade80; }
 .red   { color: #f87171; }
+.muted { color: #64748b; }
 
 /* ── Dashboard bot table ──────────────────────────────────── */
 .bot-table {
@@ -263,6 +264,7 @@ section { margin-bottom: 32px; }
 }
 .form-row input[type="text"],
 .form-row input[type="number"],
+.form-row input[type="date"],
 .form-row select {
   background: #0f1117;
   border: 1px solid #2d3148;
@@ -483,3 +485,7 @@ section { margin-bottom: 32px; }
   margin-left: auto;
 }
 .btn-del:hover { color: #f87171; }
+
+.backtest-form-section {
+  max-width: none;
+}
