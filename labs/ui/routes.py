@@ -77,6 +77,7 @@ def bot_detail(bot_id):
 
 @labs_bp.route("/<bot_id>/edit", methods=["GET", "POST"])
 def edit_bot(bot_id):
+    # Always re-read bot status from SQLite for edit/save permission checks.
     bot = get_bot(bot_id)
     if bot is None:
         return "Bot not found", 404

@@ -3,6 +3,7 @@ CRUD operations for bots and bot_params.
 All functions accept an optional conn; if None they open+close their own.
 """
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
@@ -12,6 +13,7 @@ import pytz
 from storage.db import get_conn
 
 IST = pytz.timezone("Asia/Kolkata")
+log = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -208,14 +210,34 @@ def update_status(bot_id: str, status: str, conn=None) -> None:
     if conn is None:
         conn = get_conn()
     try:
-        with conn:
-            conn.execute(
-                "UPDATE bots SET status=?, updated_at=? WHERE bot_id=?",
-                (status, _now(), bot_id)
-            )
+        old_row = conn.execute(
+            "SELECT status FROM bots WHERE bot_id=?", (bot_id,)
+        ).fetchone()
+        old_status = old_row["status"] if old_row else None
+        cur = conn.execute(
+            "UPDATE bots SET status=?, updated_at=? WHERE bot_id=?",
+            (status, _now(), bot_id)
+        )
+        conn.commit()
+        log.info(
+            "[bot-status] bot_id=%s old_status=%s new_status=%s rows=%s commit=ok",
+            bot_id,
+            old_status,
+            status,
+            cur.rowcount,
+        )
+        _checkpoint_wal(conn, bot_id)
     finally:
         if close:
             conn.close()
+
+
+def _checkpoint_wal(conn, bot_id: str) -> None:
+    try:
+        rows = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        log.info("[bot-status] bot_id=%s checkpoint=ok result=%s", bot_id, [tuple(r) for r in rows])
+    except Exception as exc:
+        log.warning("[bot-status] bot_id=%s checkpoint=failed err=%s", bot_id, exc)
 
 
 # ---------------------------------------------------------------------------
