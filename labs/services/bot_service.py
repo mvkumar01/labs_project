@@ -139,6 +139,8 @@ def create_bot(data: dict[str, Any], conn=None) -> dict:
                     :updated_at
                 )
             """, params)
+        log.info("[bot-write] action=create bot_id=%s commit=ok", bot_id)
+        _checkpoint_wal(conn, bot_id, "create")
         return get_bot(bot_id, conn=conn)
     finally:
         if close:
@@ -198,6 +200,8 @@ def update_bot(bot_id: str, data: dict[str, Any], conn=None) -> dict | None:
                 now,
                 bot_id,
             ))
+        log.info("[bot-write] action=update bot_id=%s commit=ok", bot_id)
+        _checkpoint_wal(conn, bot_id, "update")
         return get_bot(bot_id, conn=conn)
     finally:
         if close:
@@ -226,18 +230,23 @@ def update_status(bot_id: str, status: str, conn=None) -> None:
             status,
             cur.rowcount,
         )
-        _checkpoint_wal(conn, bot_id)
+        _checkpoint_wal(conn, bot_id, "status")
     finally:
         if close:
             conn.close()
 
 
-def _checkpoint_wal(conn, bot_id: str) -> None:
+def _checkpoint_wal(conn, bot_id: str, action: str) -> None:
     try:
         rows = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
-        log.info("[bot-status] bot_id=%s checkpoint=ok result=%s", bot_id, [tuple(r) for r in rows])
+        log.info(
+            "[bot-write] action=%s bot_id=%s checkpoint=ok result=%s",
+            action,
+            bot_id,
+            [tuple(r) for r in rows],
+        )
     except Exception as exc:
-        log.warning("[bot-status] bot_id=%s checkpoint=failed err=%s", bot_id, exc)
+        log.warning("[bot-write] action=%s bot_id=%s checkpoint=failed err=%s", action, bot_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +281,13 @@ def clone_bot(source_bot_id: str, new_name: str | None = None, conn=None) -> dic
         source_legs = get_legs(source_bot_id, conn=conn)
         if source_legs:
             save_legs(new_bot_id, source_legs, conn=conn)
+        conn.commit()
+        log.info(
+            "[bot-write] action=clone source_bot_id=%s new_bot_id=%s commit=ok",
+            source_bot_id,
+            new_bot_id,
+        )
+        _checkpoint_wal(conn, new_bot_id, "clone")
         return new_bot
     finally:
         if close:
@@ -296,6 +312,8 @@ def delete_bot(bot_id: str, conn=None) -> None:
             conn.execute("DELETE FROM daily_summary WHERE bot_id=?", (bot_id,))
             conn.execute("DELETE FROM bot_params WHERE bot_id=?", (bot_id,))
             conn.execute("DELETE FROM bots WHERE bot_id=?", (bot_id,))
+        log.info("[bot-write] action=delete bot_id=%s commit=ok", bot_id)
+        _checkpoint_wal(conn, bot_id, "delete")
     finally:
         if close:
             conn.close()
@@ -346,6 +364,8 @@ def save_legs(bot_id: str, legs_data: list[dict], conn=None) -> None:
                     _to_json(leg.get("stoploss_conditions_json", "[]")),
                     now,
                 ))
+        log.info("[bot-write] action=save_legs bot_id=%s legs=%s commit=ok", bot_id, len(legs_data))
+        _checkpoint_wal(conn, bot_id, "save_legs")
     finally:
         if close:
             conn.close()
