@@ -5,16 +5,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 UNDERLYINGS = {
     "NIFTY": {
         "index_symbol": "NSE:NIFTY 50",
+        "instrument_token": 256265,
         "lot_size": 65,
         "strike_step": 50,
     },
     "BANKNIFTY": {
         "index_symbol": "NSE:NIFTY BANK",
+        "instrument_token": 260105,
         "lot_size": 15,
         "strike_step": 100,
     },
     "SENSEX": {
         "index_symbol": "BSE:SENSEX",
+        "instrument_token": 265,
         "lot_size": 20,
         "strike_step": 100,
     },
