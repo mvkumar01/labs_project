@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Live — Status</title>
+  <link rel="stylesheet" href="/static/live.css">
+</head>
+<body>
+<div class="page">
+  <header class="live-topbar">
+    <span class="live-logo">BOTS LIVE <span class="tag">paper-shell, real-money stack</span></span>
+    <nav>
+      <a href="/live/configure">Configure</a>
+      <a href="/live/connect">Broker</a>
+      <a href="/labs">Paper Labs</a>
+      <form method="POST" action="/live/logout" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-ghost" style="padding:5px 12px;">Lock</button>
+      </form>
+    </nav>
+  </header>
+  <main>
+    <h1>Live Status</h1>
+    <p class="sub">
+      {{ connection.broker|upper }} · {{ connection.account_label }} ·
+      <span style="color:#64748b;">{{ connection.status }}</span>
+    </p>
+
+    <!-- Kill switch banner (shown only when active; JS toggles) -->
+    <div id="kill-banner" class="kill-banner" style="display:none;">
+      KILL SWITCH ACTIVE — all new activity halted.
+    </div>
+
+    <!-- Reconciliation mismatch banner (JS toggles) -->
+    <div id="reconcile-banner" class="reconcile-warning" style="display:none;"></div>
+
+    <!-- Mode + armed-status banner -->
+    <div id="mode-banner" class="mode-banner mode-{{ mode }}">
+      <div>
+        <div class="mode-label">CURRENT MODE</div>
+        <div class="mode-value">{{ mode }}</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="mode-label">DRY-RUN DEFAULT · LIVE IS MULTI-GATED</div>
+        <div class="mode-label">Phase 0 — no real orders possible</div>
+      </div>
+    </div>
+
+    <!-- Mode controls (config mutations only; runner places orders, not these) -->
+    <div class="card">
+      <h3>Mode controls</h3>
+      <div class="btn-row">
+        <button id="btn-arm-dry" class="btn btn-primary">Arm DRY-RUN</button>
+        <button id="btn-arm-live" class="btn btn-warn">Arm LIVE</button>
+        <button id="btn-disarm" class="btn btn-ghost">Disarm</button>
+      </div>
+      <div class="btn-row" style="margin-top:14px;">
+        <button id="btn-kill" class="btn btn-danger">KILL SWITCH</button>
+        <button id="btn-resume" class="btn btn-ghost">Clear Kill</button>
+      </div>
+    </div>
+
+    <!-- Live stats -->
+    <div class="stat-grid">
+      <div class="stat"><div class="k">Today P&amp;L</div><div id="stat-pnl" class="v">₹0</div></div>
+      <div class="stat"><div class="k">Daily Loss Cap</div><div id="stat-cap" class="v">₹{{ daily_loss_cap|round(0)|int }}</div></div>
+      <div class="stat"><div class="k">Lots</div><div id="stat-lots" class="v">{{ lots }}</div></div>
+    </div>
+
+    <!-- Recent orders (dry-run rows clearly tagged) -->
+    <div class="card">
+      <h3>Recent orders</h3>
+      <table class="orders">
+        <thead>
+          <tr><th>Time</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Status</th><th>Mode</th></tr>
+        </thead>
+        <tbody id="orders-body">
+          <tr><td colspan="6" style="color:#64748b;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+<script src="/static/live.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Live — Connect Broker</title>
+  <link rel="stylesheet" href="/static/live.css">
+</head>
+<body>
+<div class="page">
+  <header class="live-topbar">
+    <span class="live-logo">BOTS LIVE <span class="tag">paper-shell, real-money stack</span></span>
+    <nav>
+      <a href="/live/">Status</a>
+      <a href="/labs">Paper Labs</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Connect Broker</h1>
+    <p class="sub">Choose the broker account this live engine will trade on. Angel One is primary; Zerodha is secondary (Bot-A account is blocked).</p>
+
+    <form method="POST" action="/live/connect">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="broker-grid">
+        {% for key, b in brokers.items() %}
+        <label class="broker-option {{ 'selected' if selected == key else '' }}">
+          <div class="bname">
+            <input type="radio" name="broker" value="{{ key }}"
+                   {{ 'checked' if selected == key else '' }}>
+            {{ b.label }}
+          </div>
+          <div class="bdesc">
+            {% if key == 'angel' %}SmartAPI — API Key, Client Code, PIN, TOTP Secret{% else %}Kite Connect — API Key, API Secret{% endif %}
+          </div>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Continue</button>
+      </div>
+    </form>
+  </main>
+</div>
+<script src="/static/live.js"></script>
+</body>
+</html>

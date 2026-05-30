@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>Live — Configure</title>
+  <link rel="stylesheet" href="/static/live.css">
+</head>
+<body>
+<div class="page">
+  <header class="live-topbar">
+    <span class="live-logo">BOTS LIVE <span class="tag">paper-shell, real-money stack</span></span>
+    <nav>
+      <a href="/live/">Status</a>
+      <a href="/live/connect">Broker</a>
+      <a href="/labs">Paper Labs</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Configure</h1>
+    <p class="sub">Set position size, bot variant, and the daily-loss cap. Lots are phase-capped (Phase 0/1 = 1 lot; hard ceiling 2).</p>
+
+    <!-- Mode + armed-status banner -->
+    <div id="mode-banner" class="mode-banner mode-{{ mode }}">
+      <div>
+        <div class="mode-label">CURRENT MODE</div>
+        <div class="mode-value">{{ mode }}</div>
+      </div>
+      <div style="text-align:right;">
+        <div class="mode-label">KILL SWITCH</div>
+        <div class="mode-value" style="font-size:14px;">{{ 'ON' if kill_switch else 'OFF' }}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <form method="POST" action="/live/configure">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+        <div class="field">
+          <label for="lots">Number of lots</label>
+          <input type="number" id="lots" name="lots" min="1" max="{{ lots_phase_cap }}"
+                 value="{{ lots }}">
+          <div class="hint">NIFTY 1 lot = {{ lot_sizes.NIFTY }} qty · BANKNIFTY 1 lot = {{ lot_sizes.BANKNIFTY }} qty · SENSEX 1 lot = {{ lot_sizes.SENSEX }} qty. Capped at {{ lots_phase_cap }} this phase (hard ceiling {{ lots_hard_cap }}).</div>
+        </div>
+
+        <div class="field">
+          <label for="bot_variant">Select bot</label>
+          <select id="bot_variant" name="bot_variant">
+            <option value="bot_a_v28" {{ 'selected' if bot_variant == 'bot_a_v28' else '' }}>Bot A — v2.8 (alpha/ITM)</option>
+          </select>
+          <div class="hint">Reuses the proven Bot A execution engine.</div>
+        </div>
+
+        <div class="field">
+          <label for="daily_loss_cap">Daily loss cap (₹)</label>
+          <input type="number" id="daily_loss_cap" name="daily_loss_cap" min="0" step="100"
+                 value="{{ daily_loss_cap|round(0)|int }}">
+          <div class="hint">Realized loss beyond this halts new entries for the day.</div>
+        </div>
+
+        <div class="btn-row">
+          <button type="submit" class="btn btn-primary">Save Configuration</button>
+        </div>
+      </form>
+    </div>
+  </main>
+</div>
+<script src="/static/live.js"></script>
+</body>
+</html>

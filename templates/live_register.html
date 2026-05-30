@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live — Register</title>
+  <link rel="stylesheet" href="/static/live.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="card">
+    <div class="live-logo" style="margin-bottom:16px;">BOTS LIVE</div>
+    <p style="font-size:13px;opacity:0.8;margin-bottom:14px;">
+      Create your account. Each user connects their own broker and trades in
+      complete isolation from everyone else.
+    </p>
+    {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+    {% if registration_open | default(true) %}
+    <form method="POST" action="/live/register">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field">
+        <label for="invite_code">Invite code</label>
+        <input type="password" id="invite_code" name="invite_code"
+               autocomplete="off" autofocus required>
+      </div>
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" autocomplete="username"
+               required>
+      </div>
+      <div class="field">
+        <label for="passcode">Passcode</label>
+        <input type="password" id="passcode" name="passcode"
+               autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;">Create account</button>
+    </form>
+    {% else %}
+    <div class="error-msg">Registration is currently closed. Ask the operator for access.</div>
+    {% endif %}
+    <p style="margin-top:14px;text-align:center;font-size:13px;">
+      Already have an account? <a href="/live/login">Log in</a>
+    </p>
+  </div>
+</div>
+</body>
+</html>

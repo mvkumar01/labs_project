@@ -1,6 +1,8 @@
 """
 Labs Flask application entry point.
 """
+import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -11,11 +13,19 @@ from flask import Flask, redirect, url_for
 
 from storage.db import init_db
 from labs.ui.routes import labs_bp
+from labs.ui.live_routes import live_bp
+from live.auth_gate import register_auth_gate
 
 app = Flask(__name__)
-app.secret_key = "labs-dev-secret-change-in-prod"
+# 32-byte hex from PA env (LABS_SECRET_KEY); ephemeral fallback for local dev.
+app.secret_key = os.environ.get("LABS_SECRET_KEY") or secrets.token_hex(32)
 
 app.register_blueprint(labs_bp)
+
+# Live real-money stack (parallel, import-isolated). The auth gate covers the
+# /live blueprint only; /labs is untouched. Routes mutate DB/config only.
+register_auth_gate(app)
+app.register_blueprint(live_bp)
 
 
 @app.route("/")

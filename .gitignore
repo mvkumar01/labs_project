@@ -2,9 +2,18 @@ data/live/
 data/archive/
 storage/labs.db
 storage/state/
+storage/state/creds_enc.json
 config/zerodha_token.json
 config/zerodha_creds.json
 logs/
+
+# Live-stack secret/token artifacts (encrypted creds, broker tokens, runner state)
+creds_enc.json
+*creds_enc*.json
+*.enc
+config/angel_token.json
+config/*_token.json
+.env.live
 __pycache__/
 *.pyc
 *.pyo

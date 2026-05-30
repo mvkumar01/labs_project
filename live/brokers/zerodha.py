@@ -1,0 +1,156 @@
+"""
+Zerodha adapter (secondary) — wraps kiteconnect.KiteConnect.
+
+★ Permitted to import the broker SDK (lives under live/brokers/). ★
+
+CRITICAL DRY-RUN GUARD (spec §5.4, §13): identical to angel.py —
+`_LIVE_ORDERS_ENABLED = False` makes `place_order` / `exit_all` raise
+NotImplementedError("LIVE_ARMED not enabled — Phase 1 gated") so NO real
+order can fire in this build.
+
+ACCOUNT ISOLATION (spec §12.2): Bot A is already live on Zerodha trading
+NIFTY. Gate 4 (`gate_account_isolation` in live_executor) hard-blocks arming
+this adapter if `account_ref()` equals BOT_A_ZERODHA_ACCOUNT_REF, or if the
+account is already claimed by another user's connection. This adapter mirrors
+the Bot A order surface (VARIETY_REGULAR / EXCHANGE_NFO / PRODUCT_MIS /
+ORDER_TYPE_LIMIT @ LTP) so behaviour matches the proven engine.
+
+MULTI-USER: one instance per (user_id, conn_id). Each user's Zerodha session
+comes from that user's OWN stored encrypted token (creds), NOT Bot A's book.
+auth.session_manager.get_kite() is available as shared neutral infra and may
+be used ONLY here inside live/brokers/.
+"""
+from .base import BrokerAdapter, OrderResult, Position
+
+# ── Phase-1 enablement flag (reviewed commit only). ──────────────────────
+_LIVE_ORDERS_ENABLED = False
+
+
+class ZerodhaAdapter(BrokerAdapter):
+    broker_name = "zerodha"
+
+    def __init__(self, *, user_id: str, conn_id: str, creds: dict):
+        super().__init__(user_id=user_id, conn_id=conn_id, creds=creds)
+        self._kite = None
+
+    # ── session ─────────────────────────────────────────────────────────
+    def connect(self) -> None:
+        """Build a KiteConnect session from THIS user's own encrypted creds.
+
+        Falls back to the shared labs session (auth.session_manager) only when
+        no per-user api_key/access_token were supplied — both paths keep the
+        SDK import inside live/brokers/.
+        """
+        api_key = self._creds.get("api_key")
+        access_token = self._creds.get("access_token")
+        if api_key and access_token:
+            from kiteconnect import KiteConnect  # SDK isolated to this pkg
+            self._kite = KiteConnect(api_key=api_key)
+            self._kite.set_access_token(access_token)
+        else:
+            from auth.session_manager import get_kite  # neutral infra
+            self._kite = get_kite()
+
+    def is_connected(self) -> bool:
+        if self._kite is None:
+            return False
+        try:
+            self._kite.profile()  # cheap authenticated ping
+            return True
+        except Exception:
+            return False
+
+    def account_ref(self) -> str:
+        # api_key / user_id identify the Zerodha book for the isolation gate.
+        key = ""
+        if self._kite is not None:
+            key = getattr(self._kite, "api_key", "") or ""
+        return f"zerodha:{key or self._creds.get('api_key', '')}"
+
+    # ── market reads (Bot A surface, broker-abstracted) ──────────────────
+    def get_spot(self) -> float:
+        data = self._kite.ltp("NSE:NIFTY 50")
+        return float(data["NSE:NIFTY 50"]["last_price"])
+
+    def get_ltp(self, symbol: str) -> float:
+        key = f"NFO:{symbol}"
+        return float(self._kite.ltp(key)[key]["last_price"])
+
+    def quote(self, symbols: list) -> dict:
+        keys = [f"NFO:{s}" for s in symbols]
+        return self._kite.quote(keys)
+
+    def get_position(self) -> Position:
+        # Mirrors Bot A _get_open_position: first NIFTY MIS non-zero net leg.
+        try:
+            net = self._kite.positions()["net"]
+        except Exception:
+            return Position(symbol=None, qty=0, side=None)
+        for p in net:
+            if (p["tradingsymbol"].startswith("NIFTY")
+                    and p["product"] == "MIS"
+                    and p["quantity"] != 0):
+                sym = p["tradingsymbol"]
+                side = ("CALL" if sym.endswith("CE")
+                        else ("PUT" if sym.endswith("PE") else None))
+                return Position(symbol=sym, qty=p["quantity"], side=side)
+        return Position(symbol=None, qty=0, side=None)
+
+    def get_order_status(self, broker_order_id: str) -> dict:
+        for o in self._kite.orders():
+            if str(o.get("order_id")) == str(broker_order_id):
+                return o
+        return {}
+
+    # ── THE GUARDED CALLS ─────────────────────────────────────────────────
+    def place_order(self, *, side: str, symbol: str, qty: int,
+                    price: float, idempotency_key: str) -> OrderResult:
+        if not _LIVE_ORDERS_ENABLED:
+            raise NotImplementedError(
+                "LIVE_ARMED not enabled — Phase 1 gated. Zerodha live order "
+                "placement is disabled (Phase-0 dry-run). Enable only via the "
+                "Phase-1 enablement commit after a clean dry-run session."
+            )
+        # ── real branch — reached only in Phase 1 (LIVE_ARMED + 6 gates) ──
+        order_id = self._kite.place_order(
+            variety=self._kite.VARIETY_REGULAR,
+            exchange=self._kite.EXCHANGE_NFO,
+            tradingsymbol=symbol,
+            transaction_type=self._kite.TRANSACTION_TYPE_BUY,
+            quantity=qty,
+            product=self._kite.PRODUCT_MIS,
+            order_type=self._kite.ORDER_TYPE_LIMIT,
+            price=price,
+            tag=idempotency_key[:20],  # Zerodha tag max 20 chars
+        )
+        return OrderResult(
+            broker_order_id=str(order_id),
+            status="PLACED",
+            avg_fill_price=None,
+            raw={"order_id": order_id},
+        )
+
+    def exit_all(self, *, symbol: str, qty: int, reason: str,
+                 idempotency_key: str) -> OrderResult:
+        if not _LIVE_ORDERS_ENABLED:
+            raise NotImplementedError(
+                "LIVE_ARMED not enabled — Phase 1 gated. Zerodha live exit "
+                "placement is disabled (Phase-0 dry-run)."
+            )
+        order_id = self._kite.place_order(
+            variety=self._kite.VARIETY_REGULAR,
+            exchange=self._kite.EXCHANGE_NFO,
+            tradingsymbol=symbol,
+            transaction_type=self._kite.TRANSACTION_TYPE_SELL,
+            quantity=qty,
+            product=self._kite.PRODUCT_MIS,
+            order_type=self._kite.ORDER_TYPE_LIMIT,
+            price=self.get_ltp(symbol),
+            tag=idempotency_key[:20],
+        )
+        return OrderResult(
+            broker_order_id=str(order_id),
+            status="PLACED",
+            avg_fill_price=None,
+            raw={"order_id": order_id, "reason": reason},
+        )

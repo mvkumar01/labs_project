@@ -1,0 +1,128 @@
+/* live.css — styles for the /live real-money blueprint.
+   Filenames are live.* so they never overwrite labs.*. Shares the dark
+   palette from labs.css for visual consistency. */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  background: #0f1117;
+  color: #e2e8f0;
+  min-height: 100vh;
+}
+a { color: #60a5fa; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.page { display: flex; flex-direction: column; min-height: 100vh; }
+
+.live-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px; height: 52px;
+  background: #1a1d27; border-bottom: 1px solid #2d3148;
+  position: sticky; top: 0; z-index: 10;
+}
+.live-logo { font-size: 18px; font-weight: 700; color: #f87171; letter-spacing: 1px; }
+.live-logo .tag { font-size: 11px; color: #94a3b8; font-weight: 500; letter-spacing: 0; }
+.live-topbar nav { display: flex; gap: 16px; align-items: center; }
+
+main {
+  max-width: 920px; margin: 0 auto; padding: 32px 24px 64px; width: 100%;
+}
+h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: #f1f5f9; }
+h2 { font-size: 15px; font-weight: 600; margin: 20px 0 12px; color: #cbd5e1; }
+.sub { color: #94a3b8; margin-bottom: 24px; font-size: 13px; }
+
+/* ── Cards ── */
+.card {
+  background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px;
+  padding: 22px; margin-bottom: 18px;
+}
+.card h3 { font-size: 15px; margin-bottom: 14px; color: #e2e8f0; }
+
+/* ── Buttons ── */
+.btn { border: none; padding: 9px 18px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; font-weight: 600; }
+.btn-primary { background: #4f46e5; color: #fff; }
+.btn-primary:hover { background: #4338ca; }
+.btn-ghost { background: transparent; color: #cbd5e1; border: 1px solid #3a3f57; }
+.btn-ghost:hover { background: #232739; }
+.btn-warn { background: #b45309; color: #fff; }
+.btn-warn:hover { background: #92400e; }
+.btn-danger { background: #dc2626; color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── Forms ── */
+.field { margin-bottom: 16px; }
+.field label { display: block; font-size: 13px; color: #cbd5e1; margin-bottom: 6px; }
+.field input, .field select {
+  width: 100%; padding: 9px 11px; border-radius: 6px;
+  background: #0f1117; border: 1px solid #2d3148; color: #e2e8f0; font-size: 14px;
+}
+.field input:focus, .field select:focus { outline: none; border-color: #4f46e5; }
+.field .hint { font-size: 12px; color: #64748b; margin-top: 5px; }
+.field .set-badge { font-size: 11px; color: #34d399; margin-left: 8px; }
+
+/* ── Broker selector ── */
+.broker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+.broker-option {
+  border: 2px solid #2d3148; border-radius: 10px; padding: 20px; cursor: pointer;
+  background: #15182199; transition: border-color .15s;
+}
+.broker-option:hover { border-color: #475569; }
+.broker-option.selected { border-color: #4f46e5; background: #1e213099; }
+.broker-option .bname { font-size: 15px; font-weight: 600; color: #f1f5f9; }
+.broker-option .bdesc { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+.broker-option input[type=radio] { margin-right: 8px; accent-color: #4f46e5; }
+
+/* ── Mode banner ── */
+.mode-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  border-radius: 10px; padding: 16px 22px; margin-bottom: 20px;
+  border: 1px solid #2d3148; font-weight: 600;
+}
+.mode-banner .mode-label { font-size: 12px; color: #94a3b8; font-weight: 500; letter-spacing: 1px; }
+.mode-banner .mode-value { font-size: 20px; letter-spacing: 1px; }
+.mode-DISARMED   { background: #1f2937; border-color: #374151; }
+.mode-DISARMED .mode-value { color: #9ca3af; }
+.mode-DRY_RUN    { background: #1e3a2e; border-color: #166534; }
+.mode-DRY_RUN .mode-value { color: #4ade80; }
+.mode-LIVE_ARMED { background: #3a1212; border-color: #991b1b; }
+.mode-LIVE_ARMED .mode-value { color: #f87171; }
+
+/* ── Kill switch ── */
+.kill-banner {
+  background: #450a0a; border: 2px solid #dc2626; color: #fecaca;
+  border-radius: 10px; padding: 14px 20px; margin-bottom: 18px; font-weight: 700;
+}
+
+/* ── Reconcile warning ── */
+.reconcile-warning {
+  background: #422006; border: 1px solid #b45309; color: #fde68a;
+  border-radius: 10px; padding: 14px 20px; margin-bottom: 18px; font-size: 13px;
+}
+
+/* ── Status grid ── */
+.stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
+.stat { background: #1a1d27; border: 1px solid #2d3148; border-radius: 8px; padding: 14px 16px; }
+.stat .k { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px; }
+.stat .v { font-size: 18px; font-weight: 700; color: #f1f5f9; margin-top: 4px; }
+.v.pos { color: #4ade80; } .v.neg { color: #f87171; }
+
+/* ── Orders table ── */
+table.orders { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+table.orders th, table.orders td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #232739; }
+table.orders th { color: #94a3b8; font-weight: 600; }
+.tag-dry { background: #1e3a2e; color: #4ade80; padding: 2px 7px; border-radius: 4px; font-size: 11px; }
+.tag-live { background: #3a1212; color: #f87171; padding: 2px 7px; border-radius: 4px; font-size: 11px; }
+
+/* ── Gate list (arm modal) ── */
+.gate-fail { color: #f87171; font-size: 13px; margin: 4px 0; }
+
+/* ── Login ── */
+.login-wrap { max-width: 340px; margin: 80px auto; }
+.login-wrap .card { text-align: center; }
+.error-msg { background: #450a0a; border: 1px solid #dc2626; color: #fecaca;
+  border-radius: 6px; padding: 9px 12px; margin-bottom: 14px; font-size: 13px; }
