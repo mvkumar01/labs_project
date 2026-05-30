@@ -3,7 +3,7 @@ data/archive/
 storage/labs.db
 storage/state/
 config/zerodha_token.json
-# zerodha_creds.json is intentionally tracked (private repo)
+config/zerodha_creds.json
 logs/
 __pycache__/
 *.pyc
