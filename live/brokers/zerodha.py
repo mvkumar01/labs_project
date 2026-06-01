@@ -46,7 +46,8 @@ def exchange_request_token(*, api_key: str, api_secret: str, request_token: str)
 
 
 def _live_orders_enabled() -> bool:
-    return os.environ.get("LIVE_ORDERS_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+    env_enabled = os.environ.get("LIVE_ORDERS_ENABLED", "0").strip().lower()
+    return _LIVE_ORDERS_ENABLED and env_enabled in {"1", "true", "yes"}
 
 # ── Phase-1 enablement flag (reviewed commit only). ──────────────────────
 _LIVE_ORDERS_ENABLED = False

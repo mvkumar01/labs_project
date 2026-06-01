@@ -15,18 +15,30 @@ blob held in-memory only — NEVER logged. The SmartApi import is deferred into
 `connect()` so importing this module never requires the SDK installed (keeps
 Phase-0 dry-run + CI green).
 """
+import json
 import os
+import calendar
+import re
+from datetime import datetime
 
 from .base import BrokerAdapter, OrderResult, Position
+from config.labs_config import STATE_DIR
 from live.proxy import configure_outbound_proxy
 
 
 def _live_orders_enabled() -> bool:
-    return os.environ.get("LIVE_ORDERS_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+    env_enabled = os.environ.get("LIVE_ORDERS_ENABLED", "0").strip().lower()
+    return _LIVE_ORDERS_ENABLED and env_enabled in {"1", "true", "yes"}
 
 # ── Phase-1 enablement flag. Flipping to True is the ONLY thing that lets a
 #    real Angel order leave this process. Reviewed commit only. ───────────
 _LIVE_ORDERS_ENABLED = False
+
+INSTRUMENT_MASTER_URL = (
+    "https://margincalculator.angelbroking.com/OpenAPI_File/files/"
+    "OpenAPIScripMaster.json"
+)
+INSTRUMENT_FILE = STATE_DIR / "angel_instruments.json"
 
 
 class AngelAdapter(BrokerAdapter):
@@ -44,6 +56,7 @@ class AngelAdapter(BrokerAdapter):
         self._smart = None
         self._client_code = (creds or {}).get("client_code", "")
         self._token_cache = {}
+        self._symbol_cache = {}
 
     # ── session ─────────────────────────────────────────────────────────
     def connect(self) -> None:
@@ -82,8 +95,8 @@ class AngelAdapter(BrokerAdapter):
         return float(data["data"]["ltp"])
 
     def get_ltp(self, symbol: str) -> float:
-        token = self._resolve_symbol_token(symbol)
-        data = self._smart.ltpData(self._EXCHANGE, symbol, token)
+        meta = self._resolve_symbol_meta(symbol)
+        data = self._smart.ltpData(self._EXCHANGE, meta["symbol"], meta["token"])
         return float(((data or {}).get("data") or {}).get("ltp") or 0.0)
 
     def quote(self, symbols: list) -> dict:
@@ -116,10 +129,103 @@ class AngelAdapter(BrokerAdapter):
                 return row
         return {}
 
-    def _resolve_symbol_token(self, symbol: str) -> str:
-        cached = self._token_cache.get(symbol)
+    def _ensure_instrument_master(self) -> list:
+        refresh = True
+        if INSTRUMENT_FILE.exists():
+            modified = datetime.fromtimestamp(INSTRUMENT_FILE.stat().st_mtime).date()
+            refresh = modified != datetime.now().date()
+        if refresh:
+            import requests
+
+            INSTRUMENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            response = requests.get(INSTRUMENT_MASTER_URL, timeout=45)
+            response.raise_for_status()
+            INSTRUMENT_FILE.write_text(json.dumps(response.json()), encoding="utf-8")
+        return json.loads(INSTRUMENT_FILE.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _parse_zerodha_nifty_symbol(symbol: str) -> dict | None:
+        m = re.match(r"^NIFTY(?P<expiry>[0-9A-Z]{5})(?P<strike>\d{4,5})(?P<typ>CE|PE)$",
+                     str(symbol).strip().upper())
+        if not m:
+            return None
+        return {
+            "expiry": m.group("expiry"),
+            "strike": int(m.group("strike")),
+            "type": m.group("typ"),
+        }
+
+    @staticmethod
+    def _angel_expiry_from_zerodha(code: str) -> str | None:
+        code = str(code).strip().upper()
+        months = {
+            "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+            "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+        }
+        m = re.match(r"^(\d{2})(\d)(\d{2})$", code)
+        if m:
+            yy, mo, dd = m.groups()
+            return datetime(2000 + int(yy), int(mo), int(dd)).strftime("%d%b%Y").upper()
+        m = re.match(r"^(\d{2})([A-Z]{3})$", code)
+        if m and m.group(2) in months:
+            yy = 2000 + int(m.group(1))
+            month = months[m.group(2)]
+            for day in range(calendar.monthrange(yy, month)[1], 0, -1):
+                expiry = datetime(yy, month, day)
+                if expiry.weekday() == 1:
+                    return expiry.strftime("%d%b%Y").upper()
+        return None
+
+    def _resolve_symbol_meta(self, symbol: str) -> dict:
+        cached = self._symbol_cache.get(symbol)
         if cached:
             return cached
+        parsed = self._parse_zerodha_nifty_symbol(symbol)
+        try:
+            instruments = self._ensure_instrument_master()
+        except Exception:
+            instruments = []
+
+        target_expiry = (
+            self._angel_expiry_from_zerodha(parsed["expiry"])
+            if parsed else None
+        )
+        candidates = []
+        for ins in instruments:
+            if ins.get("exch_seg") != self._EXCHANGE:
+                continue
+            angel_symbol = str(ins.get("symbol") or ins.get("tradingsymbol") or "").upper()
+            if angel_symbol == str(symbol).upper():
+                meta = {"symbol": angel_symbol, "token": str(ins.get("token"))}
+                self._symbol_cache[symbol] = meta
+                self._token_cache[symbol] = meta["token"]
+                return meta
+            if not parsed:
+                continue
+            try:
+                strike = int(float(ins.get("strike") or 0) / 100)
+            except (TypeError, ValueError):
+                continue
+            if strike != parsed["strike"] or not angel_symbol.endswith(parsed["type"]):
+                continue
+            if target_expiry and str(ins.get("expiry") or "").upper() != target_expiry:
+                continue
+            token = str(ins.get("token") or "")
+            if token:
+                candidates.append({
+                    "symbol": angel_symbol,
+                    "token": token,
+                    "expiry": str(ins.get("expiry") or ""),
+                })
+        if candidates:
+            candidates.sort(key=lambda x: x["expiry"])
+            meta = {"symbol": candidates[0]["symbol"], "token": candidates[0]["token"]}
+            self._symbol_cache[symbol] = meta
+            self._token_cache[symbol] = meta["token"]
+            return meta
+
+        # Fallback to broker search if the daily master is unavailable or the
+        # symbol format changes. This keeps DRY_RUN diagnosis possible.
         resp = self._smart.searchScrip(self._EXCHANGE, symbol)
         rows = (resp or {}).get("data") or []
         match = None
@@ -132,8 +238,14 @@ class AngelAdapter(BrokerAdapter):
         token = str((match or {}).get("symboltoken") or "")
         if not token:
             raise RuntimeError(f"Angel symboltoken not found for {symbol}")
+        broker_symbol = str(match.get("tradingsymbol") or symbol).strip().upper()
+        meta = {"symbol": broker_symbol, "token": token}
+        self._symbol_cache[symbol] = meta
         self._token_cache[symbol] = token
-        return token
+        return meta
+
+    def _resolve_symbol_token(self, symbol: str) -> str:
+        return self._resolve_symbol_meta(symbol)["token"]
 
     # ── THE GUARDED CALLS ─────────────────────────────────────────────────
     def place_order(self, *, side: str, symbol: str, qty: int,
@@ -145,10 +257,11 @@ class AngelAdapter(BrokerAdapter):
                 "Phase-1 enablement commit after a clean dry-run session."
             )
         # ── real branch — reached only in Phase 1 (LIVE_ARMED + 6 gates) ──
+        meta = self._resolve_symbol_meta(symbol)
         order_params = {
             "variety": self._VARIETY,
-            "tradingsymbol": symbol,
-            "symboltoken": self._resolve_symbol_token(symbol),
+            "tradingsymbol": meta["symbol"],
+            "symboltoken": meta["token"],
             "transactiontype": "BUY",
             "exchange": self._EXCHANGE,
             "ordertype": self._ORDER_TYPE,
@@ -163,7 +276,7 @@ class AngelAdapter(BrokerAdapter):
             broker_order_id=str(resp) if resp else None,
             status="PLACED" if resp else "FAILED",
             avg_fill_price=None,
-            raw={"order_id": resp},
+            raw={"order_id": resp, "broker_symbol": meta["symbol"]},
         )
 
     def exit_all(self, *, symbol: str, qty: int, reason: str,
@@ -173,10 +286,11 @@ class AngelAdapter(BrokerAdapter):
                 "LIVE_ARMED not enabled — Phase 1 gated. Angel live exit "
                 "placement is disabled (Phase-0 dry-run)."
             )
+        meta = self._resolve_symbol_meta(symbol)
         order_params = {
             "variety": self._VARIETY,
-            "tradingsymbol": symbol,
-            "symboltoken": self._resolve_symbol_token(symbol),
+            "tradingsymbol": meta["symbol"],
+            "symboltoken": meta["token"],
             "transactiontype": "SELL",
             "exchange": self._EXCHANGE,
             "ordertype": self._ORDER_TYPE,
@@ -191,5 +305,5 @@ class AngelAdapter(BrokerAdapter):
             broker_order_id=str(resp) if resp else None,
             status="PLACED" if resp else "FAILED",
             avg_fill_price=None,
-            raw={"order_id": resp, "reason": reason},
+            raw={"order_id": resp, "reason": reason, "broker_symbol": meta["symbol"]},
         )

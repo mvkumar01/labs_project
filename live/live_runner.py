@@ -32,13 +32,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.labs_config import EOD_CUTOFF, SHARED_LIVE_DIR, UNDERLYINGS
+from config.labs_config import EOD_CUTOFF, SHARED_LIVE_DIR, STATE_DIR, UNDERLYINGS
 from storage.live_db import init_live_db
 from live import live_service as svc
 from live import live_executor as ex
 from live.brokers.base import Position
 from live.brokers.angel import AngelAdapter
 from live.brokers.zerodha import ZerodhaAdapter
+from live.engine.signal_engine import AlphaSignalEngine
 log = logging.getLogger("live.runner")
 
 POLL_INTERVAL = 2          # seconds (mirrors Bot A runner)
@@ -177,7 +178,7 @@ def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str
 def _order_applied(status: str, *, dry_run: bool) -> bool:
     if dry_run:
         return status == "DRY_RUN"
-    return status.upper() in {"PLACED", "OPEN", "TRIGGER PENDING", "COMPLETE", "FILLED"}
+    return status.upper() in {"COMPLETE", "COMPLETED", "FILLED", "EXECUTED"}
 
 
 def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_price: float,
@@ -255,21 +256,58 @@ def reconcile_on_startup(adapter, user_id: str, conn_id: str, conn=None) -> Reco
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Signal — Bot A evaluate() contract (spec §5.2). Phase-0 stubs.
+# Signal — Bot A evaluate() contract (spec §5.2).
 # ══════════════════════════════════════════════════════════════════════════
 def get_latest_alpha():
-    """Read-only latest alpha bar from the shared alpha relay (adapted from Bot
-    A runner.get_latest_alpha). Phase-0 stub returns None (no relay wired
-    locally). The runner NEVER computes alpha and NEVER touches Bot A's bot.db."""
-    return None
+    """Read-only latest locked hybrid alpha bar from shared market data."""
+    try:
+        from live.engine.alpha_hybrid import latest_hybrid_alpha
+
+        return latest_hybrid_alpha()
+    except Exception as e:
+        log.warning("latest hybrid alpha unavailable: %s", type(e).__name__)
+        return None
 
 
-def evaluate_signal(alpha, position, side) -> dict:
+def _engine_for(conn_id: str, signal_engines: dict) -> AlphaSignalEngine:
+    engine = signal_engines.get(conn_id)
+    if engine is not None:
+        return engine
+    safe = "".join(ch if ch.isalnum() else "_" for ch in conn_id)
+    path = STATE_DIR / f"rule3_state_{safe}.json"
+    engine = AlphaSignalEngine(rule3_state_path=path)
+    engine.restore_rule3_state(_today_ist_iso())
+    signal_engines[conn_id] = engine
+    return engine
+
+
+def evaluate_signal(engine: AlphaSignalEngine, alpha_bar: dict | None,
+                    position: str, side: str | None, entry_rule=None) -> dict:
     """Bot A signal contract:
        {"action": "ENTER"|"EXIT"|"HOLD", "side": "CALL"|"PUT"|None,
-        "reason": str, "rule": str|None}
-    Phase-0 stub: HOLD until the ported AlphaSignalEngine is wired (Phase 1)."""
-    return {"action": "HOLD", "side": None, "reason": "phase0_stub", "rule": None}
+        "reason": str, "rule": str|None}"""
+    if not alpha_bar or alpha_bar.get("alpha") is None:
+        return {"action": "HOLD", "side": None, "reason": "no_alpha", "rule": None}
+
+    ts = alpha_bar.get("timestamp")
+    bar_time_ist = None
+    if ts:
+        try:
+            bar_time_ist = datetime.fromisoformat(ts).astimezone(IST).time()
+        except Exception:
+            bar_time_ist = None
+
+    return engine.evaluate(
+        current_alpha=float(alpha_bar["alpha"]),
+        position=position,
+        side=side,
+        tier=alpha_bar.get("tier") or alpha_bar.get("bucket") or "PC50",
+        entry_rule=entry_rule,
+        denom_alg=alpha_bar.get("denom_alg"),
+        bar_time_ist=bar_time_ist,
+        gap_direction=alpha_bar.get("gap_direction"),
+        today_iso=alpha_bar.get("trade_date") or _today_ist_iso(),
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -318,7 +356,8 @@ def _build_adapter(user_id: str, conn_id: str, adapter_factory=None):
 # Per-connection cycle
 # ══════════════════════════════════════════════════════════════════════════
 def process_connection(user_id: str, conn_id: str, *, adapters: dict,
-                       reconciled: set, task_id: str, adapter_factory=None) -> None:
+                       reconciled: set, task_id: str, signal_engines: dict,
+                       alpha_seen: dict, adapter_factory=None) -> None:
     """One poll-cycle for a single connection (mirrors Bot A runner.main body).
     All reads/writes are scoped to (user_id, conn_id) — never another user's."""
     # Single-flight: only the owning runner process drives this connection.
@@ -328,6 +367,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     mode = ex.get_mode(user_id, conn_id)
     if mode == ex.Mode.DISARMED:
         return  # idle for this conn — evaluate nothing, place nothing
+
+    dry_run = mode == ex.Mode.DRY_RUN
 
     # Build + connect the adapter once per boot, reuse thereafter.
     adapter = adapters.get(conn_id)
@@ -359,31 +400,46 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             return
         adapters[conn_id] = adapter
 
-    # Reconcile once per boot per conn, before any signal.
-    if conn_id not in reconciled:
-        rec = reconcile_on_startup(adapter, user_id, conn_id)
-        reconciled.add(conn_id)
-        log.info("reconcile conn=%s ok=%s msg=%s", conn_id, rec.ok, rec.message)
+    # Reconcile once per boot per conn/mode, before any signal.
+    reconcile_key = (conn_id, mode.value)
+    if reconcile_key not in reconciled:
+        if dry_run:
+            svc.set_config(user_id, conn_id, "reconcile_blocked", "0")
+            svc.set_config(user_id, conn_id, "reconcile_message", "")
+            reconciled.add(reconcile_key)
+            log.info("reconcile conn=%s skipped in DRY_RUN", conn_id)
+        else:
+            rec = reconcile_on_startup(adapter, user_id, conn_id)
+            reconciled.add(reconcile_key)
+            log.info("reconcile conn=%s ok=%s msg=%s", conn_id, rec.ok, rec.message)
 
     if is_killed(user_id, conn_id):
         return  # hard halt of new activity for this conn
 
-    dry_run = mode == ex.Mode.DRY_RUN
     now_t = _now_ist().time()
 
+    st = svc.get_trade_state(user_id, conn_id)
     try:
         pos = adapter.get_position()
     except Exception as e:
         log.warning("get_position failed conn=%s: %s", conn_id, type(e).__name__)
         return
     broker_open = pos.qty != 0
+    db_open = st.get("position") == "OPEN"
+    current_open = db_open if dry_run else broker_open
+    current_symbol = st.get("symbol") if dry_run and db_open else pos.symbol
+    current_side = st.get("side") if dry_run and db_open else pos.side
+    current_qty = (
+        svc.get_lots(user_id, conn_id) * LOT_SIZE
+        if dry_run and db_open
+        else abs(pos.qty)
+    )
 
     # EOD forced square-off (independent of signal cycle).
-    if broker_open and eod_watchdog(now_t):
-        st = svc.get_trade_state(user_id, conn_id)
-        exit_price = adapter.get_ltp(pos.symbol)
-        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=pos.side,
-                              symbol=pos.symbol, qty=abs(pos.qty), price=exit_price,
+    if current_open and eod_watchdog(now_t):
+        exit_price = adapter.get_ltp(current_symbol)
+        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
+                              symbol=current_symbol, qty=current_qty, price=exit_price,
                               dry_run=dry_run)
         if _order_applied(result.status, dry_run=dry_run):
             _record_exit_result(
@@ -391,7 +447,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 conn_id,
                 st,
                 exit_price=result.avg_fill_price or exit_price,
-                qty=abs(pos.qty),
+                qty=current_qty,
                 reason="eod",
                 dry_run=dry_run,
             )
@@ -399,10 +455,27 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         return
 
     blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
-    alpha = get_latest_alpha()
-    sig = evaluate_signal(alpha, "OPEN" if broker_open else "NONE", pos.side)
+    alpha_bar = get_latest_alpha()
+    if alpha_bar is None:
+        return
+    alpha_key = (alpha_bar.get("timestamp"), alpha_bar.get("alpha"))
+    if alpha_seen.get(conn_id) == alpha_key:
+        return
+    alpha_seen[conn_id] = alpha_key
 
-    if (sig["action"] == "ENTER" and not broker_open and not blocked
+    engine = _engine_for(conn_id, signal_engines)
+    sig = evaluate_signal(
+        engine,
+        alpha_bar,
+        "OPEN" if current_open else "NONE",
+        current_side,
+        entry_rule=st.get("entry_rule"),
+    )
+    log.info("signal conn=%s ts=%s tier=%s alpha=%s pos=%s sig=%s",
+             conn_id, alpha_bar.get("timestamp"), alpha_bar.get("tier"),
+             alpha_bar.get("alpha"), "OPEN" if current_open else "NONE", sig)
+
+    if (sig["action"] == "ENTER" and not current_open and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
         symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
@@ -412,17 +485,16 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule=sig.get("rule") or "none")
         if _order_applied(result.status, dry_run=dry_run):
-            st = svc.get_trade_state(user_id, conn_id)
-            st.update({"position": "OPEN", "side": side, "symbol": symbol,
+            state_symbol = (result.raw or {}).get("broker_symbol") or symbol
+            st.update({"position": "OPEN", "side": side, "symbol": state_symbol,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
-                       "entry_rule": sig.get("rule")})
+                       "entry_rule": sig.get("rule"), "entry_spot": alpha_bar.get("spot")})
             svc.save_trade_state(user_id, conn_id, st)
 
-    elif sig["action"] == "EXIT" and broker_open:
-        st = svc.get_trade_state(user_id, conn_id)
-        exit_price = adapter.get_ltp(pos.symbol)
-        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=pos.side,
-                              symbol=pos.symbol, qty=abs(pos.qty),
+    elif sig["action"] == "EXIT" and current_open:
+        exit_price = adapter.get_ltp(current_symbol)
+        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
+                              symbol=current_symbol, qty=current_qty,
                               price=exit_price, dry_run=dry_run)
         if _order_applied(result.status, dry_run=dry_run):
             _record_exit_result(
@@ -430,7 +502,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 conn_id,
                 st,
                 exit_price=result.avg_fill_price or exit_price,
-                qty=abs(pos.qty),
+                qty=current_qty,
                 reason=sig.get("reason") or "signal_exit",
                 dry_run=dry_run,
             )
@@ -450,6 +522,8 @@ def run(task_id: str = "live_runner", max_cycles: int = None,
 
     adapters: dict = {}     # conn_id -> live adapter (built once, reused)
     reconciled: set = set()  # conn_ids reconciled this boot
+    signal_engines: dict = {}
+    alpha_seen: dict = {}
     cycles = 0
     while True:
         try:
@@ -458,6 +532,7 @@ def run(task_id: str = "live_runner", max_cycles: int = None,
                     process_connection(
                         user_id, conn_id, adapters=adapters,
                         reconciled=reconciled, task_id=task_id,
+                        signal_engines=signal_engines, alpha_seen=alpha_seen,
                         adapter_factory=adapter_factory,
                     )
                 except Exception as e:

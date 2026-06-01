@@ -7,6 +7,7 @@ storage/state/
 storage/state/creds_enc.json
 config/zerodha_token.json
 config/zerodha_creds.json
+config/live_env.json
 logs/
 
 # Live-stack secret/token artifacts (encrypted creds, broker tokens, runner state)

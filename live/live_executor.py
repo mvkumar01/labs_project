@@ -33,6 +33,7 @@ import logging
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -55,7 +56,7 @@ def _bot_a_zerodha_account_ref() -> str:
     Priority:
       1. explicit env override (PA-safe)
       2. local Labs Zerodha creds user_id (private repo)
-      3. placeholder that forces the operator to set a real value
+      3. empty string, which fail-closes Zerodha account isolation
     """
     ref = (os.environ.get("BOT_A_ZERODHA_ACCOUNT_REF") or "").strip()
     if ref:
@@ -65,9 +66,9 @@ def _bot_a_zerodha_account_ref() -> str:
     try:
         data = json.loads(creds_path.read_text(encoding="utf-8"))
     except Exception:
-        return "zerodha:__BOT_A__"
+        return ""
     user_id = str(data.get("user_id") or "").strip()
-    return f"zerodha:{user_id}" if user_id else "zerodha:__BOT_A__"
+    return f"zerodha:{user_id}" if user_id else ""
 
 
 BOT_A_ZERODHA_ACCOUNT_REF = _bot_a_zerodha_account_ref()
@@ -193,6 +194,12 @@ def gate_account_isolation(adapter, user_id: str, conn_id: str,
     except Exception as e:
         return GateResult("account_isolation", False,
                           f"ref_error={type(e).__name__}")
+    if not BOT_A_ZERODHA_ACCOUNT_REF and getattr(adapter, "broker_name", "") == "zerodha":
+        return GateResult(
+            "account_isolation",
+            False,
+            "BOT_A_ZERODHA_ACCOUNT_REF is not configured; Zerodha blocked fail-closed.",
+        )
     if ref == BOT_A_ZERODHA_ACCOUNT_REF:
         return GateResult("account_isolation", False,
                           "This account is already driven by Bot A — blocked.")
@@ -237,40 +244,58 @@ def all_passed(results: list) -> bool:
     return all(r.passed for r in results)
 
 
-def _refresh_order_result(adapter, result: OrderResult) -> OrderResult:
-    """Best-effort broker-side status enrichment right after placement."""
+def _is_final_status(status: str) -> bool:
+    return str(status or "").upper() in {
+        "COMPLETE", "COMPLETED", "FILLED", "EXECUTED", "REJECTED",
+        "CANCELLED", "CANCELED", "FAILED",
+    }
+
+
+def _refresh_order_result(adapter, result: OrderResult, *,
+                          polls: int = 6, delay_s: float = 1.0) -> OrderResult:
+    """Best-effort broker-side status enrichment after placement.
+
+    Polls briefly so ledger/trade-state use broker fill status and average
+    price rather than assuming a LIMIT order filled immediately.
+    """
     if not result.broker_order_id:
         return result
-    try:
-        snap = adapter.get_order_status(result.broker_order_id)
-    except Exception:
-        return result
-    if not snap:
-        return result
-    status = (
-        snap.get("status")
-        or snap.get("orderstatus")
-        or snap.get("order_status")
-        or result.status
-    )
-    avg = (
-        snap.get("average_price")
-        or snap.get("averageprice")
-        or snap.get("avgprice")
-        or result.avg_fill_price
-    )
-    try:
-        avg = float(avg) if avg not in (None, "") else None
-    except (TypeError, ValueError):
-        avg = result.avg_fill_price
-    raw = dict(result.raw or {})
-    raw["status_snapshot"] = snap
-    return OrderResult(
-        broker_order_id=result.broker_order_id,
-        status=str(status),
-        avg_fill_price=avg,
-        raw=raw,
-    )
+    enriched = result
+    for attempt in range(max(1, polls)):
+        try:
+            snap = adapter.get_order_status(result.broker_order_id)
+        except Exception:
+            snap = {}
+        if snap:
+            status = (
+                snap.get("status")
+                or snap.get("orderstatus")
+                or snap.get("order_status")
+                or enriched.status
+            )
+            avg = (
+                snap.get("average_price")
+                or snap.get("averageprice")
+                or snap.get("avgprice")
+                or enriched.avg_fill_price
+            )
+            try:
+                avg = float(avg) if avg not in (None, "") else None
+            except (TypeError, ValueError):
+                avg = enriched.avg_fill_price
+            raw = dict(enriched.raw or {})
+            raw["status_snapshot"] = snap
+            enriched = OrderResult(
+                broker_order_id=result.broker_order_id,
+                status=str(status),
+                avg_fill_price=avg,
+                raw=raw,
+            )
+            if _is_final_status(enriched.status):
+                return enriched
+        if attempt < polls - 1:
+            time.sleep(delay_s)
+    return enriched
 
 
 # ══════════════════════════════════════════════════════════════════════════
