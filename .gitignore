@@ -1,6 +1,8 @@
 data/live/
 data/archive/
 storage/labs.db
+storage/live.db
+storage/live.db-*
 storage/state/
 storage/state/creds_enc.json
 config/zerodha_token.json

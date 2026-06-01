@@ -32,8 +32,9 @@ COLLECTOR_INTERVAL_SECS = 60
 
 DATA_DIR    = BASE_DIR / "data" / "live"
 ARCHIVE_DIR = BASE_DIR / "data" / "archive"
-DB_PATH     = BASE_DIR / "storage" / "labs.db"
-STATE_DIR   = BASE_DIR / "storage" / "state"
+DB_PATH      = BASE_DIR / "storage" / "labs.db"
+LIVE_DB_PATH = BASE_DIR / "storage" / "live.db"
+STATE_DIR    = BASE_DIR / "storage" / "state"
 LOG_DIR     = BASE_DIR / "logs"
 TOKEN_PATH  = BASE_DIR / "config" / "zerodha_token.json"
 

@@ -13,10 +13,10 @@ Adapted from Bot A's runner.py + execution.py reconciliation / trade-state /
 per-tier counter patterns, broker-abstracted via live.brokers.* and routed
 through the single chokepoint live.live_executor.place_idempotent.
 
-Isolation (spec §1.4): imports ONLY live.* + neutral infra (storage.db.get_conn,
-storage.live_db, config.labs_config). NEVER imports labs.engine.* /
-labs.services.*, and NEVER imports a broker SDK directly — only the adapter
-classes from live.brokers (whose SDK imports are deferred into connect()).
+Isolation (spec §1.4): imports ONLY live.* + neutral infra (storage.live_db,
+config.labs_config). NEVER imports labs.engine.* / labs.services.*, and NEVER
+imports a broker SDK directly — only the adapter classes from live.brokers
+(whose SDK imports are deferred into connect()).
 
 DRY-RUN ONLY (Phase 0): with mode=DRY_RUN (default after arm_dry_run) no broker
 order is placed; even in LIVE_ARMED every adapter's place_order/exit_all raises

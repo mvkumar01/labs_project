@@ -1,12 +1,13 @@
 """
 Live-trading schema initialisation (live_* tables).
 
-This module is part of the parallel, import-isolated `live` stack. It shares
-`storage/labs.db` with the paper engine but defines ONLY `live_`-prefixed
-tables — never FKs into the paper `bots` table, never edits the paper schema.
+This module is part of the parallel, import-isolated `live` stack. It stores
+`live_`-prefixed tables in `storage/live.db` so web-worker writes do not depend
+on WAL visibility for the paper engine DB.
 
-Reuses `get_conn()` from storage.db (WAL, check_same_thread=False, Row factory).
-All tables use CREATE TABLE IF NOT EXISTS — safe to call on every startup.
+Uses rollback-journal mode (`journal_mode=DELETE`) for PythonAnywhere web
+worker compatibility. All tables use CREATE TABLE IF NOT EXISTS — safe to call
+on every startup.
 Future migrations use the PRAGMA table_info() ADD-COLUMN guard (same pattern
 as storage/db.py).
 
@@ -28,19 +29,30 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from storage.db import get_conn
+from config.labs_config import LIVE_DB_PATH
+
+
+def get_live_conn() -> sqlite3.Connection:
+    """Open the dedicated live DB in rollback-journal mode."""
+    LIVE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(LIVE_DB_PATH), check_same_thread=False, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
 
 
 def init_live_db(conn: sqlite3.Connection | None = None) -> None:
     """Create all live_* tables if they don't exist. Call once at runner/app startup.
 
     Accepts an optional connection (opens + closes its own when None), mirroring
-    the labs DB-function convention. NO FK into the paper `bots` table; the paper
-    schema in storage/db.py is never touched.
+    the labs DB-function convention. NO FK into the paper `bots` table; the
+    paper schema in storage/db.py is never touched.
     """
     own_conn = conn is None
     if own_conn:
-        conn = get_conn()
+        conn = get_live_conn()
 
     try:
         with conn:

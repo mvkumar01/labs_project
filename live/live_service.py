@@ -10,10 +10,10 @@ another. Per-connection tables (live_orders, live_trades, live_trade_state,
 live_day_pnl, live_broker_connections, live_credentials_enc) all carry
 user_id; reads filter on it.
 
-Isolation (spec §1.4): imports ONLY neutral infra (storage.db.get_conn,
-storage.live_db, config.labs_config). NEVER imports labs.engine.* /
-labs.services.* and NEVER imports a broker SDK. No real orders here — this
-module touches the DB / encrypted cred store only.
+Isolation (spec §1.4): imports ONLY neutral infra (storage.live_db,
+config.labs_config). NEVER imports labs.engine.* / labs.services.* and NEVER
+imports a broker SDK. No real orders here — this module touches the DB /
+encrypted cred store only.
 
 Credentials: Fernet envelope encryption, key from env LABS_CRED_KEY,
 ciphertext persisted per conn_id (live_credentials_enc BLOB + a gitignored
@@ -32,8 +32,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.labs_config import STATE_DIR
-from storage.db import get_conn
-from storage.live_db import init_live_db
+from storage.live_db import get_live_conn, init_live_db
+
 
 # ── credential secret field names that must NEVER be echoed back ──────────
 WRITE_ONLY_FIELDS = ("totp_secret", "pin", "password", "api_secret", "access_token")
@@ -112,7 +112,7 @@ def create_user(username: str, passcode: str, conn: sqlite3.Connection = None) -
     Raises ValueError on duplicate. Passcode hashed; never stored in clear."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         existing = conn.execute(
             "SELECT user_id FROM live_users WHERE username = ?", (username,)
@@ -137,7 +137,7 @@ def verify_user(username: str, passcode: str, conn: sqlite3.Connection = None) -
     whether the username exists (constant-ish path)."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT user_id, passcode_hash FROM live_users WHERE username = ?",
@@ -159,7 +159,7 @@ def get_user(user_id: str, conn: sqlite3.Connection = None) -> dict | None:
     """Return a SAFE user dict (no passcode_hash) or None."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT user_id, username, created_at FROM live_users WHERE user_id = ?",
@@ -179,7 +179,7 @@ def get_config(user_id: str, conn_id: str, key: str,
     """Return raw string value for (user_id, conn_id, key), or its default."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT value FROM live_config WHERE user_id = ? AND conn_id = ? AND key = ?",
@@ -197,7 +197,7 @@ def set_config(user_id: str, conn_id: str, key: str, value,
                conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         with conn:
             conn.execute(
@@ -258,7 +258,7 @@ def upsert_connection(user_id: str, conn_id: str, broker: str,
                       conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         now = _now_iso()
         with conn:
@@ -282,7 +282,7 @@ def set_connection_status(user_id: str, conn_id: str, status: str,
                           conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         now = _now_iso()
         connected_at = now if status == "connected" else None
@@ -302,7 +302,7 @@ def get_connection(user_id: str, conn_id: str,
                    conn: sqlite3.Connection = None) -> dict:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT * FROM live_broker_connections WHERE conn_id = ? AND user_id = ?",
@@ -317,7 +317,7 @@ def get_connection(user_id: str, conn_id: str,
 def list_user_connections(user_id: str, conn: sqlite3.Connection = None) -> list:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         rows = conn.execute(
             "SELECT * FROM live_broker_connections WHERE user_id = ?", (user_id,)
@@ -337,7 +337,7 @@ def account_ref_claimed_by_other(user_id: str, conn_id: str, account_ref: str,
         return False
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT conn_id FROM live_broker_connections "
@@ -356,7 +356,7 @@ def active_connections(conn: sqlite3.Connection = None) -> list:
     DISARMED connections have no mode row OR mode='DISARMED' — excluded."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         rows = conn.execute(
             "SELECT user_id, conn_id, value FROM live_config WHERE key = 'mode'"
@@ -387,7 +387,7 @@ def insert_order_ledger(idem_key: str, *, user_id: str, conn_id: str,
     inherently user-scoped."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         with conn:
             cur = conn.execute(
@@ -409,7 +409,7 @@ def insert_order_ledger(idem_key: str, *, user_id: str, conn_id: str,
 def get_order_ledger(idem_key: str, conn: sqlite3.Connection = None) -> dict:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT * FROM live_orders WHERE idem_key = ?", (idem_key,)
@@ -426,7 +426,7 @@ def update_order_ledger(idem_key: str, *, status: str = None,
                         conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         sets, params = [], []
         if status is not None:
@@ -456,7 +456,7 @@ def recent_orders(user_id: str, conn_id: str, limit: int = 20,
                   conn: sqlite3.Connection = None) -> list:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         rows = conn.execute(
             "SELECT * FROM live_orders WHERE user_id = ? AND conn_id = ? "
@@ -498,7 +498,7 @@ def get_trade_state(user_id: str, conn_id: str,
     """Load this conn's trade-state row (creating a default if absent)."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT * FROM live_trade_state WHERE conn_id = ? AND user_id = ?",
@@ -520,7 +520,7 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
     trade-marker writer). daily_trades_by_tier is JSON-serialised."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         by_tier = state.get("daily_trades_by_tier")
         if isinstance(by_tier, (dict, list)):
@@ -559,7 +559,7 @@ def reset_trade_state(user_id: str, conn_id: str,
     """Reset to flat, preserving the daily per-tier counters (Bot A semantics)."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         prev = get_trade_state(user_id, conn_id, conn=conn)
         st = _default_trade_state(user_id, conn_id)
@@ -579,7 +579,7 @@ def get_day_pnl(user_id: str, conn_id: str, trade_date: str = None,
                 conn: sqlite3.Connection = None) -> dict:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         trade_date = trade_date or _today_ist_iso()
         row = conn.execute(
@@ -599,7 +599,7 @@ def add_day_pnl(user_id: str, conn_id: str, delta_pnl: float,
                 trade_date: str = None, conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         trade_date = trade_date or _today_ist_iso()
         with conn:
@@ -621,7 +621,7 @@ def set_day_halted(user_id: str, conn_id: str, halted: int = 1,
                    trade_date: str = None, conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         trade_date = trade_date or _today_ist_iso()
         with conn:
@@ -646,7 +646,7 @@ def record_trade(user_id: str, conn_id: str, *, side: str, symbol: str,
                  conn: sqlite3.Connection = None) -> str:
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         trade_id = uuid.uuid4().hex
         with conn:
@@ -693,7 +693,7 @@ def store_credentials(user_id: str, conn_id: str, broker: str, creds: dict,
 
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         now = _now_iso()
         with conn:
@@ -730,7 +730,7 @@ def load_credentials(user_id: str, conn_id: str,
     user_id so one user can never load another's creds."""
     own = conn is None
     if own:
-        conn = get_conn()
+        conn = get_live_conn()
     try:
         row = conn.execute(
             "SELECT ciphertext FROM live_credentials_enc WHERE conn_id = ? AND user_id = ?",
