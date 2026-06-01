@@ -2,7 +2,7 @@
 
 This document describes the Labs live-trading stack as implemented for Phase 1
 dry-run validation. It is intentionally separate from the paper-trading Labs
-engine and from the existing Bot A runner.
+engine.
 
 ## Safety Model
 
@@ -34,7 +34,7 @@ var cannot accidentally enable real orders.
 | Live service | `live/live_service.py` | User-scoped CRUD, encrypted credentials, config, state, orders, trades |
 | Live runner | `live/live_runner.py` | Always-on polling loop, signal evaluation, DRY_RUN/live order routing |
 | Alpha reader | `live/engine/alpha_hybrid.py` | Reads locked hybrid range and shared OI store, computes latest alpha |
-| Signal engine | `live/engine/signal_engine.py` | Port of Bot A `AlphaSignalEngine`, pure broker-free trading logic |
+| Signal engine | `live/engine/signal_engine.py` | Hybrid Alpha signal engine, pure broker-free trading logic |
 | Executor rails | `live/live_executor.py` | Mode machine, gates, idempotency, order ledger, fill refresh |
 | Broker adapters | `live/brokers/angel.py`, `live/brokers/zerodha.py` | Broker sessions, quotes, positions, guarded order calls |
 | PA launcher | `pa_live_runner.py` | Loads private env and starts `live.live_runner` |
@@ -78,7 +78,7 @@ that specific `(user_id, conn_id)`.
 - `mode_armed`: connection is `LIVE_ARMED` and `armed=1`.
 - `kill_switch_clear`: kill switch is off.
 - `broker_connected`: broker adapter reports a live authenticated session.
-- `account_isolation`: account is not already claimed and not Bot A's protected Zerodha book.
+- `account_isolation`: account is not already claimed by another live connection.
 - `daily_loss_ok`: realized P&L has not breached the configured loss cap.
 - `lots_within_cap`: configured lots are within hard limits.
 
@@ -90,7 +90,7 @@ require mode, kill-switch, broker-connected, and account-isolation checks.
 DRY_RUN is meant to validate the complete trading path without placing orders.
 
 - Real alpha bars are processed.
-- Bot A signal logic is used.
+- Hybrid Alpha signal logic is used.
 - ITM symbols and LTP are resolved.
 - Order intents are inserted into `live_orders` with `dry_run=1`.
 - DB trade state is updated so simulated positions can later exit.
@@ -128,12 +128,9 @@ The adapter still refuses real orders while `_LIVE_ORDERS_ENABLED=False`.
 
 ## Zerodha Isolation
 
-Zerodha is supported as a secondary broker, but it is protected by an isolation
-gate because Bot A may already be live on a Zerodha account.
-
-If `BOT_A_ZERODHA_ACCOUNT_REF` is missing, Zerodha live arming fails closed.
-That means Zerodha is blocked unless the protected Bot A account reference is
-explicitly known. This does not affect Angel One.
+Zerodha is supported as a secondary broker. Its account reference participates
+in the same duplicate-account isolation gate as Angel One: a connection cannot
+arm live if another live connection has already claimed the same account.
 
 ## Deployment Sequence
 
@@ -142,7 +139,7 @@ explicitly known. This does not affect Angel One.
 3. Restart only the live runner always-on task.
 4. Arm DRY_RUN and verify broker status becomes `connected`.
 5. Run at least one to two full DRY_RUN sessions.
-6. Compare DRY_RUN intents against expected Bot A/hybrid behavior.
+6. Compare DRY_RUN intents against expected Hybrid Alpha behavior.
 7. Only after review, flip the final `_LIVE_ORDERS_ENABLED=True` switch in a
    separate commit.
 8. Start real trading at one lot only.
@@ -163,4 +160,3 @@ explicitly known. This does not affect Angel One.
 - `storage/state/creds_enc.json`
 - broker token/session files
 - any plaintext broker credentials
-

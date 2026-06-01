@@ -30,7 +30,6 @@ def _load_private_env() -> None:
     for key in (
         "LABS_CRED_KEY",
         "LIVE_ORDERS_ENABLED",
-        "BOT_A_ZERODHA_ACCOUNT_REF",
         "LIVE_OUTBOUND_PROXY_URL",
         "QUOTAGUARDSTATIC_URL",
     ):

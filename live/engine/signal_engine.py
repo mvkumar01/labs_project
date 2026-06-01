@@ -587,7 +587,7 @@ class AlphaSignalEngine:
 
 
 # ==================================================
-# Self-test — run directly: python -m bots.bot_a.signal
+# Self-test — run directly: python -m live.engine.signal_engine
 # ==================================================
 if __name__ == "__main__":
     import sys
@@ -831,7 +831,7 @@ if __name__ == "__main__":
     carve_cases = []
     v711_cases = []
     try:
-        from bots.bot_a.execution import compute_pc400_carve_out
+        raise ImportError("carve-out helper is not bundled with the live signal module")
         carve_cases = [
             ("v7  carve-out vix=18, sgap=+50 → vix_band",
                 compute_pc400_carve_out(18.0, 50.0, enable=True),  (True, "vix_band")),
@@ -1086,7 +1086,7 @@ if __name__ == "__main__":
     # Cases 5f-5j: spot-exit decision helper
     v28_spot_cases = []
     try:
-        from bots.bot_a.execution import v28_pc250_gap_up_decide_spot_exit
+        raise ImportError("v28 spot-exit helper is not bundled with the live signal module")
         v28_spot_cases = [
             # 5f — TP hit: cur - entry = +65 >= +60
             ("v2.8 5f spot delta=+65 → tp_v28_spot",

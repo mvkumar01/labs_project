@@ -85,8 +85,7 @@ class AngelAdapter(BrokerAdapter):
             return False
 
     def account_ref(self) -> str:
-        # Angel is a different broker from Bot A's Zerodha book — isolation
-        # gate 4 passes trivially, but we still return a stable identifier.
+        # Return a stable identifier for duplicate-account isolation.
         return f"angel:{self._client_code}"
 
     # ── market reads ──────────────────────────────────────────────────────

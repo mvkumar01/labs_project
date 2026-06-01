@@ -80,7 +80,7 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     def get_position(self) -> Position:
-        """Current broker NFO MIS position (Bot-A-style single-position read)."""
+        """Current broker NFO MIS position for this live connection."""
         ...
 
     @abstractmethod

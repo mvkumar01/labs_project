@@ -148,8 +148,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 dry_run     INTEGER NOT NULL DEFAULT 1
             );
 
-            -- Restart-safe single-row position state per connection
-            -- (mirrors Bot A trade_state; DB-backed, not JSON files).
+            -- Restart-safe single-row position state per connection.
             CREATE TABLE IF NOT EXISTS live_trade_state (
                 conn_id              TEXT PRIMARY KEY,
                 user_id              TEXT NOT NULL,

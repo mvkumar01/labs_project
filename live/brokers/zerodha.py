@@ -8,15 +8,12 @@ CRITICAL DRY-RUN GUARD (spec §5.4, §13): identical to angel.py —
 NotImplementedError("LIVE_ARMED not enabled — Phase 1 gated") so NO real
 order can fire in this build.
 
-ACCOUNT ISOLATION (spec §12.2): Bot A is already live on Zerodha trading
-NIFTY. Gate 4 (`gate_account_isolation` in live_executor) hard-blocks arming
-this adapter if `account_ref()` equals BOT_A_ZERODHA_ACCOUNT_REF, or if the
-account is already claimed by another user's connection. This adapter mirrors
-the Bot A order surface (VARIETY_REGULAR / EXCHANGE_NFO / PRODUCT_MIS /
-ORDER_TYPE_LIMIT @ LTP) so behaviour matches the proven engine.
+ACCOUNT ISOLATION (spec §12.2): Gate 4 (`gate_account_isolation` in
+live_executor) blocks arming if this account is already claimed by another
+user's connection. This adapter uses NFO MIS LIMIT orders at LTP.
 
 MULTI-USER: one instance per (user_id, conn_id). Each user's Zerodha session
-comes from that user's OWN stored encrypted token (creds), NOT Bot A's book.
+comes from that user's OWN stored encrypted token (creds).
 auth.session_manager.get_kite() is available as shared neutral infra and may
 be used ONLY here inside live/brokers/.
 """
@@ -91,7 +88,7 @@ class ZerodhaAdapter(BrokerAdapter):
         user_id = (self._creds.get("user_id") or "").strip()
         return f"zerodha:{user_id}" if user_id else f"zerodha:{self._creds.get('api_key', '')}"
 
-    # ── market reads (Bot A surface, broker-abstracted) ──────────────────
+    # ── market reads ─────────────────────────────────────────────────────
     def get_spot(self) -> float:
         data = self._kite.ltp("NSE:NIFTY 50")
         return float(data["NSE:NIFTY 50"]["last_price"])
@@ -105,7 +102,7 @@ class ZerodhaAdapter(BrokerAdapter):
         return self._kite.quote(keys)
 
     def get_position(self) -> Position:
-        # Mirrors Bot A _get_open_position: first NIFTY MIS non-zero net leg.
+        # First NIFTY MIS non-zero net leg for this live account.
         try:
             net = self._kite.positions()["net"]
         except Exception:

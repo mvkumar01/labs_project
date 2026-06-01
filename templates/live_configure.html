@@ -45,11 +45,11 @@
         </div>
 
         <div class="field">
-          <label for="bot_variant">Select bot</label>
+          <label for="bot_variant">Select strategy</label>
           <select id="bot_variant" name="bot_variant">
-            <option value="bot_a_v28" {{ 'selected' if bot_variant == 'bot_a_v28' else '' }}>Bot A — v2.8 (alpha/ITM)</option>
+            <option value="hybrid_alpha_v28" {{ 'selected' if bot_variant == 'hybrid_alpha_v28' else '' }}>Hybrid Alpha v2.8 (alpha/ITM)</option>
           </select>
-          <div class="hint">Reuses the proven Bot A execution engine.</div>
+          <div class="hint">Uses the live Hybrid Alpha signal and execution stack.</div>
         </div>
 
         <div class="field">

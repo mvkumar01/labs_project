@@ -9,9 +9,8 @@ idempotency ledger, and DB-backed trade state. An exception in one connection
 is caught and logged and NEVER aborts the loop for the other connections, so
 one user's failure can never affect another user.
 
-Adapted from Bot A's runner.py + execution.py reconciliation / trade-state /
-per-tier counter patterns, broker-abstracted via live.brokers.* and routed
-through the single chokepoint live.live_executor.place_idempotent.
+The runner is broker-abstracted via live.brokers.* and routes every order
+intent through the single chokepoint live.live_executor.place_idempotent.
 
 Isolation (spec §1.4): imports ONLY live.* + neutral infra (storage.live_db,
 config.labs_config). NEVER imports labs.engine.* / labs.services.*, and NEVER
@@ -42,9 +41,9 @@ from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine
 log = logging.getLogger("live.runner")
 
-POLL_INTERVAL = 2          # seconds (mirrors Bot A runner)
-LOT_SIZE = 65              # NIFTY (Bot A ZERODHA constant)
-ITM_DISTANCE = 200         # Bot A _resolve_itm_option distance
+POLL_INTERVAL = 2          # seconds
+LOT_SIZE = 65              # NIFTY lot size
+ITM_DISTANCE = 200         # ITM option distance
 EOD_EXIT_TIME = dtime(*[int(x) for x in EOD_CUTOFF.split(":")])  # 15:25 IST
 _OWNER_STALE_S = 30        # a runner_owner heartbeat older than this is stale
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -104,7 +103,7 @@ def check_daily_loss(user_id: str, conn_id: str, conn=None) -> bool:
 
 def eod_watchdog(now_t: dtime) -> bool:
     """Independent EOD square-off trigger — True once at/after the cutoff.
-    Runs every poll, independent of the signal cycle (hardens Bot A EOD)."""
+    Runs every poll, independent of the signal cycle."""
     return now_t >= EOD_EXIT_TIME
 
 
@@ -128,7 +127,7 @@ def next_intent_seq(user_id: str, conn_id: str, trade_date: str, conn=None) -> i
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Contract selection (Bot A _resolve_itm_option, broker-abstracted)
+# Contract selection
 # ══════════════════════════════════════════════════════════════════════════
 def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str:
     """Resolve a real tradingsymbol from the shared live option-chain CSV.
@@ -256,7 +255,7 @@ def reconcile_on_startup(adapter, user_id: str, conn_id: str, conn=None) -> Reco
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Signal — Bot A evaluate() contract (spec §5.2).
+# Signal contract (spec §5.2).
 # ══════════════════════════════════════════════════════════════════════════
 def get_latest_alpha():
     """Read-only latest locked hybrid alpha bar from shared market data."""
@@ -283,7 +282,7 @@ def _engine_for(conn_id: str, signal_engines: dict) -> AlphaSignalEngine:
 
 def evaluate_signal(engine: AlphaSignalEngine, alpha_bar: dict | None,
                     position: str, side: str | None, entry_rule=None) -> dict:
-    """Bot A signal contract:
+    """Live signal contract:
        {"action": "ENTER"|"EXIT"|"HOLD", "side": "CALL"|"PUT"|None,
         "reason": str, "rule": str|None}"""
     if not alpha_bar or alpha_bar.get("alpha") is None:
@@ -358,7 +357,7 @@ def _build_adapter(user_id: str, conn_id: str, adapter_factory=None):
 def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                        reconciled: set, task_id: str, signal_engines: dict,
                        alpha_seen: dict, adapter_factory=None) -> None:
-    """One poll-cycle for a single connection (mirrors Bot A runner.main body).
+    """One poll-cycle for a single live connection.
     All reads/writes are scoped to (user_id, conn_id) — never another user's."""
     # Single-flight: only the owning runner process drives this connection.
     if not claim_runner_owner(user_id, conn_id, task_id):

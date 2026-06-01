@@ -30,8 +30,6 @@ every adapter's place_order raises NotImplementedError until Phase-1
 enablement — so no real order can fire in this build.
 """
 import logging
-import json
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -48,30 +46,6 @@ log = logging.getLogger("live.executor")
 
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
-
-
-def _bot_a_zerodha_account_ref() -> str:
-    """Bot A's live Zerodha account ref for gate 4.
-
-    Priority:
-      1. explicit env override (PA-safe)
-      2. local Labs Zerodha creds user_id (private repo)
-      3. empty string, which fail-closes Zerodha account isolation
-    """
-    ref = (os.environ.get("BOT_A_ZERODHA_ACCOUNT_REF") or "").strip()
-    if ref:
-        return ref
-
-    creds_path = Path(__file__).resolve().parent.parent / "config" / "zerodha_creds.json"
-    try:
-        data = json.loads(creds_path.read_text(encoding="utf-8"))
-    except Exception:
-        return ""
-    user_id = str(data.get("user_id") or "").strip()
-    return f"zerodha:{user_id}" if user_id else ""
-
-
-BOT_A_ZERODHA_ACCOUNT_REF = _bot_a_zerodha_account_ref()
 
 
 def _now_iso() -> str:
@@ -187,22 +161,12 @@ def gate_broker_connected(adapter, user_id: str, conn_id: str,
 
 def gate_account_isolation(adapter, user_id: str, conn_id: str,
                            conn=None) -> GateResult:
-    """4. adapter.account_ref() != Bot A's live book AND not claimed by any
-    OTHER user's connection (UNIQUE(account_ref) + live_service lookup)."""
+    """4. adapter.account_ref() is not claimed by another live connection."""
     try:
         ref = adapter.account_ref()
     except Exception as e:
         return GateResult("account_isolation", False,
                           f"ref_error={type(e).__name__}")
-    if not BOT_A_ZERODHA_ACCOUNT_REF and getattr(adapter, "broker_name", "") == "zerodha":
-        return GateResult(
-            "account_isolation",
-            False,
-            "BOT_A_ZERODHA_ACCOUNT_REF is not configured; Zerodha blocked fail-closed.",
-        )
-    if ref == BOT_A_ZERODHA_ACCOUNT_REF:
-        return GateResult("account_isolation", False,
-                          "This account is already driven by Bot A — blocked.")
     if svc.account_ref_claimed_by_other(user_id, conn_id, ref, conn):
         return GateResult("account_isolation", False,
                           f"account_ref {ref} already claimed by another user")

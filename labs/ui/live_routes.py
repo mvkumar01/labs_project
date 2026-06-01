@@ -369,7 +369,7 @@ def configure():
         lots = max(1, min(lots, LOTS_PHASE_CAP, LOTS_HARD_CAP))
         svc.set_config(user_id, conn_id, "lots", lots)
 
-        variant = request.form.get("bot_variant", "bot_a_v28").strip() or "bot_a_v28"
+        variant = request.form.get("bot_variant", "hybrid_alpha_v28").strip() or "hybrid_alpha_v28"
         svc.set_config(user_id, conn_id, "bot_variant", variant)
 
         try:

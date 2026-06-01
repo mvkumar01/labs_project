@@ -44,9 +44,9 @@ CONFIG_DEFAULTS = {
     "kill_switch": "0",
     "lots": "1",
     "daily_loss_cap": "3000",
-    "bot_variant": "bot_a_v28",
+    "bot_variant": "hybrid_alpha_v28",
     "armed": "0",
-    "strategy_version": "bot_a_v28",
+    "strategy_version": "hybrid_alpha_v28",
     "intent_seq": "0",
     "reconcile_blocked": "0",
     "reconcile_message": "",
@@ -470,7 +470,7 @@ def recent_orders(user_id: str, conn_id: str, limit: int = 20,
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# live_trade_state — DB-backed single-row position state per conn (Bot A port)
+# live_trade_state — DB-backed single-row position state per connection
 # ══════════════════════════════════════════════════════════════════════════
 def _default_trade_state(user_id: str, conn_id: str) -> dict:
     return {
@@ -516,8 +516,7 @@ def get_trade_state(user_id: str, conn_id: str,
 
 def save_trade_state(user_id: str, conn_id: str, state: dict,
                      conn: sqlite3.Connection = None) -> None:
-    """Atomic per-conn upsert (the DB-backed analogue of Bot A's atomic JSON
-    trade-marker writer). daily_trades_by_tier is JSON-serialised."""
+    """Atomic per-conn upsert for restart-safe position state."""
     own = conn is None
     if own:
         conn = get_live_conn()
@@ -556,7 +555,7 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
 
 def reset_trade_state(user_id: str, conn_id: str,
                       conn: sqlite3.Connection = None) -> dict:
-    """Reset to flat, preserving the daily per-tier counters (Bot A semantics)."""
+    """Reset to flat, preserving the daily per-tier counters."""
     own = conn is None
     if own:
         conn = get_live_conn()
