@@ -30,6 +30,8 @@ every adapter's place_order raises NotImplementedError until Phase-1
 enablement — so no real order can fire in this build.
 """
 import logging
+import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,9 +47,30 @@ log = logging.getLogger("live.executor")
 
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
-# Bot A's live Zerodha account ref — arming onto this book is hard-blocked
-# (spec §12.2 account isolation). Set to the real api_key/user_id at deploy.
-BOT_A_ZERODHA_ACCOUNT_REF = "zerodha:__BOT_A__"
+
+
+def _bot_a_zerodha_account_ref() -> str:
+    """Bot A's live Zerodha account ref for gate 4.
+
+    Priority:
+      1. explicit env override (PA-safe)
+      2. local Labs Zerodha creds user_id (private repo)
+      3. placeholder that forces the operator to set a real value
+    """
+    ref = (os.environ.get("BOT_A_ZERODHA_ACCOUNT_REF") or "").strip()
+    if ref:
+        return ref
+
+    creds_path = Path(__file__).resolve().parent.parent / "config" / "zerodha_creds.json"
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "zerodha:__BOT_A__"
+    user_id = str(data.get("user_id") or "").strip()
+    return f"zerodha:{user_id}" if user_id else "zerodha:__BOT_A__"
+
+
+BOT_A_ZERODHA_ACCOUNT_REF = _bot_a_zerodha_account_ref()
 
 
 def _now_iso() -> str:
@@ -214,16 +237,52 @@ def all_passed(results: list) -> bool:
     return all(r.passed for r in results)
 
 
+def _refresh_order_result(adapter, result: OrderResult) -> OrderResult:
+    """Best-effort broker-side status enrichment right after placement."""
+    if not result.broker_order_id:
+        return result
+    try:
+        snap = adapter.get_order_status(result.broker_order_id)
+    except Exception:
+        return result
+    if not snap:
+        return result
+    status = (
+        snap.get("status")
+        or snap.get("orderstatus")
+        or snap.get("order_status")
+        or result.status
+    )
+    avg = (
+        snap.get("average_price")
+        or snap.get("averageprice")
+        or snap.get("avgprice")
+        or result.avg_fill_price
+    )
+    try:
+        avg = float(avg) if avg not in (None, "") else None
+    except (TypeError, ValueError):
+        avg = result.avg_fill_price
+    raw = dict(result.raw or {})
+    raw["status_snapshot"] = snap
+    return OrderResult(
+        broker_order_id=result.broker_order_id,
+        status=str(status),
+        avg_fill_price=avg,
+        raw=raw,
+    )
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # USER-SCOPED IDEMPOTENCY (spec §9) — key build + single-chokepoint placement
 # ══════════════════════════════════════════════════════════════════════════
 def build_idem_key(*, conn_id, trade_date, strategy_version, bar_timestamp,
-                   action, side, entry_rule, intent_seq) -> str:
+                   action, side, entry_rule, symbol) -> str:
     """Operator-mandated key format (spec §9). conn_id == "<user_id>:<broker>"
     already encodes the user, so the key is inherently user-scoped."""
     return ":".join([
         str(conn_id), str(trade_date), str(strategy_version), str(bar_timestamp),
-        str(action), str(side), str(entry_rule or "none"), str(intent_seq),
+        str(action), str(side), str(entry_rule or "none"), str(symbol or "none"),
     ])
 
 
@@ -304,6 +363,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
     else:
         result = adapter.place_order(side=side, symbol=symbol, qty=qty,
                                      price=price, idempotency_key=idem_key)
+    result = _refresh_order_result(adapter, result)
 
     svc.update_order_ledger(idem_key, status=result.status,
                             broker_order_id=result.broker_order_id,

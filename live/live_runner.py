@@ -25,20 +25,20 @@ NotImplementedError until a deliberate Phase-1 enablement commit.
 import logging
 import sys
 import time
+from csv import DictReader
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.labs_config import EOD_CUTOFF
+from config.labs_config import EOD_CUTOFF, SHARED_LIVE_DIR, UNDERLYINGS
 from storage.live_db import init_live_db
 from live import live_service as svc
 from live import live_executor as ex
 from live.brokers.base import Position
 from live.brokers.angel import AngelAdapter
 from live.brokers.zerodha import ZerodhaAdapter
-
 log = logging.getLogger("live.runner")
 
 POLL_INTERVAL = 2          # seconds (mirrors Bot A runner)
@@ -46,6 +46,8 @@ LOT_SIZE = 65              # NIFTY (Bot A ZERODHA constant)
 ITM_DISTANCE = 200         # Bot A _resolve_itm_option distance
 EOD_EXIT_TIME = dtime(*[int(x) for x in EOD_CUTOFF.split(":")])  # 15:25 IST
 _OWNER_STALE_S = 30        # a runner_owner heartbeat older than this is stale
+IST = timezone(timedelta(hours=5, minutes=30))
+UNDERLYING = "NIFTY"
 
 _ADAPTERS = {"angel": AngelAdapter, "zerodha": ZerodhaAdapter}
 
@@ -55,7 +57,11 @@ def _now_iso() -> str:
 
 
 def _today_ist_iso() -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date().isoformat()
+    return datetime.now(IST).date().isoformat()
+
+
+def _now_ist() -> datetime:
+    return datetime.now(IST)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -101,6 +107,13 @@ def eod_watchdog(now_t: dtime) -> bool:
     return now_t >= EOD_EXIT_TIME
 
 
+def _bar_timestamp_now() -> str:
+    """Signal/idempotency bucket. Use the current completed minute in IST so a
+    restart or repeated poll in the same minute reuses the same intent key."""
+    now = _now_ist().replace(second=0, microsecond=0)
+    return now.isoformat()
+
+
 def next_intent_seq(user_id: str, conn_id: str, trade_date: str, conn=None) -> int:
     """Monotonic per-(conn, date) intent counter. Resets when the IST date
     rolls over."""
@@ -116,14 +129,80 @@ def next_intent_seq(user_id: str, conn_id: str, trade_date: str, conn=None) -> i
 # ══════════════════════════════════════════════════════════════════════════
 # Contract selection (Bot A _resolve_itm_option, broker-abstracted)
 # ══════════════════════════════════════════════════════════════════════════
-def resolve_itm_option(adapter, side: str) -> str:
-    """ITM strike at ATM ± ITM_DISTANCE. Returns a tradingsymbol stub the
-    adapter maps. (Phase 1 wires the full per-broker instrument lookup.)"""
+def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str:
+    """Resolve a real tradingsymbol from the shared live option-chain CSV.
+
+    This keeps live trading aligned with the collector's own market-data source
+    of truth instead of guessing broker symbol formats.
+    """
     spot = adapter.get_spot()
-    atm = round(spot / 100) * 100
+    step = UNDERLYINGS[UNDERLYING]["strike_step"]
+    atm = round(spot / step) * step
     strike = atm - ITM_DISTANCE if side == "CALL" else atm + ITM_DISTANCE
     opt_type = "CE" if side == "CALL" else "PE"
-    return f"NIFTY:{int(strike)}{opt_type}"
+    trade_date = trade_date or _today_ist_iso()
+    path = SHARED_LIVE_DIR / trade_date / f"{UNDERLYING}_options_1min.csv"
+    if not path.exists():
+        raise RuntimeError(f"options CSV missing for {trade_date}: {path}")
+
+    exact: set[str] = set()
+    nearest: tuple[int, set[str]] | None = None
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = DictReader(handle)
+        for row in reader:
+            if (row.get("option_type") or "").strip().upper() != opt_type:
+                continue
+            symbol = (row.get("tradingsymbol") or "").strip()
+            if not symbol:
+                continue
+            try:
+                row_strike = int(float(row.get("strike") or 0))
+            except (TypeError, ValueError):
+                continue
+            if row_strike == strike:
+                exact.add(symbol)
+                continue
+            gap = abs(row_strike - strike)
+            if nearest is None or gap < nearest[0]:
+                nearest = (gap, {symbol})
+            elif gap == nearest[0]:
+                nearest[1].add(symbol)
+
+    candidates = exact or (nearest[1] if nearest else set())
+    if not candidates:
+        raise RuntimeError(f"no tradingsymbol found for {UNDERLYING} {strike}{opt_type}")
+    return min(candidates, key=lambda s: (len(s), s))
+
+
+def _order_applied(status: str, *, dry_run: bool) -> bool:
+    if dry_run:
+        return status == "DRY_RUN"
+    return status.upper() in {"PLACED", "OPEN", "TRIGGER PENDING", "COMPLETE", "FILLED"}
+
+
+def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_price: float,
+                        qty: int, reason: str, dry_run: bool) -> None:
+    entry_price = float(position.get("entry_price") or 0.0)
+    qty = abs(int(qty or 0))
+    pnl = (float(exit_price) - entry_price) * qty
+    now_iso = _now_iso()
+    svc.record_trade(
+        user_id,
+        conn_id,
+        side=position.get("side"),
+        symbol=position.get("symbol"),
+        entry_price=entry_price,
+        exit_price=float(exit_price),
+        qty=qty,
+        pnl=pnl,
+        entry_time=position.get("entry_time"),
+        exit_time=now_iso,
+        reason=reason,
+        dry_run=1 if dry_run else 0,
+    )
+    svc.add_day_pnl(user_id, conn_id, pnl)
+    if not check_daily_loss(user_id, conn_id):
+        svc.set_day_halted(user_id, conn_id, 1)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -201,11 +280,11 @@ def _route_order(adapter, user_id, conn_id, *, action, side, symbol, qty, price,
     trade_date = _today_ist_iso()
     seq = next_intent_seq(user_id, conn_id, trade_date, conn)
     strategy_version = svc.get_config(user_id, conn_id, "strategy_version", conn)
-    bar_ts = _now_iso()
+    bar_ts = _bar_timestamp_now()
     idem_key = ex.build_idem_key(
         conn_id=conn_id, trade_date=trade_date, strategy_version=strategy_version,
         bar_timestamp=bar_ts, action=action, side=side or "none",
-        entry_rule=entry_rule, intent_seq=seq,
+        entry_rule=entry_rule, symbol=symbol,
     )
     return ex.place_idempotent(
         adapter, user_id=user_id, conn_id=conn_id, idem_key=idem_key,
@@ -256,10 +335,28 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         adapter = _build_adapter(user_id, conn_id, adapter_factory)
         if adapter is None:
             return
+        row = svc.get_connection(user_id, conn_id)
         try:
             adapter.connect()
+            svc.upsert_connection(
+                user_id,
+                conn_id,
+                broker=(row.get("broker") or "").lower(),
+                account_label=row.get("account_label"),
+                account_ref=adapter.account_ref(),
+                status="connected",
+            )
         except Exception as e:
+            svc.upsert_connection(
+                user_id,
+                conn_id,
+                broker=(row.get("broker") or "").lower(),
+                account_label=row.get("account_label"),
+                account_ref=row.get("account_ref"),
+                status="disconnected",
+            )
             log.warning("adapter.connect failed conn=%s: %s", conn_id, type(e).__name__)
+            return
         adapters[conn_id] = adapter
 
     # Reconcile once per boot per conn, before any signal.
@@ -272,7 +369,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         return  # hard halt of new activity for this conn
 
     dry_run = mode == ex.Mode.DRY_RUN
-    now_t = datetime.now().time()
+    now_t = _now_ist().time()
 
     try:
         pos = adapter.get_position()
@@ -283,10 +380,22 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
 
     # EOD forced square-off (independent of signal cycle).
     if broker_open and eod_watchdog(now_t):
-        _route_order(adapter, user_id, conn_id, action="EXIT", side=pos.side,
-                     symbol=pos.symbol, qty=abs(pos.qty), price=0.0,
-                     dry_run=dry_run)
-        svc.reset_trade_state(user_id, conn_id)
+        st = svc.get_trade_state(user_id, conn_id)
+        exit_price = adapter.get_ltp(pos.symbol)
+        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=pos.side,
+                              symbol=pos.symbol, qty=abs(pos.qty), price=exit_price,
+                              dry_run=dry_run)
+        if _order_applied(result.status, dry_run=dry_run):
+            _record_exit_result(
+                user_id,
+                conn_id,
+                st,
+                exit_price=result.avg_fill_price or exit_price,
+                qty=abs(pos.qty),
+                reason="eod",
+                dry_run=dry_run,
+            )
+            svc.reset_trade_state(user_id, conn_id)
         return
 
     blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
@@ -296,23 +405,36 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if (sig["action"] == "ENTER" and not broker_open and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
-        symbol = resolve_itm_option(adapter, side)
+        symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
         price = adapter.get_ltp(symbol)
-        _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
-                     symbol=symbol, qty=qty, price=price, dry_run=dry_run,
-                     entry_rule=sig.get("rule") or "none")
-        st = svc.get_trade_state(user_id, conn_id)
-        st.update({"position": "OPEN", "side": side, "symbol": symbol,
-                   "entry_price": price, "entry_time": _now_iso(),
-                   "entry_rule": sig.get("rule")})
-        svc.save_trade_state(user_id, conn_id, st)
+        result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
+                              symbol=symbol, qty=qty, price=price, dry_run=dry_run,
+                              entry_rule=sig.get("rule") or "none")
+        if _order_applied(result.status, dry_run=dry_run):
+            st = svc.get_trade_state(user_id, conn_id)
+            st.update({"position": "OPEN", "side": side, "symbol": symbol,
+                       "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
+                       "entry_rule": sig.get("rule")})
+            svc.save_trade_state(user_id, conn_id, st)
 
     elif sig["action"] == "EXIT" and broker_open:
-        _route_order(adapter, user_id, conn_id, action="EXIT", side=pos.side,
-                     symbol=pos.symbol, qty=abs(pos.qty),
-                     price=adapter.get_ltp(pos.symbol), dry_run=dry_run)
-        svc.reset_trade_state(user_id, conn_id)
+        st = svc.get_trade_state(user_id, conn_id)
+        exit_price = adapter.get_ltp(pos.symbol)
+        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=pos.side,
+                              symbol=pos.symbol, qty=abs(pos.qty),
+                              price=exit_price, dry_run=dry_run)
+        if _order_applied(result.status, dry_run=dry_run):
+            _record_exit_result(
+                user_id,
+                conn_id,
+                st,
+                exit_price=result.avg_fill_price or exit_price,
+                qty=abs(pos.qty),
+                reason=sig.get("reason") or "signal_exit",
+                dry_run=dry_run,
+            )
+            svc.reset_trade_state(user_id, conn_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════

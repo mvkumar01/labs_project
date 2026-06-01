@@ -15,7 +15,14 @@ blob held in-memory only — NEVER logged. The SmartApi import is deferred into
 `connect()` so importing this module never requires the SDK installed (keeps
 Phase-0 dry-run + CI green).
 """
+import os
+
 from .base import BrokerAdapter, OrderResult, Position
+from live.proxy import configure_outbound_proxy
+
+
+def _live_orders_enabled() -> bool:
+    return os.environ.get("LIVE_ORDERS_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 
 # ── Phase-1 enablement flag. Flipping to True is the ONLY thing that lets a
 #    real Angel order leave this process. Reviewed commit only. ───────────
@@ -36,10 +43,12 @@ class AngelAdapter(BrokerAdapter):
         super().__init__(user_id=user_id, conn_id=conn_id, creds=creds)
         self._smart = None
         self._client_code = (creds or {}).get("client_code", "")
+        self._token_cache = {}
 
     # ── session ─────────────────────────────────────────────────────────
     def connect(self) -> None:
         """generateSession(client_code, pin, totp) from decrypted creds."""
+        configure_outbound_proxy()
         from SmartApi import SmartConnect  # SDK import isolated to this pkg
         import pyotp                        # TOTP for Angel login
 
@@ -73,12 +82,12 @@ class AngelAdapter(BrokerAdapter):
         return float(data["data"]["ltp"])
 
     def get_ltp(self, symbol: str) -> float:
-        raise NotImplementedError(
-            "Angel get_ltp requires symbol-token resolution — wired in Phase 1."
-        )
+        token = self._resolve_symbol_token(symbol)
+        data = self._smart.ltpData(self._EXCHANGE, symbol, token)
+        return float(((data or {}).get("data") or {}).get("ltp") or 0.0)
 
     def quote(self, symbols: list) -> dict:
-        raise NotImplementedError("Angel quote() wired in Phase 1.")
+        return {symbol: {"ltp": self.get_ltp(symbol)} for symbol in symbols}
 
     def get_position(self) -> Position:
         try:
@@ -96,12 +105,40 @@ class AngelAdapter(BrokerAdapter):
         return Position(symbol=None, qty=0, side=None)
 
     def get_order_status(self, broker_order_id: str) -> dict:
-        raise NotImplementedError("Angel get_order_status wired in Phase 1.")
+        try:
+            resp = self._smart.orderBook()
+            rows = (resp or {}).get("data") or []
+        except Exception:
+            return {}
+        for row in rows:
+            order_id = row.get("orderid") or row.get("order_id")
+            if str(order_id) == str(broker_order_id):
+                return row
+        return {}
+
+    def _resolve_symbol_token(self, symbol: str) -> str:
+        cached = self._token_cache.get(symbol)
+        if cached:
+            return cached
+        resp = self._smart.searchScrip(self._EXCHANGE, symbol)
+        rows = (resp or {}).get("data") or []
+        match = None
+        for row in rows:
+            if str(row.get("tradingsymbol") or "").strip().upper() == symbol.upper():
+                match = row
+                break
+        if match is None and rows:
+            match = rows[0]
+        token = str((match or {}).get("symboltoken") or "")
+        if not token:
+            raise RuntimeError(f"Angel symboltoken not found for {symbol}")
+        self._token_cache[symbol] = token
+        return token
 
     # ── THE GUARDED CALLS ─────────────────────────────────────────────────
     def place_order(self, *, side: str, symbol: str, qty: int,
                     price: float, idempotency_key: str) -> OrderResult:
-        if not _LIVE_ORDERS_ENABLED:
+        if not _live_orders_enabled():
             raise NotImplementedError(
                 "LIVE_ARMED not enabled — Phase 1 gated. Angel live order "
                 "placement is disabled (Phase-0 dry-run). Enable only via the "
@@ -111,6 +148,7 @@ class AngelAdapter(BrokerAdapter):
         order_params = {
             "variety": self._VARIETY,
             "tradingsymbol": symbol,
+            "symboltoken": self._resolve_symbol_token(symbol),
             "transactiontype": "BUY",
             "exchange": self._EXCHANGE,
             "ordertype": self._ORDER_TYPE,
@@ -130,7 +168,7 @@ class AngelAdapter(BrokerAdapter):
 
     def exit_all(self, *, symbol: str, qty: int, reason: str,
                  idempotency_key: str) -> OrderResult:
-        if not _LIVE_ORDERS_ENABLED:
+        if not _live_orders_enabled():
             raise NotImplementedError(
                 "LIVE_ARMED not enabled — Phase 1 gated. Angel live exit "
                 "placement is disabled (Phase-0 dry-run)."
@@ -138,6 +176,7 @@ class AngelAdapter(BrokerAdapter):
         order_params = {
             "variety": self._VARIETY,
             "tradingsymbol": symbol,
+            "symboltoken": self._resolve_symbol_token(symbol),
             "transactiontype": "SELL",
             "exchange": self._EXCHANGE,
             "ordertype": self._ORDER_TYPE,

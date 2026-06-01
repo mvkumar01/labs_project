@@ -20,7 +20,33 @@ comes from that user's OWN stored encrypted token (creds), NOT Bot A's book.
 auth.session_manager.get_kite() is available as shared neutral infra and may
 be used ONLY here inside live/brokers/.
 """
+import os
+
 from .base import BrokerAdapter, OrderResult, Position
+from live.proxy import configure_outbound_proxy
+
+
+def build_login_url(api_key: str) -> str:
+    return f"https://kite.trade/connect/login?v=3&api_key={api_key}"
+
+
+def exchange_request_token(*, api_key: str, api_secret: str, request_token: str) -> dict:
+    configure_outbound_proxy()
+    from kiteconnect import KiteConnect
+
+    kite = KiteConnect(api_key=api_key)
+    data = kite.generate_session(request_token, api_secret=api_secret)
+    kite.set_access_token(data["access_token"])
+    profile = kite.profile()
+    return {
+        "access_token": data.get("access_token"),
+        "public_token": data.get("public_token"),
+        "user_id": profile.get("user_id") or data.get("user_id"),
+    }
+
+
+def _live_orders_enabled() -> bool:
+    return os.environ.get("LIVE_ORDERS_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 
 # ── Phase-1 enablement flag (reviewed commit only). ──────────────────────
 _LIVE_ORDERS_ENABLED = False
@@ -41,15 +67,15 @@ class ZerodhaAdapter(BrokerAdapter):
         no per-user api_key/access_token were supplied — both paths keep the
         SDK import inside live/brokers/.
         """
+        configure_outbound_proxy()
         api_key = self._creds.get("api_key")
         access_token = self._creds.get("access_token")
-        if api_key and access_token:
-            from kiteconnect import KiteConnect  # SDK isolated to this pkg
-            self._kite = KiteConnect(api_key=api_key)
-            self._kite.set_access_token(access_token)
-        else:
-            from auth.session_manager import get_kite  # neutral infra
-            self._kite = get_kite()
+        if not api_key or not access_token:
+            raise RuntimeError("missing Zerodha api_key/access_token for this user connection")
+        from kiteconnect import KiteConnect  # SDK isolated to this pkg
+
+        self._kite = KiteConnect(api_key=api_key)
+        self._kite.set_access_token(access_token)
 
     def is_connected(self) -> bool:
         if self._kite is None:
@@ -61,11 +87,8 @@ class ZerodhaAdapter(BrokerAdapter):
             return False
 
     def account_ref(self) -> str:
-        # api_key / user_id identify the Zerodha book for the isolation gate.
-        key = ""
-        if self._kite is not None:
-            key = getattr(self._kite, "api_key", "") or ""
-        return f"zerodha:{key or self._creds.get('api_key', '')}"
+        user_id = (self._creds.get("user_id") or "").strip()
+        return f"zerodha:{user_id}" if user_id else f"zerodha:{self._creds.get('api_key', '')}"
 
     # ── market reads (Bot A surface, broker-abstracted) ──────────────────
     def get_spot(self) -> float:
@@ -105,7 +128,7 @@ class ZerodhaAdapter(BrokerAdapter):
     # ── THE GUARDED CALLS ─────────────────────────────────────────────────
     def place_order(self, *, side: str, symbol: str, qty: int,
                     price: float, idempotency_key: str) -> OrderResult:
-        if not _LIVE_ORDERS_ENABLED:
+        if not _live_orders_enabled():
             raise NotImplementedError(
                 "LIVE_ARMED not enabled — Phase 1 gated. Zerodha live order "
                 "placement is disabled (Phase-0 dry-run). Enable only via the "
@@ -132,7 +155,7 @@ class ZerodhaAdapter(BrokerAdapter):
 
     def exit_all(self, *, symbol: str, qty: int, reason: str,
                  idempotency_key: str) -> OrderResult:
-        if not _LIVE_ORDERS_ENABLED:
+        if not _live_orders_enabled():
             raise NotImplementedError(
                 "LIVE_ARMED not enabled — Phase 1 gated. Zerodha live exit "
                 "placement is disabled (Phase-0 dry-run)."

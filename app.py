@@ -15,7 +15,6 @@ from storage.db import init_db
 from labs.ui.routes import labs_bp
 from labs.ui.live_routes import live_bp
 from live.auth_gate import register_auth_gate
-
 app = Flask(__name__)
 # 32-byte hex from PA env (LABS_SECRET_KEY); ephemeral fallback for local dev.
 app.secret_key = os.environ.get("LABS_SECRET_KEY") or secrets.token_hex(32)

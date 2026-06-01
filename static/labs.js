@@ -551,10 +551,10 @@ function renderBacktestResults(result) {
 
   const skippedBody = document.getElementById("backtestSkippedBody");
   if (skippedBody) {
-    const rows = result.skipped_days || [];
+    const rows = _groupSkippedReasons(result.skipped_days || []);
     skippedBody.innerHTML = rows.length ? rows.map(r => `
-      <tr><td>${r.date || ""}</td><td>${r.reason || ""}</td><td>${r.symbol || r.leg_code || r.side || ""}</td></tr>
-    `).join("") : '<tr><td colspan="3" style="color:#64748b">No skipped days.</td></tr>';
+      <tr><td>${r.date || ""}</td><td>${r.reason || ""}</td><td>${r.detail || ""}</td><td>${r.count}</td></tr>
+    `).join("") : '<tr><td colspan="4" style="color:#64748b">No skipped days.</td></tr>';
   }
 
   const tradeBody = document.getElementById("backtestTradeBody");
@@ -579,6 +579,21 @@ function renderBacktestResults(result) {
 
 function _yesNo(value) {
   return value ? '<span class="green">Yes</span>' : '<span class="red">No</span>';
+}
+
+function _groupSkippedReasons(rows) {
+  const grouped = new Map();
+  rows.forEach(r => {
+    const detail = r.symbol || r.leg_code || r.side || "";
+    const key = `${r.date || ""}|${r.reason || ""}|${detail}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, { date: r.date || "", reason: r.reason || "", detail, count: 0 });
+    }
+    grouped.get(key).count += 1;
+  });
+  return Array.from(grouped.values()).sort((a, b) =>
+    `${a.date}|${a.reason}|${a.detail}`.localeCompare(`${b.date}|${b.reason}|${b.detail}`)
+  );
 }
 
 function _money(value) {

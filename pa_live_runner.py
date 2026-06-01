@@ -13,5 +13,8 @@ import sys
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
+from live.proxy import configure_outbound_proxy
+
 if __name__ == "__main__":
+    configure_outbound_proxy()
     runpy.run_module("live.live_runner", run_name="__main__")

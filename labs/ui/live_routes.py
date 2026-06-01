@@ -37,6 +37,7 @@ from live.auth_gate import (
     current_user_id, login_throttled, record_attempt, issue_csrf, csrf_protect,
     registration_open, verify_invite_code,
 )
+from live.brokers.zerodha import build_login_url, exchange_request_token
 
 log = logging.getLogger("live.routes")
 
@@ -80,6 +81,16 @@ def _current_conn_id():
     broker = session.get("live_broker")
     conn_id = svc.conn_id_for(user_id, broker) if (user_id and broker) else None
     return user_id, broker, conn_id
+
+
+def _account_ref_from_creds(broker: str, creds: dict) -> str | None:
+    if broker == "angel":
+        client_code = str(creds.get("client_code") or "").strip()
+        return f"angel:{client_code}" if client_code else None
+    if broker == "zerodha":
+        user_id = str(creds.get("user_id") or "").strip()
+        return f"zerodha:{user_id}" if user_id else None
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -241,7 +252,11 @@ def credentials(broker):
         )
 
     # POST — collect, encrypt, persist. NEVER log/echo the form dict.
-    creds = {}
+    try:
+        existing = svc.load_credentials(user_id, conn_id)
+    except Exception:
+        existing = {}
+    creds = dict(existing)
     for f in spec["fields"]:
         val = request.form.get(f["name"], "").strip()
         if val:
@@ -252,12 +267,30 @@ def credentials(broker):
     account_label = creds.get("client_code") or creds.get("api_key") or broker
     svc.store_credentials(user_id, conn_id, broker, creds)
     svc.upsert_connection(user_id, conn_id, broker=broker,
-                          account_label=account_label, account_ref=None,
+                          account_label=account_label,
+                          account_ref=_account_ref_from_creds(broker, creds),
                           status="configured")
     session["live_broker"] = broker
     log.info("stored credentials user=%s broker=%s (fields=%s)",
              user_id, broker, sorted(creds.keys()))  # field NAMES only
+    if broker == "zerodha" and creds.get("api_key") and creds.get("api_secret"):
+        return redirect(url_for("live.zerodha_login"))
     return redirect(url_for("live.configure"))
+
+
+@live_bp.route("/zerodha/login")
+def zerodha_login():
+    user_id = current_user_id()
+    conn_id = svc.conn_id_for(user_id, "zerodha")
+    try:
+        creds = svc.load_credentials(user_id, conn_id)
+    except Exception:
+        creds = {}
+    api_key = str(creds.get("api_key") or "").strip()
+    if not api_key:
+        return redirect(url_for("live.credentials", broker="zerodha"))
+    session["live_broker"] = "zerodha"
+    return redirect(build_login_url(api_key))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -274,9 +307,29 @@ def zerodha_callback():
             blob = svc.load_credentials(user_id, conn_id)
         except Exception:
             blob = {}
+        api_key = str(blob.get("api_key") or "").strip()
+        api_secret = str(blob.get("api_secret") or "").strip()
+        try:
+            if api_key and api_secret:
+                blob.update(
+                    exchange_request_token(
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        request_token=request_token,
+                    )
+                )
+        except Exception as exc:
+            log.warning("zerodha token exchange failed user=%s err=%s", user_id, type(exc).__name__)
         blob["request_token"] = request_token
         svc.store_credentials(user_id, conn_id, "zerodha", blob)
-        svc.set_connection_status(user_id, conn_id, "configured")
+        svc.upsert_connection(
+            user_id,
+            conn_id,
+            broker="zerodha",
+            account_label=blob.get("user_id") or blob.get("api_key") or "zerodha",
+            account_ref=_account_ref_from_creds("zerodha", blob),
+            status="connected" if blob.get("access_token") else "configured",
+        )
         log.info("stored zerodha request_token user=%s (status=%s)", user_id, status)
     return redirect(url_for("live.configure"))
 
@@ -368,10 +421,7 @@ def arm():
                     or conn_row.get("account_label", ""))
 
         def is_connected(self):
-            # Web process can't prove a live session; treat 'configured'/
-            # 'connected' as connected for the DB-side pre-check. The runner
-            # re-verifies with a real auth ping before any order.
-            return conn_row.get("status") in ("configured", "connected")
+            return conn_row.get("status") == "connected"
 
     gates = ex.evaluate_all(_DbAdapter(), user_id, conn_id)
     # mode_armed is False until we transition; require the OTHER gates first.
@@ -440,5 +490,6 @@ def status():
         "today_pnl": float(day.get("realized_pnl") or 0.0),
         "reconcile_ok": (not reconcile_blocked),
         "reconcile_warning": svc.get_config(user_id, conn_id, "reconcile_message"),
+        "connection_status": (svc.get_connection(user_id, conn_id) or {}).get("status"),
         "last_orders": svc.recent_orders(user_id, conn_id, limit=20),
     })

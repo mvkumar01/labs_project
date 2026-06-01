@@ -27,7 +27,6 @@ from config.labs_config import (
     UNDERLYINGS, MARKET_OPEN, MARKET_CLOSE,
     COLLECTOR_INTERVAL_SECS, LOG_DIR,
 )
-
 IST = pytz.timezone("Asia/Kolkata")
 MARKET_OPEN_TIME  = datetime.strptime(MARKET_OPEN,  "%H:%M").time()
 MARKET_CLOSE_TIME = datetime.strptime(MARKET_CLOSE, "%H:%M").time()

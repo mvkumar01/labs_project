@@ -17,7 +17,6 @@ BASE_DIR    = Path(__file__).resolve().parent.parent
 CREDS_PATH  = BASE_DIR / "config" / "zerodha_creds.json"
 TOKEN_PATH  = BASE_DIR / "config" / "zerodha_token.json"
 
-
 def _load_creds() -> dict:
     if not CREDS_PATH.exists():
         raise FileNotFoundError(f"Credentials file not found: {CREDS_PATH}")

@@ -501,7 +501,8 @@ def get_trade_state(user_id: str, conn_id: str,
         conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT * FROM live_trade_state WHERE conn_id = ?", (conn_id,)
+            "SELECT * FROM live_trade_state WHERE conn_id = ? AND user_id = ?",
+            (conn_id, user_id),
         ).fetchone()
         if row is None:
             st = _default_trade_state(user_id, conn_id)
