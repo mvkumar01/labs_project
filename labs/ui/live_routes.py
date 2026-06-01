@@ -79,8 +79,19 @@ def _current_conn_id():
     selected yet. NEVER trusts a client-supplied id."""
     user_id = current_user_id()
     broker = session.get("live_broker")
+    if user_id and not broker:
+        connections = svc.list_user_connections(user_id)
+        if connections:
+            connections.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+            broker = (connections[0].get("broker") or "").lower()
+            if broker:
+                session["live_broker"] = broker
     conn_id = svc.conn_id_for(user_id, broker) if (user_id and broker) else None
     return user_id, broker, conn_id
+
+
+def _normalize_username(username: str) -> str:
+    return (username or "").strip().lower()
 
 
 def _account_ref_from_creds(broker: str, creds: dict) -> str | None:
@@ -114,8 +125,9 @@ def register():
         return render_template("live_register.html", csrf_token=issue_csrf(),
                                registration_open=False,
                                error="Registration is closed. Ask the operator for access."), 403
-    username = (request.form.get("username", "") or "").strip()
+    username = _normalize_username(request.form.get("username", ""))
     passcode = request.form.get("passcode", "")
+    confirm_passcode = request.form.get("confirm_passcode", "")
     invite = request.form.get("invite_code", "")
     if login_throttled(username):
         return render_template("live_register.html", csrf_token=issue_csrf(),
@@ -130,6 +142,10 @@ def register():
         return render_template("live_register.html", csrf_token=issue_csrf(),
                                registration_open=True,
                                error="Username and passcode are required."), 400
+    if passcode != confirm_passcode:
+        return render_template("live_register.html", csrf_token=issue_csrf(),
+                               registration_open=True,
+                               error="Passcodes do not match."), 400
     try:
         user_id = svc.create_user(username, passcode)
     except ValueError:
@@ -151,7 +167,7 @@ def login():
     if not _csrf_ok():
         return render_template("live_login.html", csrf_token=issue_csrf(),
                                error="Session expired, try again."), 400
-    username = (request.form.get("username", "") or "").strip()
+    username = _normalize_username(request.form.get("username", ""))
     passcode = request.form.get("passcode", "")
     if login_throttled(username):
         return render_template("live_login.html", csrf_token=issue_csrf(),

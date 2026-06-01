@@ -20,8 +20,9 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field">
         <label for="invite_code">Invite code</label>
-        <input type="password" id="invite_code" name="invite_code"
-               autocomplete="off" autofocus required>
+        <input type="text" id="invite_code" name="invite_code"
+               autocomplete="one-time-code" spellcheck="false"
+               data-lpignore="true" data-1p-ignore autofocus required>
       </div>
       <div class="field">
         <label for="username">Username</label>
@@ -31,6 +32,11 @@
       <div class="field">
         <label for="passcode">Passcode</label>
         <input type="password" id="passcode" name="passcode"
+               autocomplete="new-password" required>
+      </div>
+      <div class="field">
+        <label for="confirm_passcode">Confirm passcode</label>
+        <input type="password" id="confirm_passcode" name="confirm_passcode"
                autocomplete="new-password" required>
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%;">Create account</button>
