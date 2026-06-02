@@ -481,6 +481,9 @@ def arm():
     user_id, conn_id = _require_conn()
     if not conn_id:
         return jsonify({"ok": False, "error": "no_connection"}), 409
+    broker = session.get("live_broker")
+    if broker:
+        _refresh_broker_funds(user_id, broker, conn_id)
     conn_row = svc.get_connection(user_id, conn_id)
 
     class _DbAdapter:
@@ -550,6 +553,8 @@ def refresh_funds():
     connection = svc.get_connection(user_id, conn_id) or {}
     return jsonify({
         "ok": ok,
+        "broker": connection.get("broker"),
+        "account_label": connection.get("account_label"),
         "funds_available": connection.get("funds_available"),
         "funds_updated_at": connection.get("funds_updated_at"),
         "funds_error": connection.get("funds_error"),
@@ -578,6 +583,8 @@ def status():
         "today_pnl": float(day.get("realized_pnl") or 0.0),
         "reconcile_ok": (not reconcile_blocked),
         "reconcile_warning": svc.get_config(user_id, conn_id, "reconcile_message"),
+        "broker": connection.get("broker"),
+        "account_label": connection.get("account_label"),
         "connection_status": connection.get("status"),
         "funds_available": connection.get("funds_available"),
         "funds_updated_at": connection.get("funds_updated_at"),

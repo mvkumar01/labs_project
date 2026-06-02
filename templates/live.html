@@ -25,7 +25,7 @@
     <h1>Live Status</h1>
     <p class="sub">
       {{ connection.broker|upper }} · {{ connection.account_label }} ·
-      <span style="color:#64748b;">{{ connection.status }}</span>
+      <span id="conn-status" style="color:#64748b;">{{ connection.status }}</span>
     </p>
 
     <!-- Kill switch banner (shown only when active; JS toggles) -->

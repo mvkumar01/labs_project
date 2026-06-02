@@ -32,8 +32,15 @@
     if (fundsNote) {
       fundsNote.textContent = s.funds_error
         ? s.funds_error
-        : (s.funds_updated_at ? "refreshed" : "");
+        : (s.funds_updated_at
+          ? (s.funds_available === null || s.funds_available === undefined ? "funds unavailable" : "refreshed")
+          : "");
     }
+  }
+
+  function applyConnectionStatus(s) {
+    var status = document.getElementById("conn-status");
+    if (status && s.connection_status) status.textContent = s.connection_status;
   }
 
   function applyModeBanner(mode) {
@@ -73,6 +80,7 @@
       .then(function (r) { return r.json(); })
       .then(function (s) {
         applyModeBanner(s.mode);
+        applyConnectionStatus(s);
 
         var kill = document.getElementById("kill-banner");
         if (kill) kill.style.display = s.kill_switch ? "block" : "none";
@@ -137,7 +145,10 @@
       refreshFunds.addEventListener("click", function () {
         refreshFunds.disabled = true;
         post("/live/refresh_funds").then(function (res) {
-          if (res.body) applyFunds(res.body);
+          if (res.body) {
+            applyFunds(res.body);
+            applyConnectionStatus(res.body);
+          }
           if (!res.ok && res.body && res.body.error) {
             window.alert("Funds refresh failed: " + res.body.error);
           }
