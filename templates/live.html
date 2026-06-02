@@ -27,6 +27,16 @@
       {{ connection.broker|upper }} · {{ connection.account_label }} ·
       <span id="conn-status" style="color:#64748b;">{{ connection.status }}</span>
     </p>
+    <div id="zerodha-relogin-banner"
+         class="session-warning"
+         data-broker="{{ connection.broker }}"
+         {% if connection.broker != 'zerodha' or connection.status == 'connected' %}style="display:none;"{% endif %}>
+      <div>
+        <strong>Zerodha session needs daily login.</strong>
+        <span>Kite tokens expire each trading day. Re-login, then refresh funds before arming LIVE.</span>
+      </div>
+      <a class="btn btn-warn" href="/live/zerodha/login">Re-login to Kite</a>
+    </div>
 
     <!-- Kill switch banner (shown only when active; JS toggles) -->
     <div id="kill-banner" class="kill-banner" style="display:none;">

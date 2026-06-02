@@ -351,6 +351,70 @@ def _build_adapter(user_id: str, conn_id: str, adapter_factory=None):
     return cls(user_id=user_id, conn_id=conn_id, creds=creds)
 
 
+def _connect_adapter(user_id: str, conn_id: str, adapter, row: dict) -> bool:
+    """Connect/reconnect one adapter and persist the real broker status."""
+    broker = (row.get("broker") or "").lower()
+    try:
+        adapter.connect()
+        if not adapter.is_connected():
+            raise RuntimeError("broker auth ping failed")
+        svc.upsert_connection(
+            user_id,
+            conn_id,
+            broker=broker,
+            account_label=row.get("account_label"),
+            account_ref=adapter.account_ref(),
+            status="connected",
+        )
+        try:
+            funds = adapter.available_funds()
+            svc.update_connection_funds(
+                user_id, conn_id, funds,
+                "" if funds is not None else "funds_unavailable",
+            )
+        except Exception as funds_exc:
+            svc.update_connection_funds(
+                user_id, conn_id, None, type(funds_exc).__name__)
+        return True
+    except Exception as e:
+        svc.upsert_connection(
+            user_id,
+            conn_id,
+            broker=broker,
+            account_label=row.get("account_label"),
+            account_ref=row.get("account_ref"),
+            status="disconnected",
+        )
+        svc.update_connection_funds(user_id, conn_id, None, type(e).__name__)
+        log.warning("adapter.connect failed conn=%s: %s", conn_id, type(e).__name__)
+        return False
+
+
+def _ensure_connected_adapter(user_id: str, conn_id: str, *, adapters: dict,
+                              adapter_factory=None):
+    """Return a connected adapter, reconnecting stale cached sessions."""
+    row = svc.get_connection(user_id, conn_id)
+    adapter = adapters.get(conn_id)
+    if adapter is not None:
+        try:
+            if adapter.is_connected():
+                return adapter
+            log.warning("adapter auth ping failed conn=%s; reconnecting", conn_id)
+        except Exception as e:
+            log.warning("adapter auth ping errored conn=%s: %s",
+                        conn_id, type(e).__name__)
+        adapters.pop(conn_id, None)
+
+    adapter = _build_adapter(user_id, conn_id, adapter_factory)
+    if adapter is None:
+        return None
+    if not _connect_adapter(user_id, conn_id, adapter, row):
+        adapters.pop(conn_id, None)
+        return None
+    adapters[conn_id] = adapter
+    return adapter
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Per-connection cycle
 # ══════════════════════════════════════════════════════════════════════════
@@ -369,44 +433,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
 
     dry_run = mode == ex.Mode.DRY_RUN
 
-    # Build + connect the adapter once per boot, reuse thereafter.
-    adapter = adapters.get(conn_id)
+    # Build + connect at boot, then verify cached sessions each cycle.
+    adapter = _ensure_connected_adapter(
+        user_id, conn_id, adapters=adapters, adapter_factory=adapter_factory)
     if adapter is None:
-        adapter = _build_adapter(user_id, conn_id, adapter_factory)
-        if adapter is None:
-            return
-        row = svc.get_connection(user_id, conn_id)
-        try:
-            adapter.connect()
-            svc.upsert_connection(
-                user_id,
-                conn_id,
-                broker=(row.get("broker") or "").lower(),
-                account_label=row.get("account_label"),
-                account_ref=adapter.account_ref(),
-                status="connected",
-            )
-            try:
-                funds = adapter.available_funds()
-                svc.update_connection_funds(
-                    user_id, conn_id, funds,
-                    "" if funds is not None else "funds_unavailable",
-                )
-            except Exception as funds_exc:
-                svc.update_connection_funds(
-                    user_id, conn_id, None, type(funds_exc).__name__)
-        except Exception as e:
-            svc.upsert_connection(
-                user_id,
-                conn_id,
-                broker=(row.get("broker") or "").lower(),
-                account_label=row.get("account_label"),
-                account_ref=row.get("account_ref"),
-                status="disconnected",
-            )
-            log.warning("adapter.connect failed conn=%s: %s", conn_id, type(e).__name__)
-            return
-        adapters[conn_id] = adapter
+        return
 
     # Reconcile once per boot per conn/mode, before any signal.
     reconcile_key = (conn_id, mode.value)

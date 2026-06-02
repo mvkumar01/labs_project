@@ -104,6 +104,18 @@ h2 { font-size: 15px; font-weight: 600; margin: 20px 0 12px; color: #cbd5e1; }
   background: #422006; border: 1px solid #b45309; color: #fde68a;
   border-radius: 10px; padding: 14px 20px; margin-bottom: 18px; font-size: 13px;
 }
+.session-warning {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  background: #312e1a; border: 1px solid #b45309; color: #fde68a;
+  border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; font-size: 13px;
+}
+.session-warning strong { display: block; color: #fef3c7; margin-bottom: 3px; }
+.session-warning span { color: #fcd34d; }
+.note-card { border-color: #3a3f57; }
+code {
+  background: #0f1117; border: 1px solid #2d3148; border-radius: 4px;
+  color: #bfdbfe; padding: 2px 5px;
+}
 
 /* ── Status grid ── */
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
@@ -133,4 +145,5 @@ table.orders th { color: #94a3b8; font-weight: 600; }
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .broker-grid { grid-template-columns: 1fr; }
   .mode-banner { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .session-warning { align-items: flex-start; flex-direction: column; }
 }

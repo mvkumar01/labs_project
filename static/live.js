@@ -41,6 +41,13 @@
   function applyConnectionStatus(s) {
     var status = document.getElementById("conn-status");
     if (status && s.connection_status) status.textContent = s.connection_status;
+    var relogin = document.getElementById("zerodha-relogin-banner");
+    if (relogin) {
+      var broker = (s.broker || relogin.getAttribute("data-broker") || "").toLowerCase();
+      relogin.style.display = (broker === "zerodha" && s.connection_status !== "connected")
+        ? "flex"
+        : "none";
+    }
   }
 
   function applyModeBanner(mode) {
@@ -120,6 +127,15 @@
       el.disabled = true;
       post(url).then(function (res) {
         if (!res.ok && res.body && res.body.failed_gates) {
+          var brokerGateFailedEarly = res.body.failed_gates.some(function (g) {
+            return g.name === "broker_connected";
+          });
+          if (res.body.broker === "zerodha" && brokerGateFailedEarly && res.body.relogin_url) {
+            if (window.confirm("Zerodha session is not connected. Re-login to Kite now?")) {
+              window.location.href = res.body.relogin_url;
+              return;
+            }
+          }
           var lines = res.body.failed_gates.map(function (g) {
             return "✖ " + g.name + ": " + g.detail;
           }).join("\n");

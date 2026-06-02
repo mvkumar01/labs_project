@@ -73,6 +73,18 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_stale_iso(value: str | None, *, max_age_s: int) -> bool:
+    if not value:
+        return True
+    try:
+        stamp = datetime.fromisoformat(str(value))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - stamp).total_seconds() > max_age_s
+    except Exception:
+        return True
+
+
 def _current_conn_id():
     """Derive this user's active conn_id from session user_id + selected broker.
     Returns (user_id, broker, conn_id) or (user_id, None, None) if no broker
@@ -115,9 +127,22 @@ def _adapter_for(broker: str, *, user_id: str, conn_id: str, creds: dict):
     raise ValueError(f"unsupported broker: {broker}")
 
 
+def _connection_status_for_refresh(broker: str, creds: dict, connected: bool) -> str:
+    """Persist an honest broker status after an auth/funds refresh attempt."""
+    if connected:
+        return "connected"
+    if broker == "zerodha":
+        return "disconnected" if creds.get("access_token") else "configured"
+    if broker == "angel":
+        required = ("api_key", "client_code", "pin", "totp_secret")
+        return "disconnected" if all(creds.get(k) for k in required) else "configured"
+    return "disconnected"
+
+
 def _refresh_broker_funds(user_id: str, broker: str, conn_id: str,
                           creds: dict | None = None) -> bool:
     """Connect once and persist a non-secret funds snapshot for /live/."""
+    creds = creds if creds is not None else None
     try:
         creds = creds if creds is not None else svc.load_credentials(user_id, conn_id)
         adapter = _adapter_for(broker, user_id=user_id, conn_id=conn_id, creds=creds)
@@ -143,11 +168,26 @@ def _refresh_broker_funds(user_id: str, broker: str, conn_id: str,
                            or creds.get("api_key")
                            or broker),
             account_ref=adapter.account_ref(),
-            status="connected" if connected else "configured",
+            status=_connection_status_for_refresh(broker, creds, connected),
         )
         svc.update_connection_funds(user_id, conn_id, funds, funds_error)
         return connected
     except Exception as exc:
+        try:
+            if creds is None:
+                creds = svc.load_credentials(user_id, conn_id)
+        except Exception:
+            creds = {}
+        row = svc.get_connection(user_id, conn_id)
+        if row:
+            svc.upsert_connection(
+                user_id,
+                conn_id,
+                broker=broker,
+                account_label=row.get("account_label"),
+                account_ref=row.get("account_ref"),
+                status=_connection_status_for_refresh(broker, creds or {}, False),
+            )
         svc.update_connection_funds(user_id, conn_id, None, type(exc).__name__)
         log.warning("funds refresh failed user=%s broker=%s err=%s",
                     user_id, broker, type(exc).__name__)
@@ -503,7 +543,13 @@ def arm():
         failed = [{"name": g.name, "detail": g.detail}
                   for g in non_mode if not g.passed]
         return jsonify({"ok": False, "failed_gates": failed,
-                        "mode": svc.get_mode(user_id, conn_id)}), 409
+                        "mode": svc.get_mode(user_id, conn_id),
+                        "broker": broker,
+                        "connection_status": (conn_row or {}).get("status"),
+                        "relogin_url": (
+                            url_for("live.zerodha_login")
+                            if broker == "zerodha" else None
+                        )}), 409
     try:
         mode = ex.arm_live(user_id, conn_id)
         return jsonify({"ok": True, "mode": mode.value})
@@ -574,6 +620,13 @@ def status():
     reconcile_blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
     day = svc.get_day_pnl(user_id, conn_id)
     connection = svc.get_connection(user_id, conn_id) or {}
+    if (
+        broker
+        and connection.get("status") == "connected"
+        and _is_stale_iso(connection.get("funds_updated_at"), max_age_s=60)
+    ):
+        _refresh_broker_funds(user_id, broker, conn_id)
+        connection = svc.get_connection(user_id, conn_id) or {}
     return jsonify({
         "mode": svc.get_mode(user_id, conn_id),
         "kill_switch": 1 if svc.is_kill_switch_on(user_id, conn_id) else 0,
