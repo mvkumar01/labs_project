@@ -76,6 +76,9 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 account_label TEXT,
                 account_ref   TEXT,
                 status        TEXT NOT NULL DEFAULT 'disconnected',
+                funds_available REAL,
+                funds_updated_at TEXT,
+                funds_error   TEXT,
                 connected_at  TEXT,
                 created_at    TEXT NOT NULL,
                 updated_at    TEXT NOT NULL,
@@ -188,11 +191,20 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
             return {r[1] for r in conn.execute(
                 f"PRAGMA table_info({table})").fetchall()}
 
-        # Example future migration (kept as documentation of the pattern):
-        # if "some_new_col" not in _cols("live_broker_connections"):
-        #     conn.execute(
-        #         "ALTER TABLE live_broker_connections ADD COLUMN some_new_col TEXT")
-        #     conn.commit()
+        broker_cols = _cols("live_broker_connections")
+        if "funds_available" not in broker_cols:
+            conn.execute(
+                "ALTER TABLE live_broker_connections ADD COLUMN funds_available REAL")
+            conn.commit()
+        if "funds_updated_at" not in broker_cols:
+            conn.execute(
+                "ALTER TABLE live_broker_connections ADD COLUMN funds_updated_at TEXT")
+            conn.commit()
+        if "funds_error" not in broker_cols:
+            conn.execute(
+                "ALTER TABLE live_broker_connections ADD COLUMN funds_error TEXT")
+            conn.commit()
+
         for _t in (
             "live_users",
             "live_broker_connections",

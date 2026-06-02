@@ -298,6 +298,27 @@ def set_connection_status(user_id: str, conn_id: str, status: str,
             conn.close()
 
 
+def update_connection_funds(user_id: str, conn_id: str, funds_available,
+                            error: str = "", conn: sqlite3.Connection = None) -> None:
+    """Persist a non-secret broker funds snapshot for the live dashboard."""
+    own = conn is None
+    if own:
+        conn = get_live_conn()
+    try:
+        now = _now_iso()
+        funds = None if funds_available is None else float(funds_available)
+        with conn:
+            conn.execute(
+                "UPDATE live_broker_connections SET funds_available = ?, "
+                "funds_updated_at = ?, funds_error = ?, updated_at = ? "
+                "WHERE conn_id = ? AND user_id = ?",
+                (funds, now, str(error or "")[:200], now, conn_id, user_id),
+            )
+    finally:
+        if own:
+            conn.close()
+
+
 def get_connection(user_id: str, conn_id: str,
                    conn: sqlite3.Connection = None) -> dict:
     own = conn is None

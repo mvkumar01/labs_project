@@ -386,6 +386,15 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 account_ref=adapter.account_ref(),
                 status="connected",
             )
+            try:
+                funds = adapter.available_funds()
+                svc.update_connection_funds(
+                    user_id, conn_id, funds,
+                    "" if funds is not None else "funds_unavailable",
+                )
+            except Exception as funds_exc:
+                svc.update_connection_funds(
+                    user_id, conn_id, None, type(funds_exc).__name__)
         except Exception as e:
             svc.upsert_connection(
                 user_id,

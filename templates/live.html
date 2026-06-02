@@ -66,6 +66,19 @@
     <div class="stat-grid">
       <div class="stat"><div class="k">Today P&amp;L</div><div id="stat-pnl" class="v">₹0</div></div>
       <div class="stat"><div class="k">Daily Loss Cap</div><div id="stat-cap" class="v">₹{{ daily_loss_cap|round(0)|int }}</div></div>
+      <div class="stat">
+        <div class="k">Available Funds</div>
+        <div id="stat-funds" class="v">
+          {% if connection.funds_available is not none %}
+            &#8377;{{ "{:,.0f}".format(connection.funds_available) }}
+          {% else %}
+            --
+          {% endif %}
+        </div>
+        <div id="stat-funds-note" class="stat-note">
+          {% if connection.funds_error %}{{ connection.funds_error }}{% elif connection.funds_updated_at %}refreshed{% endif %}
+        </div>
+      </div>
       <div class="stat"><div class="k">Lots</div><div id="stat-lots" class="v">{{ lots }}</div></div>
     </div>
 

@@ -20,6 +20,11 @@
     return (n >= 0 ? "+" : "-") + "₹" + Math.abs(n).toLocaleString("en-IN");
   }
 
+  function fmtMoney(v) {
+    if (v === null || v === undefined || v === "") return "--";
+    return "\u20b9" + Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
+
   function applyModeBanner(mode) {
     var b = document.getElementById("mode-banner");
     if (!b) return;
@@ -80,6 +85,15 @@
         if (cap) cap.textContent = "₹" + Number(s.daily_loss_cap || 0).toLocaleString("en-IN");
         var lots = document.getElementById("stat-lots");
         if (lots) lots.textContent = s.lots;
+
+        var funds = document.getElementById("stat-funds");
+        if (funds) funds.textContent = fmtMoney(s.funds_available);
+        var fundsNote = document.getElementById("stat-funds-note");
+        if (fundsNote) {
+          fundsNote.textContent = s.funds_error
+            ? s.funds_error
+            : (s.funds_updated_at ? "refreshed" : "");
+        }
 
         renderOrders(s.last_orders);
       })

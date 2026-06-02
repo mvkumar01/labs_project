@@ -89,6 +89,21 @@ class ZerodhaAdapter(BrokerAdapter):
         return f"zerodha:{user_id}" if user_id else f"zerodha:{self._creds.get('api_key', '')}"
 
     # ── market reads ─────────────────────────────────────────────────────
+    def available_funds(self) -> float | None:
+        if self._kite is None:
+            return None
+        data = self._kite.margins() or {}
+        available = ((data.get("equity") or {}).get("available") or {})
+        for key in ("live_balance", "cash", "opening_balance"):
+            value = available.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def get_spot(self) -> float:
         data = self._kite.ltp("NSE:NIFTY 50")
         return float(data["NSE:NIFTY 50"]["last_price"])

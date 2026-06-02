@@ -65,6 +65,11 @@ class BrokerAdapter(ABC):
         ...
 
     @abstractmethod
+    def available_funds(self) -> float | None:
+        """Available cash/margin snapshot for display. Never returns secrets."""
+        ...
+
+    @abstractmethod
     def get_spot(self) -> float:
         """NIFTY index LTP."""
         ...

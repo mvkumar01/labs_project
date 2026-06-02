@@ -7,8 +7,8 @@ the session carries `user_id`. EVERY authenticated route derives
 from the session — NEVER from a client-supplied value — and shows/mutates ONLY
 that user's own rows. A user can never read or control another user's state.
 
-HARD CONSTRAINT: every route mutates DB/config ONLY. No route places or exits an
-order; no route imports a broker SDK. Going live is a config flag the always-on
+HARD CONSTRAINT: routes never place or exit orders; broker reads are limited to
+auth/funds refresh; no route imports a broker SDK. Going live is a config flag the always-on
 `live_runner` observes — never the web layer.
 
 Isolation: imports ONLY live.live_service, live.live_executor (pure 3-mode
@@ -102,6 +102,56 @@ def _account_ref_from_creds(broker: str, creds: dict) -> str | None:
         user_id = str(creds.get("user_id") or "").strip()
         return f"zerodha:{user_id}" if user_id else None
     return None
+
+
+def _adapter_for(broker: str, *, user_id: str, conn_id: str, creds: dict):
+    """Build a broker adapter without importing SDKs outside live/brokers."""
+    if broker == "angel":
+        from live.brokers.angel import AngelAdapter
+        return AngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
+    if broker == "zerodha":
+        from live.brokers.zerodha import ZerodhaAdapter
+        return ZerodhaAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
+    raise ValueError(f"unsupported broker: {broker}")
+
+
+def _refresh_broker_funds(user_id: str, broker: str, conn_id: str,
+                          creds: dict | None = None) -> bool:
+    """Connect once and persist a non-secret funds snapshot for /live/."""
+    try:
+        creds = creds if creds is not None else svc.load_credentials(user_id, conn_id)
+        adapter = _adapter_for(broker, user_id=user_id, conn_id=conn_id, creds=creds)
+        adapter.connect()
+        connected = bool(adapter.is_connected())
+        funds = None
+        funds_error = ""
+        if connected:
+            try:
+                funds = adapter.available_funds()
+                if funds is None:
+                    funds_error = "funds_unavailable"
+            except Exception as exc:
+                funds_error = type(exc).__name__
+        row = svc.get_connection(user_id, conn_id)
+        svc.upsert_connection(
+            user_id,
+            conn_id,
+            broker=broker,
+            account_label=(row.get("account_label")
+                           or creds.get("client_code")
+                           or creds.get("user_id")
+                           or creds.get("api_key")
+                           or broker),
+            account_ref=adapter.account_ref(),
+            status="connected" if connected else "configured",
+        )
+        svc.update_connection_funds(user_id, conn_id, funds, funds_error)
+        return connected
+    except Exception as exc:
+        svc.update_connection_funds(user_id, conn_id, None, type(exc).__name__)
+        log.warning("funds refresh failed user=%s broker=%s err=%s",
+                    user_id, broker, type(exc).__name__)
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -291,6 +341,8 @@ def credentials(broker):
              user_id, broker, sorted(creds.keys()))  # field NAMES only
     if broker == "zerodha" and creds.get("api_key") and creds.get("api_secret"):
         return redirect(url_for("live.zerodha_login"))
+    if broker == "angel":
+        _refresh_broker_funds(user_id, broker, conn_id, creds)
     return redirect(url_for("live.configure"))
 
 
@@ -346,6 +398,8 @@ def zerodha_callback():
             account_ref=_account_ref_from_creds("zerodha", blob),
             status="connected" if blob.get("access_token") else "configured",
         )
+        if blob.get("access_token"):
+            _refresh_broker_funds(user_id, "zerodha", conn_id, blob)
         log.info("stored zerodha request_token user=%s (status=%s)", user_id, status)
     return redirect(url_for("live.configure"))
 
@@ -497,6 +551,7 @@ def status():
         return jsonify({"mode": "DISARMED", "connected": False})
     reconcile_blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
     day = svc.get_day_pnl(user_id, conn_id)
+    connection = svc.get_connection(user_id, conn_id) or {}
     return jsonify({
         "mode": svc.get_mode(user_id, conn_id),
         "kill_switch": 1 if svc.is_kill_switch_on(user_id, conn_id) else 0,
@@ -506,6 +561,9 @@ def status():
         "today_pnl": float(day.get("realized_pnl") or 0.0),
         "reconcile_ok": (not reconcile_blocked),
         "reconcile_warning": svc.get_config(user_id, conn_id, "reconcile_message"),
-        "connection_status": (svc.get_connection(user_id, conn_id) or {}).get("status"),
+        "connection_status": connection.get("status"),
+        "funds_available": connection.get("funds_available"),
+        "funds_updated_at": connection.get("funds_updated_at"),
+        "funds_error": connection.get("funds_error"),
         "last_orders": svc.recent_orders(user_id, conn_id, limit=20),
     })

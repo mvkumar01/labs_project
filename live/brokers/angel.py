@@ -89,6 +89,28 @@ class AngelAdapter(BrokerAdapter):
         return f"angel:{self._client_code}"
 
     # ── market reads ──────────────────────────────────────────────────────
+    def available_funds(self) -> float | None:
+        if self._smart is None:
+            return None
+        resp = self._smart.rmsLimit() or {}
+        data = resp.get("data") or resp
+        for key in (
+            "availablecash",
+            "availableCash",
+            "available_limit",
+            "availableLimit",
+            "net",
+            "cash",
+        ):
+            value = data.get(key) if isinstance(data, dict) else None
+            if value is None:
+                continue
+            try:
+                return float(str(value).replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def get_spot(self) -> float:
         data = self._smart.ltpData("NSE", "Nifty 50", "26000")
         return float(data["data"]["ltp"])
