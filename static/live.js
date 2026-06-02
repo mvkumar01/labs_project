@@ -25,6 +25,17 @@
     return "\u20b9" + Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
   }
 
+  function applyFunds(s) {
+    var funds = document.getElementById("stat-funds");
+    if (funds) funds.textContent = fmtMoney(s.funds_available);
+    var fundsNote = document.getElementById("stat-funds-note");
+    if (fundsNote) {
+      fundsNote.textContent = s.funds_error
+        ? s.funds_error
+        : (s.funds_updated_at ? "refreshed" : "");
+    }
+  }
+
   function applyModeBanner(mode) {
     var b = document.getElementById("mode-banner");
     if (!b) return;
@@ -86,14 +97,7 @@
         var lots = document.getElementById("stat-lots");
         if (lots) lots.textContent = s.lots;
 
-        var funds = document.getElementById("stat-funds");
-        if (funds) funds.textContent = fmtMoney(s.funds_available);
-        var fundsNote = document.getElementById("stat-funds-note");
-        if (fundsNote) {
-          fundsNote.textContent = s.funds_error
-            ? s.funds_error
-            : (s.funds_updated_at ? "refreshed" : "");
-        }
+        applyFunds(s);
 
         renderOrders(s.last_orders);
       })
@@ -127,6 +131,19 @@
     wireButton("btn-disarm", "/live/disarm", "Disarm and stop all live activity?");
     wireButton("btn-kill", "/live/kill", "Trigger KILL SWITCH? Halts all new activity immediately.");
     wireButton("btn-resume", "/live/resume", "Clear the kill switch?");
+
+    var refreshFunds = document.getElementById("btn-refresh-funds");
+    if (refreshFunds) {
+      refreshFunds.addEventListener("click", function () {
+        refreshFunds.disabled = true;
+        post("/live/refresh_funds").then(function (res) {
+          if (res.body) applyFunds(res.body);
+          if (!res.ok && res.body && res.body.error) {
+            window.alert("Funds refresh failed: " + res.body.error);
+          }
+        }).finally(function () { refreshFunds.disabled = false; });
+      });
+    }
 
     // Broker selector highlight (connect page).
     var radios = document.querySelectorAll('input[name="broker"]');

@@ -93,15 +93,33 @@ class ZerodhaAdapter(BrokerAdapter):
         if self._kite is None:
             return None
         data = self._kite.margins() or {}
-        available = ((data.get("equity") or {}).get("available") or {})
-        for key in ("live_balance", "cash", "opening_balance"):
-            value = available.get(key)
+
+        def _num(value):
             if value is None:
-                continue
+                return None
             try:
-                return float(value)
+                return float(str(value).replace(",", ""))
             except (TypeError, ValueError):
-                continue
+                return None
+
+        equity = data.get("equity") or {}
+        available = equity.get("available") or {}
+        for key in (
+            "live_balance",
+            "cash",
+            "opening_balance",
+            "intraday_payin",
+            "adhoc_margin",
+            "collateral",
+        ):
+            value = _num(available.get(key))
+            if value is not None:
+                return value
+
+        # Some Kite responses expose the actionable margin as equity.net.
+        value = _num(equity.get("net"))
+        if value is not None:
+            return value
         return None
 
     def get_spot(self) -> float:

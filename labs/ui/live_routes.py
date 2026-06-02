@@ -540,6 +540,23 @@ def resume():
     return jsonify({"ok": True, "kill_switch": 0})
 
 
+@live_bp.route("/refresh_funds", methods=["POST"])
+@csrf_protect
+def refresh_funds():
+    user_id, broker, conn_id = _current_conn_id()
+    if not conn_id or not broker:
+        return jsonify({"ok": False, "error": "no_connection"}), 409
+    ok = _refresh_broker_funds(user_id, broker, conn_id)
+    connection = svc.get_connection(user_id, conn_id) or {}
+    return jsonify({
+        "ok": ok,
+        "funds_available": connection.get("funds_available"),
+        "funds_updated_at": connection.get("funds_updated_at"),
+        "funds_error": connection.get("funds_error"),
+        "connection_status": connection.get("status"),
+    })
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # STATUS — JSON for live.js polling (scoped to session user; never echoes secrets)
 # ══════════════════════════════════════════════════════════════════════════

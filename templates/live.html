@@ -78,6 +78,7 @@
         <div id="stat-funds-note" class="stat-note">
           {% if connection.funds_error %}{{ connection.funds_error }}{% elif connection.funds_updated_at %}refreshed{% endif %}
         </div>
+        <button id="btn-refresh-funds" class="btn btn-ghost btn-mini">Refresh</button>
       </div>
       <div class="stat"><div class="k">Lots</div><div id="stat-lots" class="v">{{ lots }}</div></div>
     </div>

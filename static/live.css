@@ -53,6 +53,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 20px 0 12px; color: #cbd5e1; }
 .btn-danger:hover { background: #b91c1c; }
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-mini { margin-top: 8px; padding: 5px 10px; font-size: 11px; }
 
 /* ── Forms ── */
 .field { margin-bottom: 16px; }
