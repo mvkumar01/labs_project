@@ -32,7 +32,7 @@ def _live_orders_enabled() -> bool:
 
 # ── Phase-1 enablement flag. Flipping to True is the ONLY thing that lets a
 #    real Angel order leave this process. Reviewed commit only. ───────────
-_LIVE_ORDERS_ENABLED = False
+_LIVE_ORDERS_ENABLED = True
 
 INSTRUMENT_MASTER_URL = (
     "https://margincalculator.angelbroking.com/OpenAPI_File/files/"
@@ -67,11 +67,18 @@ class AngelAdapter(BrokerAdapter):
 
         self._smart = SmartConnect(api_key=self._creds["api_key"])
         totp = pyotp.TOTP(self._creds["totp_secret"]).now()
-        self._smart.generateSession(
+        session = self._smart.generateSession(
             self._creds["client_code"],
             self._creds["pin"],
             totp,
         )
+        if (
+            not isinstance(session, dict)
+            or session.get("status") is not True
+            or not getattr(self._smart, "access_token", None)
+        ):
+            self._smart = None
+            raise RuntimeError("Angel session login failed")
 
     def is_connected(self) -> bool:
         if self._smart is None:
@@ -79,8 +86,12 @@ class AngelAdapter(BrokerAdapter):
         try:
             # Cheap authenticated read — profile/RMS limit. Any success means
             # the session token is live. Never logs cred values.
-            self._smart.rmsLimit()
-            return True
+            response = self._smart.rmsLimit()
+            return (
+                isinstance(response, dict)
+                and response.get("status") is True
+                and response.get("data") is not None
+            )
         except Exception:
             return False
 
@@ -93,6 +104,8 @@ class AngelAdapter(BrokerAdapter):
         if self._smart is None:
             return None
         resp = self._smart.rmsLimit() or {}
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            raise RuntimeError("Angel funds read failed")
         data = resp.get("data") or resp
         for key in (
             "availablecash",
@@ -124,11 +137,10 @@ class AngelAdapter(BrokerAdapter):
         return {symbol: {"ltp": self.get_ltp(symbol)} for symbol in symbols}
 
     def get_position(self) -> Position:
-        try:
-            resp = self._smart.position()
-            net = (resp or {}).get("data") or []
-        except Exception:
-            return Position(symbol=None, qty=0, side=None)
+        resp = self._smart.position()
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            raise RuntimeError("Angel position read failed")
+        net = resp.get("data") or []
         for p in net:
             qty = int(p.get("netqty", 0) or 0)
             sym = p.get("tradingsymbol", "")
@@ -293,6 +305,27 @@ class AngelAdapter(BrokerAdapter):
             "ordertag": idempotency_key,
         }
         resp = self._smart.placeOrder(order_params)
+        if isinstance(resp, dict):
+            ok = resp.get("status") is True or resp.get("success") is True
+            data = resp.get("data") or {}
+            order_id = (
+                data.get("orderid")
+                or data.get("order_id")
+                or resp.get("orderid")
+                or resp.get("order_id")
+            )
+            return OrderResult(
+                broker_order_id=str(order_id) if order_id else None,
+                status="PLACED" if ok and order_id else "FAILED",
+                avg_fill_price=None,
+                raw={
+                    "response_status": resp.get("status"),
+                    "success": resp.get("success"),
+                    "error_code": resp.get("errorCode") or resp.get("errorcode"),
+                    "message": resp.get("message"),
+                    "broker_symbol": meta["symbol"],
+                },
+            )
         return OrderResult(
             broker_order_id=str(resp) if resp else None,
             status="PLACED" if resp else "FAILED",
@@ -322,6 +355,28 @@ class AngelAdapter(BrokerAdapter):
             "ordertag": idempotency_key,
         }
         resp = self._smart.placeOrder(order_params)
+        if isinstance(resp, dict):
+            ok = resp.get("status") is True or resp.get("success") is True
+            data = resp.get("data") or {}
+            order_id = (
+                data.get("orderid")
+                or data.get("order_id")
+                or resp.get("orderid")
+                or resp.get("order_id")
+            )
+            return OrderResult(
+                broker_order_id=str(order_id) if order_id else None,
+                status="PLACED" if ok and order_id else "FAILED",
+                avg_fill_price=None,
+                raw={
+                    "response_status": resp.get("status"),
+                    "success": resp.get("success"),
+                    "error_code": resp.get("errorCode") or resp.get("errorcode"),
+                    "message": resp.get("message"),
+                    "reason": reason,
+                    "broker_symbol": meta["symbol"],
+                },
+            )
         return OrderResult(
             broker_order_id=str(resp) if resp else None,
             status="PLACED" if resp else "FAILED",

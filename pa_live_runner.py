@@ -24,7 +24,9 @@ def _load_private_env() -> None:
     if not env_path.exists():
         return
     try:
-        data = json.loads(env_path.read_text(encoding="utf-8"))
+        # PowerShell may write JSON with a UTF-8 BOM; accept it so a runner
+        # restart cannot silently lose the credential key and live settings.
+        data = json.loads(env_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return
     for key in (

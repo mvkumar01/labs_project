@@ -47,7 +47,7 @@ def _live_orders_enabled() -> bool:
     return _LIVE_ORDERS_ENABLED and env_enabled in {"1", "true", "yes"}
 
 # ── Phase-1 enablement flag (reviewed commit only). ──────────────────────
-_LIVE_ORDERS_ENABLED = False
+_LIVE_ORDERS_ENABLED = True
 
 
 class ZerodhaAdapter(BrokerAdapter):

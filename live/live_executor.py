@@ -346,12 +346,26 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         return OrderResult(broker_order_id=None, status="GATE_BLOCKED",
                            avg_fill_price=None, raw={"failed_gates": failed})
 
-    if action == "EXIT":
-        result = adapter.exit_all(symbol=symbol, qty=qty, reason="exit",
-                                  idempotency_key=idem_key)
-    else:
-        result = adapter.place_order(side=side, symbol=symbol, qty=qty,
-                                     price=price, idempotency_key=idem_key)
+    try:
+        if action == "EXIT":
+            result = adapter.exit_all(symbol=symbol, qty=qty, reason="exit",
+                                      idempotency_key=idem_key)
+        else:
+            result = adapter.place_order(side=side, symbol=symbol, qty=qty,
+                                         price=price, idempotency_key=idem_key)
+    except Exception as e:
+        log.warning(
+            "Broker order FAILED | conn=%s action=%s symbol=%s type=%s msg=%s",
+            conn_id, action, symbol, type(e).__name__, str(e)[:300],
+        )
+        svc.update_order_ledger(idem_key, status="FAILED",
+                                placed_at=_now_iso(), conn=conn)
+        return OrderResult(
+            broker_order_id=None,
+            status="FAILED",
+            avg_fill_price=None,
+            raw={"error_type": type(e).__name__, "message": str(e)[:300]},
+        )
     result = _refresh_order_result(adapter, result)
 
     svc.update_order_ledger(idem_key, status=result.status,
