@@ -2,12 +2,17 @@
 
 ## 1. What This Is
 
-**Labs** is a standalone paper-trading research platform for NIFTY/BANKNIFTY/SENSEX options. It runs completely independently of the `alphaIMB` project. No live orders are ever placed — all execution is simulated (paper trades) with real market data collected from Zerodha.
+**Labs** is a standalone research/prototype trading platform for NIFTY/BANKNIFTY/SENSEX options, independent of the `alphaIMB` project. It now hosts **two surfaces**:
+
+- **`/labs/`** (`labs-mvkumar01.pythonanywhere.com/labs/`) — **paper trading**. Execution is simulated with real market data; `paper_executor.py` never places real orders.
+- **`/live/`** (`labs-mvkumar01.pythonanywhere.com/live/`) — **REAL-MONEY live trading**. Research-shortlisted candidate strategies are tested with **real money** through live brokers (Angel One, Zerodha) in small size. This is deliberate: some deployment bugs surface only in live (e.g. the recent Angel One issues — order/auth/position quirks — were diagnosable and fixable only against the real broker, not in paper). The `live/` package places real orders; `/labs/` does not.
+
+Bot A (the `Nifty_Bots_Python` prototype) is **disabled** — live testing now runs through the labs `/live/` UI.
 
 **Separation from alphaIMB:**
 - Own Zerodha credentials (`config/zerodha_creds.json`)
 - Own SQLite database (`storage/labs.db`)
-- Own PA web app: `nifty-multi-mvkumar01.pythonanywhere.com`
+- Own PA web app: `labs-mvkumar01.pythonanywhere.com`
 - Own always-on tasks: Collector (run_collector.py) + Runner (strategy_runner.py)
 
 ---
@@ -25,18 +30,21 @@ labs_project/
 │
 ├── collector/
 │   ├── run_collector.py         Market-hours loop (60s) — spot + options
-│   ├── spot_collector.py        Spot index LTP → daily CSV
-│   ├── options_collector.py     Option chain LTP → daily CSV (batches of 500)
+│   ├── spot_collector.py        Spot index LTP → data/live/ daily CSV (unchanged)
+│   ├── options_collector.py     Option chain LTP → shared_market_data/live/ (canonical shared store)
 │   └── instruments.py           Option symbol builder: spot ± 10%, nearest 2 expiries
 │
 ├── config/
-│   ├── labs_config.py           Constants: UNDERLYINGS, market hours, intervals, dirs
+│   ├── labs_config.py           Constants: UNDERLYINGS, market hours, intervals, dirs, shared paths
 │   ├── zerodha_creds.json       API key, secret, user_id, password, totp_key  [tracked]
 │   └── zerodha_token.json       Access token (regenerated daily)  [gitignored]
 │
 ├── data/
-│   ├── live/                    Daily 1-min OHLCV CSVs  [NEVER MODIFY]
+│   ├── live/                    Spot 1-min OHLCV CSVs  [NEVER MODIFY]
 │   └── archive/                 EOD .tar.gz archives    [gitignored]
+│
+│   NOTE: Options data is no longer in data/live/. It is written to the shared
+│   store at ~/shared_market_data/live/YYYY-MM-DD/{UNDERLYING}_options_1min.csv
 │
 ├── labs/
 │   ├── engine/
@@ -195,11 +203,12 @@ Bot-level settings: `expiry_mode` (nearest_weekly / next_weekly / monthly), `str
 | Task | Type | Command |
 |---|---|---|
 | Token generation | Scheduled (08:55 IST) | `python3 auth/generate_token.py` |
-| Data collector | Always-on (ID: 241272) | `python3 collector/run_collector.py` |
-| Strategy runner | Always-on (ID: 241278) | `python3 labs/engine/strategy_runner.py` |
+| Data collector | Always-on (ID: 241272) | `python3 pa_run_collector.py` |
+| Strategy runner | Always-on (ID: 241278) | `python3 pa_strategy_runner.py` |
 | EOD maintenance | Scheduled (15:40 IST) | `python3 eod_maintenance.py` |
+| EOD recovery | Manual one-time | `python3 eod_recovery.py` |
 
-**Web app:** `nifty-multi-mvkumar01.pythonanywhere.com`
+**Web app:** `labs-mvkumar01.pythonanywhere.com`
 **WSGI file:** `/var/www/nifty-multi-mvkumar01_pythonanywhere_com_wsgi.py`
 
 **Deploy after any push:**
@@ -212,7 +221,53 @@ Never use plain `git pull` on PA — runtime-generated files (token, db) block t
 
 ---
 
-## 6. Coding Conventions
+Recent production fixes:
+- `auth/session_manager.py` auto-reloads `zerodha_token.json` when it changes, so long-running tasks can pick up refreshed tokens without a restart.
+- `labs/engine/strategy_runner.py` keeps running outside market hours, performs EOD square-off after cutoff, and logs warmup status for SMA50-based gates.
+- `labs/engine/data_loader.py` supports prior-session 1-minute warmup backfill for SMA50 readiness from market open.
+- `labs/engine/resampler.py` uses broker-style left-labeled 5-minute resampling for completed-bar evaluation.
+
+## 6. Shared Market-Data Store
+
+Options data is written to a directory **outside both projects** so both Labs and AlphaIMB can consume a single feed.
+
+```
+/home/mvkumar01/
+├── labs_project/       ← writes spot CSVs here (data/live/)
+├── alphaIMB/           ← reads OI data from shared store
+└── shared_market_data/
+    ├── live/
+    │   └── YYYY-MM-DD/
+    │       ├── NIFTY_options_1min.csv
+    │       ├── BANKNIFTY_options_1min.csv
+    │       └── SENSEX_options_1min.csv
+    └── archive/
+        └── YYYY-MM-DD/
+            └── *.parquet.gz   (written by eod_maintenance.py at 15:40 IST)
+```
+
+**Canonical schema** (`shared_market_data/live/.../`):
+```
+timestamp, underlying, tradingsymbol, strike, option_type, expiry,
+ltp, bid, ask, oi, volume, spot
+```
+
+**Config paths** (`labs_config.py`):
+```python
+SHARED_MARKET_DIR  = BASE_DIR.parent / "shared_market_data"
+SHARED_LIVE_DIR    = SHARED_MARKET_DIR / "live"
+SHARED_ARCHIVE_DIR = SHARED_MARKET_DIR / "archive"
+```
+
+**`data_loader.load_options_1min()`** reads from `SHARED_LIVE_DIR / trade_date / f"{underlying}_options_1min.csv"`.
+
+**`latest_ltp(options_df, symbol)`** filters by `options_df["tradingsymbol"] == symbol` (column was previously named `symbol`).
+
+**First-time setup on PA:** `mkdir -p /home/mvkumar01/shared_market_data/live`
+
+---
+
+## 7. Coding Conventions
 
 - `pathlib.Path` everywhere — no `os.path`
 - `BASE_DIR = Path(__file__).resolve().parent` at top of each script; `LIVE_DIR`, `LOG_DIR` from `labs_config.py`
@@ -224,18 +279,20 @@ Never use plain `git pull` on PA — runtime-generated files (token, db) block t
 
 ---
 
-## 7. Hard Rules
+## 8. Hard Rules
 
-1. **Never place real orders** — `paper_executor.py` must never call `kite.place_order()`.
-2. **Never modify `data/live/`** — raw market data, source of truth.
-3. **Do not run `run_collector.py` or `strategy_runner.py` locally** — PA-only.
-4. **`zerodha_creds.json` is tracked** (private repo). Never commit to a public repo.
-5. **`zerodha_token.json` is gitignored** — regenerated daily by PA.
-6. **Table is `daily_summary`** (singular) — not `daily_summaries`. Use exact name in all queries.
+1. **Paper path never places real orders** — `paper_executor.py` (the `/labs/` paper surface) must never call `kite.place_order()`. **Real orders are placed only by the `/live/` package** (`live/`, real-money brokers Angel One / Zerodha) — keep the two surfaces isolated; never route paper through live or vice-versa.
+2. **Never modify `data/live/`** — spot CSVs, source of truth.
+3. **Never modify `shared_market_data/live/`** — canonical options store, written only by the collector.
+4. **Do not run `run_collector.py` or `strategy_runner.py` locally** — PA-only.
+5. **`zerodha_creds.json` is tracked** (private repo). Never commit to a public repo.
+6. **`zerodha_token.json` is gitignored** — regenerated daily by PA.
+7. **Table is `daily_summary`** (singular) — not `daily_summaries`. Use exact name in all queries.
+8. **Gitignoring a secret file = re-provision it on PA.** Whenever a file is removed from tracking / added to `.gitignore` for security, a PA `git pull` will DELETE its working copy. ALWAYS flag this prominently (not buried in prose) and create a TODO to recreate the file on PA. Applies to `config/zerodha_creds.json` and any future secret/credential file.
 
 ---
 
-## 8. Common Commands
+## 9. Common Commands
 
 ```bash
 # Local dev — run Flask dashboard
