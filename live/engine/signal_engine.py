@@ -1,4 +1,5 @@
 import json
+import math
 from collections import deque
 from datetime import time as dtime
 from pathlib import Path
@@ -173,6 +174,28 @@ class AlphaSignalEngine:
     ENABLE_V28_PC50_ABS_DENOM = True
     ENABLE_V28_PC400_R13_ROUTING = True
 
+    # ── K (v2.9.1) — PC50 gap-UP spot TP/SL overlay (VIX-gated) ─────────
+    # Champion default ON. Faithful port of alphaIMB
+    # _alpha_3tier_v26_strategy._check_pc50_exit (commit a6ef782, Alpha
+    # v2.9.1). Layered ADDITIVELY on Run F: on PC50 gap-UP days with
+    # vix_at_open >= 15.0 (the 09:15 locked VIX), apply a spot exit to BOTH
+    # sides, checked BEFORE the PC50 alpha exits (ALPHA_STALL / per-rule
+    # alpha SL-TP). TP wins ties.
+    #   CALL: TP entry_spot+50, SL entry_spot-30
+    #   PUT:  TP entry_spot-50, SL entry_spot+30
+    # If neither spot level is touched → fall through to the existing PC50
+    # alpha exits unchanged. Inert on PC50 gap-DN, below the VIX gate, or
+    # flag-off → Run F exactly.
+    # Locked rule: alphaIMB research/experiments/2026-05-29_alpha_roc_filters/
+    #   LOCKED_RULE_pc50up_tp50sl30_vix15.md (backtest +246.70 over Run F;
+    #   thin/lumpy — 14 of 105 PC50-UP trades modified). Operator-promoted
+    #   2026-05-31.
+    ENABLE_V29_1_PC50_GAP_UP_SPOT_EXIT = True
+    V29_1_PC50_UP_TP_PTS = 50.0    # spot TP: favorable move from entry_spot
+    V29_1_PC50_UP_SL_PTS = 30.0    # spot SL: adverse move from entry_spot
+    V29_1_PC50_UP_VIX_GATE = 15.0  # apply only when vix_at_open >= this
+    # ── END K (v2.9.1) ─────────────────────────────────────────────────
+
     @staticmethod
     def pick_alpha(tier, gap_direction, pc50_range_source,
                    pc250_range_source, pc400_in_carve_out,
@@ -324,7 +347,12 @@ class AlphaSignalEngine:
 
     def evaluate(self, current_alpha, position, side, tier="PC50",
                  entry_rule=None, denom_alg=None, bar_time_ist=None,
-                 gap_direction=None, today_iso=None):
+                 gap_direction=None, today_iso=None,
+                 spot=None, entry_spot=None, vix_at_open=None):
+        # spot / entry_spot / vix_at_open are OPTIONAL, additive context
+        # for the v2.9.1 PC50 gap-UP spot exit overlay (K block). They
+        # default None so every existing caller is unaffected; when any is
+        # missing the overlay is inert and the alpha-only exits run as before.
 
         # Stash tier + gap_direction so _enter (single chokepoint where
         # the entry dict is finalized) can apply the v2.8 PC250 gap-UP
@@ -488,6 +516,15 @@ class AlphaSignalEngine:
         # ── Open-position alpha exits ──
         if position == "OPEN":
             if tier == "PC50":
+                # ── K (v2.9.1) — PC50 gap-UP spot TP/SL overlay, VIX-gated.
+                # Checked FIRST, BEFORE the per-rule alpha SL/TP exits.
+                # TP wins ties. Inert (returns None → fall through) on PC50
+                # gap-DN, below the VIX gate, flag-off, or missing context.
+                v291 = self._check_v291_pc50_gap_up_spot_exit(
+                    side, spot, entry_spot, vix_at_open)
+                if v291 is not None:
+                    return v291
+                # ── END K (v2.9.1) ──
                 # Alpha 2.5 v7.5 + v7.10-partial: per-rule alpha SL.
                 # Rule 2 (expansion entry, "OPEN_EXPANSION") and Rule 3
                 # (extreme-zone, "PC50_RULE3_EXTREME_DN_PUT") both fire
@@ -576,6 +613,52 @@ class AlphaSignalEngine:
             sig["sl_pts"] = self.V28_PC250_GAP_UP_SL_PTS
 
         return sig
+
+    def _check_v291_pc50_gap_up_spot_exit(self, side, spot, entry_spot,
+                                          vix_at_open):
+        """K (v2.9.1) — PC50 gap-UP spot TP+50 / SL-30 overlay, VIX-gated.
+
+        Faithful port of alphaIMB _alpha_3tier_v26_strategy._check_pc50_exit's
+        v2.9.1 block (commit a6ef782). Returns an EXIT signal dict or None
+        (None → caller falls through to the existing PC50 alpha exits).
+
+        Fires only on PC50 gap-UP days with vix_at_open >= V29_1_PC50_UP_VIX_GATE
+        (the 09:15 locked VIX). Both sides, spot-reference. TP is checked
+        before SL so it wins ties.
+          CALL: TP entry_spot+50, SL entry_spot-30
+          PUT:  TP entry_spot-50, SL entry_spot+30
+
+        Live-precision note: alphaIMB checks intra-bar 1-min highs/lows;
+        the labs live path supplies only the 5-min alpha-bar spot, so this
+        uses the current bar spot — i.e. the alphaIMB one_min_bars=None
+        fallback path [(spot, spot)]. entry_spot is the alpha-signal trigger
+        spot at entry (spec §15), captured by the runner at entry time.
+        """
+        if not self.ENABLE_V29_1_PC50_GAP_UP_SPOT_EXIT:
+            return None
+        if self._current_gap_direction != "UP":
+            return None
+        if spot is None or entry_spot is None or vix_at_open is None:
+            return None
+        try:
+            vix = float(vix_at_open)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(vix) or vix < self.V29_1_PC50_UP_VIX_GATE:
+            return None
+        tp = self.V29_1_PC50_UP_TP_PTS
+        sl = self.V29_1_PC50_UP_SL_PTS
+        if side == "CALL":
+            if spot - entry_spot >= tp:        # TP wins ties (checked first)
+                return self._exit("V291_SPOT_TP")
+            if entry_spot - spot >= sl:
+                return self._exit("V291_SPOT_SL")
+        elif side == "PUT":
+            if entry_spot - spot >= tp:
+                return self._exit("V291_SPOT_TP")
+            if spot - entry_spot >= sl:
+                return self._exit("V291_SPOT_SL")
+        return None
 
     def _exit(self, reason):
         self.peak_alpha = None

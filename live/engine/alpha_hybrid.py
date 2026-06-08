@@ -244,6 +244,9 @@ def latest_hybrid_alpha(trade_date: str | None = None) -> dict | None:
         "bucket": state.get("bucket") or "PC50",
         "tier": state.get("bucket") or "PC50",
         "gap_direction": state.get("direction"),
+        # 09:15 locked VIX — consumed by the v2.9.1 PC50 gap-UP spot exit
+        # overlay (VIX gate). None when verify_hybrid_range had no VIX.
+        "vix_at_open": state.get("vix_at_open"),
         "lower": lower,
         "upper": upper,
         "range_state": {

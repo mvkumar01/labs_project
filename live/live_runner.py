@@ -37,6 +37,7 @@ from live import live_service as svc
 from live import live_executor as ex
 from live.brokers.base import Position
 from live.brokers.angel import AngelAdapter
+from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine
 log = logging.getLogger("live.runner")
@@ -184,7 +185,10 @@ def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_pric
                         qty: int, reason: str, dry_run: bool) -> None:
     entry_price = float(position.get("entry_price") or 0.0)
     qty = abs(int(qty or 0))
-    pnl = (float(exit_price) - entry_price) * qty
+    pnl = position.get("pnl")
+    if pnl is None:
+        pnl = (float(exit_price) - entry_price) * qty
+    pnl = float(pnl)
     now_iso = _now_iso()
     svc.record_trade(
         user_id,
@@ -203,6 +207,10 @@ def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_pric
     svc.add_day_pnl(user_id, conn_id, pnl)
     if not check_daily_loss(user_id, conn_id):
         svc.set_day_halted(user_id, conn_id, 1)
+    msg = f"🔴 EXIT {position.get('symbol')} @ {float(exit_price)} | reason={reason} | qty={qty} | PnL={pnl}"
+    if dry_run:
+        msg += " [DRY-RUN]"
+    notify_telegram(msg)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -281,10 +289,16 @@ def _engine_for(conn_id: str, signal_engines: dict) -> AlphaSignalEngine:
 
 
 def evaluate_signal(engine: AlphaSignalEngine, alpha_bar: dict | None,
-                    position: str, side: str | None, entry_rule=None) -> dict:
+                    position: str, side: str | None, entry_rule=None,
+                    entry_spot=None) -> dict:
     """Live signal contract:
        {"action": "ENTER"|"EXIT"|"HOLD", "side": "CALL"|"PUT"|None,
-        "reason": str, "rule": str|None}"""
+        "reason": str, "rule": str|None}
+
+    `entry_spot` (the alpha-signal trigger spot captured at entry, spec §15)
+    is threaded through together with the bar spot + locked VIX so the
+    engine's v2.9.1 PC50 gap-UP spot exit overlay can evaluate. All three
+    are optional; when absent the overlay is inert (Run F behaviour)."""
     if not alpha_bar or alpha_bar.get("alpha") is None:
         return {"action": "HOLD", "side": None, "reason": "no_alpha", "rule": None}
 
@@ -306,6 +320,9 @@ def evaluate_signal(engine: AlphaSignalEngine, alpha_bar: dict | None,
         bar_time_ist=bar_time_ist,
         gap_direction=alpha_bar.get("gap_direction"),
         today_iso=alpha_bar.get("trade_date") or _today_ist_iso(),
+        spot=alpha_bar.get("spot"),
+        entry_spot=entry_spot,
+        vix_at_open=alpha_bar.get("vix_at_open"),
     )
 
 
@@ -509,6 +526,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         "OPEN" if current_open else "NONE",
         current_side,
         entry_rule=st.get("entry_rule"),
+        entry_spot=st.get("entry_spot"),
     )
     log.info("signal conn=%s ts=%s tier=%s alpha=%s pos=%s sig=%s",
              conn_id, alpha_bar.get("timestamp"), alpha_bar.get("tier"),
@@ -529,6 +547,14 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
                        "entry_rule": sig.get("rule"), "entry_spot": alpha_bar.get("spot")})
             svc.save_trade_state(user_id, conn_id, st)
+            entry_price = result.avg_fill_price or price
+            msg = (
+                f"🟢 ENTER {side} {state_symbol} @ {entry_price} | rule={sig.get('rule')} "
+                f"| spot={alpha_bar.get('spot')} | alpha={alpha_bar.get('alpha')}"
+            )
+            if dry_run:
+                msg += " [DRY-RUN]"
+            notify_telegram(msg)
 
     elif sig["action"] == "EXIT" and current_open:
         exit_price = adapter.get_ltp(current_symbol)
