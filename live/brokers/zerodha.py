@@ -20,7 +20,7 @@ be used ONLY here inside live/brokers/.
 import os
 
 from .base import BrokerAdapter, OrderResult, Position
-from live.proxy import configure_outbound_proxy
+from live.proxy import order_proxy
 
 
 def build_login_url(api_key: str) -> str:
@@ -28,7 +28,7 @@ def build_login_url(api_key: str) -> str:
 
 
 def exchange_request_token(*, api_key: str, api_secret: str, request_token: str) -> dict:
-    configure_outbound_proxy()
+    # OAuth token exchange is a DATA/auth call — direct, not via the static IP.
     from kiteconnect import KiteConnect
 
     kite = KiteConnect(api_key=api_key)
@@ -64,8 +64,10 @@ class ZerodhaAdapter(BrokerAdapter):
         Falls back to the shared labs session (auth.session_manager) only when
         no per-user api_key/access_token were supplied — both paths keep the
         SDK import inside live/brokers/.
+
+        Session setup is DATA/auth — direct, not via the static IP. Only
+        place_order / exit_all are wrapped with order_proxy().
         """
-        configure_outbound_proxy()
         api_key = self._creds.get("api_key")
         access_token = self._creds.get("access_token")
         if not api_key or not access_token:
@@ -166,17 +168,19 @@ class ZerodhaAdapter(BrokerAdapter):
                 "Phase-1 enablement commit after a clean dry-run session."
             )
         # ── real branch — reached only in Phase 1 (LIVE_ARMED + 6 gates) ──
-        order_id = self._kite.place_order(
-            variety=self._kite.VARIETY_REGULAR,
-            exchange=self._kite.EXCHANGE_NFO,
-            tradingsymbol=symbol,
-            transaction_type=self._kite.TRANSACTION_TYPE_BUY,
-            quantity=qty,
-            product=self._kite.PRODUCT_MIS,
-            order_type=self._kite.ORDER_TYPE_LIMIT,
-            price=price,
-            tag=idempotency_key[:20],  # Zerodha tag max 20 chars
-        )
+        # Static IP used ONLY for the order placement.
+        with order_proxy(self._kite):
+            order_id = self._kite.place_order(
+                variety=self._kite.VARIETY_REGULAR,
+                exchange=self._kite.EXCHANGE_NFO,
+                tradingsymbol=symbol,
+                transaction_type=self._kite.TRANSACTION_TYPE_BUY,
+                quantity=qty,
+                product=self._kite.PRODUCT_MIS,
+                order_type=self._kite.ORDER_TYPE_LIMIT,
+                price=price,
+                tag=idempotency_key[:20],  # Zerodha tag max 20 chars
+            )
         return OrderResult(
             broker_order_id=str(order_id),
             status="PLACED",
@@ -191,17 +195,21 @@ class ZerodhaAdapter(BrokerAdapter):
                 "LIVE_ARMED not enabled — Phase 1 gated. Zerodha live exit "
                 "placement is disabled (Phase-0 dry-run)."
             )
-        order_id = self._kite.place_order(
-            variety=self._kite.VARIETY_REGULAR,
-            exchange=self._kite.EXCHANGE_NFO,
-            tradingsymbol=symbol,
-            transaction_type=self._kite.TRANSACTION_TYPE_SELL,
-            quantity=qty,
-            product=self._kite.PRODUCT_MIS,
-            order_type=self._kite.ORDER_TYPE_LIMIT,
-            price=self.get_ltp(symbol),
-            tag=idempotency_key[:20],
-        )
+        # get_ltp is a DATA fetch — run it direct BEFORE entering the proxy
+        # scope so only the placement itself consumes the static IP.
+        exit_price = self.get_ltp(symbol)
+        with order_proxy(self._kite):
+            order_id = self._kite.place_order(
+                variety=self._kite.VARIETY_REGULAR,
+                exchange=self._kite.EXCHANGE_NFO,
+                tradingsymbol=symbol,
+                transaction_type=self._kite.TRANSACTION_TYPE_SELL,
+                quantity=qty,
+                product=self._kite.PRODUCT_MIS,
+                order_type=self._kite.ORDER_TYPE_LIMIT,
+                price=exit_price,
+                tag=idempotency_key[:20],
+            )
         return OrderResult(
             broker_order_id=str(order_id),
             status="PLACED",

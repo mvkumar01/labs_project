@@ -15,6 +15,7 @@ blob held in-memory only — NEVER logged. The SmartApi import is deferred into
 `connect()` so importing this module never requires the SDK installed (keeps
 Phase-0 dry-run + CI green).
 """
+import hashlib
 import json
 import os
 import calendar
@@ -23,7 +24,7 @@ from datetime import datetime
 
 from .base import BrokerAdapter, OrderResult, Position
 from config.labs_config import STATE_DIR
-from live.proxy import configure_outbound_proxy
+from live.proxy import order_proxy
 
 
 def _live_orders_enabled() -> bool:
@@ -33,6 +34,12 @@ def _live_orders_enabled() -> bool:
 # ── Phase-1 enablement flag. Flipping to True is the ONLY thing that lets a
 #    real Angel order leave this process. Reviewed commit only. ───────────
 _LIVE_ORDERS_ENABLED = True
+
+
+def _angel_order_tag(idempotency_key: str) -> str:
+    """Angel rejects ordertag values >= 20 chars; keep this deterministic."""
+    digest = hashlib.sha1(str(idempotency_key).encode("utf-8")).hexdigest()[:14]
+    return f"LABS{digest}"
 
 INSTRUMENT_MASTER_URL = (
     "https://margincalculator.angelbroking.com/OpenAPI_File/files/"
@@ -60,8 +67,10 @@ class AngelAdapter(BrokerAdapter):
 
     # ── session ─────────────────────────────────────────────────────────
     def connect(self) -> None:
-        """generateSession(client_code, pin, totp) from decrypted creds."""
-        configure_outbound_proxy()
+        """generateSession(client_code, pin, totp) from decrypted creds.
+
+        Login is a DATA/auth call — it goes out DIRECT (not via the static IP).
+        Only place_order / exit_all are wrapped with order_proxy()."""
         from SmartApi import SmartConnect  # SDK import isolated to this pkg
         import pyotp                        # TOTP for Angel login
 
@@ -302,9 +311,12 @@ class AngelAdapter(BrokerAdapter):
             "duration": "DAY",
             "price": price,
             "quantity": qty,
-            "ordertag": idempotency_key,
+            "ordertag": _angel_order_tag(idempotency_key),
         }
-        resp = self._smart.placeOrder(order_params)
+        # Static IP used ONLY for the order placement (symbol/token resolution
+        # above already ran direct). order_proxy restores env + SDK proxy after.
+        with order_proxy(self._smart):
+            resp = self._smart.placeOrder(order_params)
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
             data = resp.get("data") or {}
@@ -350,11 +362,14 @@ class AngelAdapter(BrokerAdapter):
             "ordertype": self._ORDER_TYPE,
             "producttype": self._PRODUCT,
             "duration": "DAY",
-            "price": self.get_ltp(symbol),
+            "price": self.get_ltp(symbol),  # data fetch — runs direct (dict built first)
             "quantity": qty,
-            "ordertag": idempotency_key,
+            "ordertag": _angel_order_tag(idempotency_key),
         }
-        resp = self._smart.placeOrder(order_params)
+        # Static IP used ONLY for the order placement; the get_ltp above and the
+        # symbol/token resolution already ran direct while building order_params.
+        with order_proxy(self._smart):
+            resp = self._smart.placeOrder(order_params)
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
             data = resp.get("data") or {}
