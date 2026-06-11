@@ -125,10 +125,34 @@ code {
 .stat-note { min-height: 14px; margin-top: 4px; font-size: 11px; color: #64748b; }
 .v.pos { color: #4ade80; } .v.neg { color: #f87171; }
 
+.trade-history-head {
+  display: grid; grid-template-columns: 1fr 180px 170px; gap: 14px;
+  align-items: end; margin-bottom: 14px;
+}
+.history-sub { color: #64748b; font-size: 12px; margin-top: -6px; }
+.trade-filter label {
+  display: block; color: #94a3b8; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .5px; margin-bottom: 5px;
+}
+.trade-filter input {
+  width: 100%; padding: 8px 10px; border-radius: 6px;
+  background: #0f1117; border: 1px solid #2d3148; color: #e2e8f0;
+}
+.trade-pnl-card {
+  background: #0f1117; border: 1px solid #2d3148; border-radius: 8px;
+  padding: 10px 12px;
+}
+.trade-pnl-card .k {
+  font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .5px;
+}
+.trade-pnl-card .v { font-size: 17px; font-weight: 700; margin-top: 3px; }
+
 /* ── Orders table ── */
 table.orders { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.orders th, table.orders td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #232739; }
 table.orders th { color: #94a3b8; font-weight: 600; }
+table.orders td.pos { color: #4ade80; }
+table.orders td.neg { color: #f87171; }
 .tag-dry { background: #1e3a2e; color: #4ade80; padding: 2px 7px; border-radius: 4px; font-size: 11px; }
 .tag-live { background: #3a1212; color: #f87171; padding: 2px 7px; border-radius: 4px; font-size: 11px; }
 
@@ -146,4 +170,5 @@ table.orders th { color: #94a3b8; font-weight: 600; }
   .broker-grid { grid-template-columns: 1fr; }
   .mode-banner { align-items: flex-start; flex-direction: column; gap: 12px; }
   .session-warning { align-items: flex-start; flex-direction: column; }
+  .trade-history-head { grid-template-columns: 1fr; align-items: stretch; }
 }

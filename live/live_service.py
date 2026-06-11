@@ -67,6 +67,11 @@ def _today_ist_iso() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date().isoformat()
 
 
+def today_ist_iso() -> str:
+    """Public wrapper for UI routes that need the live trading date."""
+    return _today_ist_iso()
+
+
 def conn_id_for(user_id: str, broker: str) -> str:
     """Deterministic per-user broker-connection id (spec §2)."""
     return f"{user_id}:{broker}"
@@ -719,8 +724,45 @@ def record_trade(user_id: str, conn_id: str, *, side: str, symbol: str,
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Encrypted credential storage (Fernet) — keyed per conn_id
+# live_trades read helpers
 # ══════════════════════════════════════════════════════════════════════════
+def trade_history(user_id: str, conn_id: str, trade_date: str = None,
+                  limit: int = 100, conn: sqlite3.Connection = None) -> dict:
+    """Completed live_trades for one user's selected broker connection/date."""
+    own = conn is None
+    if own:
+        conn = get_live_conn()
+    try:
+        trade_date = trade_date or _today_ist_iso()
+        limit = max(1, min(int(limit or 100), 500))
+        date_expr = "substr(COALESCE(exit_time, entry_time, ''), 1, 10)"
+        params = (user_id, conn_id, trade_date)
+        summary = conn.execute(
+            f"SELECT COALESCE(SUM(pnl), 0) AS trade_pnl, COUNT(*) AS trade_count "
+            f"FROM live_trades "
+            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} = ?",
+            params,
+        ).fetchone()
+        rows = conn.execute(
+            f"SELECT trade_id, side, symbol, entry_price, exit_price, qty, pnl, "
+            f"entry_time, exit_time, reason, dry_run "
+            f"FROM live_trades "
+            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} = ? "
+            f"ORDER BY COALESCE(exit_time, entry_time, '') DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return {
+            "trade_date": trade_date,
+            "trade_pnl": float(summary["trade_pnl"] if summary else 0.0),
+            "trade_count": int(summary["trade_count"] if summary else 0),
+            "trades": [dict(r) for r in rows],
+        }
+    finally:
+        if own:
+            conn.close()
+
+
+# Encrypted credential storage (Fernet) - keyed per conn_id
 def _fernet():
     """Build a Fernet from env LABS_CRED_KEY. Deferred import so the module
     loads even when `cryptography` isn't installed (Phase-0 dry-run / CI)."""

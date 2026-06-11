@@ -73,6 +73,17 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _status_trade_date() -> str:
+    value = (request.args.get("trade_date") or "").strip()
+    if value:
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+            return value
+        except ValueError:
+            pass
+    return svc.today_ist_iso()
+
+
 def _is_stale_iso(value: str | None, *, max_age_s: int) -> bool:
     if not value:
         return True
@@ -319,6 +330,7 @@ def dashboard():
         lots=svc.get_lots(user_id, conn_id),
         bot_variant=svc.get_config(user_id, conn_id, "bot_variant"),
         daily_loss_cap=svc.get_daily_loss_cap(user_id, conn_id),
+        trade_date=svc.today_ist_iso(),
     )
 
 
@@ -639,7 +651,9 @@ def status():
     if not conn_id:
         return jsonify({"mode": "DISARMED", "connected": False})
     reconcile_blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
+    trade_date = _status_trade_date()
     day = svc.get_day_pnl(user_id, conn_id)
+    trades = svc.trade_history(user_id, conn_id, trade_date=trade_date, limit=100)
     connection = svc.get_connection(user_id, conn_id) or {}
     if (
         broker
@@ -664,4 +678,8 @@ def status():
         "funds_updated_at": connection.get("funds_updated_at"),
         "funds_error": connection.get("funds_error"),
         "last_orders": svc.recent_orders(user_id, conn_id, limit=20),
+        "trade_date": trades["trade_date"],
+        "trade_pnl": trades["trade_pnl"],
+        "trade_count": trades["trade_count"],
+        "trades": trades["trades"],
     })

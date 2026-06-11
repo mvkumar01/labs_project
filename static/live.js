@@ -25,6 +25,35 @@
     return "\u20b9" + Number(v || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
   }
 
+  function fmtPrice(v) {
+    if (v === null || v === undefined || v === "") return "--";
+    return Number(v || 0).toLocaleString("en-IN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+
+  function fmtTime(v) {
+    return (v || "").replace("T", " ").slice(0, 19);
+  }
+
+  function addCell(row, text, className) {
+    var td = document.createElement("td");
+    td.textContent = text;
+    if (className) td.className = className;
+    row.appendChild(td);
+  }
+
+  function selectedTradeDate() {
+    var input = document.getElementById("trade-date");
+    return input && input.value ? input.value : "";
+  }
+
+  function statusUrl() {
+    var d = selectedTradeDate();
+    return d ? "/live/status?trade_date=" + encodeURIComponent(d) : "/live/status";
+  }
+
   function applyFunds(s) {
     var funds = document.getElementById("stat-funds");
     if (funds) funds.textContent = fmtMoney(s.funds_available);
@@ -82,8 +111,53 @@
     });
   }
 
+  function renderTrades(trades) {
+    var tb = document.querySelector("#trades-body");
+    if (!tb) return;
+    tb.innerHTML = "";
+    if (!trades || !trades.length) {
+      tb.innerHTML = '<tr><td colspan="9" style="color:#64748b">No completed trades for this date.</td></tr>';
+      return;
+    }
+    trades.forEach(function (t) {
+      var tr = document.createElement("tr");
+      addCell(tr, fmtTime(t.exit_time || t.entry_time));
+      addCell(tr, t.side || "");
+      addCell(tr, t.symbol || "");
+      addCell(tr, String(t.qty || 0));
+      addCell(tr, fmtPrice(t.entry_price));
+      addCell(tr, fmtPrice(t.exit_price));
+      addCell(tr, fmtRs(t.pnl), Number(t.pnl || 0) >= 0 ? "pos" : "neg");
+      addCell(tr, t.reason || "");
+
+      var td = document.createElement("td");
+      td.innerHTML = t.dry_run
+        ? '<span class="tag-dry">DRY</span>'
+        : '<span class="tag-live">LIVE</span>';
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    });
+  }
+
+  function applyTradeHistory(s) {
+    var dateInput = document.getElementById("trade-date");
+    if (dateInput && s.trade_date && !dateInput.value) dateInput.value = s.trade_date;
+
+    var pnl = document.getElementById("trade-pnl");
+    if (pnl) {
+      pnl.textContent = fmtRs(s.trade_pnl);
+      pnl.className = "v " + (Number(s.trade_pnl || 0) >= 0 ? "pos" : "neg");
+    }
+    var count = document.getElementById("trade-count");
+    if (count) {
+      var n = Number(s.trade_count || 0);
+      count.textContent = n.toLocaleString("en-IN") + (n === 1 ? " trade" : " trades");
+    }
+    renderTrades(s.trades);
+  }
+
   function refreshStatus() {
-    fetch("/live/status", { headers: { "Accept": "application/json" } })
+    fetch(statusUrl(), { headers: { "Accept": "application/json" } })
       .then(function (r) { return r.json(); })
       .then(function (s) {
         applyModeBanner(s.mode);
@@ -115,6 +189,7 @@
         applyFunds(s);
 
         renderOrders(s.last_orders);
+        applyTradeHistory(s);
       })
       .catch(function () { /* transient; next poll retries */ });
   }
@@ -171,6 +246,9 @@
         }).finally(function () { refreshFunds.disabled = false; });
       });
     }
+
+    var tradeDate = document.getElementById("trade-date");
+    if (tradeDate) tradeDate.addEventListener("change", refreshStatus);
 
     // Broker selector highlight (connect page).
     var radios = document.querySelectorAll('input[name="broker"]');

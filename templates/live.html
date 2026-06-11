@@ -105,6 +105,43 @@
         </tbody>
       </table>
     </div>
+
+    <!-- Completed trade history scoped to this account + selected broker -->
+    <div class="card">
+      <div class="trade-history-head">
+        <div>
+          <h3>Trade history</h3>
+          <div class="history-sub">Completed trades for this account and broker.</div>
+        </div>
+        <div class="trade-filter">
+          <label for="trade-date">Date</label>
+          <input id="trade-date" type="date" value="{{ trade_date }}">
+        </div>
+        <div class="trade-pnl-card">
+          <div class="k">Filtered P&amp;L</div>
+          <div id="trade-pnl" class="v">+&#8377;0</div>
+          <div id="trade-count" class="stat-note">0 trades</div>
+        </div>
+      </div>
+      <table class="orders">
+        <thead>
+          <tr>
+            <th>Exit Time</th>
+            <th>Side</th>
+            <th>Symbol</th>
+            <th>Qty</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>P&amp;L</th>
+            <th>Reason</th>
+            <th>Mode</th>
+          </tr>
+        </thead>
+        <tbody id="trades-body">
+          <tr><td colspan="9" style="color:#64748b;">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
   </main>
 </div>
 <script src="/static/live.js"></script>
