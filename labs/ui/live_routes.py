@@ -90,14 +90,21 @@ def _current_conn_id():
     Returns (user_id, broker, conn_id) or (user_id, None, None) if no broker
     selected yet. NEVER trusts a client-supplied id."""
     user_id = current_user_id()
-    broker = session.get("live_broker")
+    broker = (session.get("live_broker") or "").lower()
+    if broker not in SUPPORTED_BROKERS:
+        broker = None
+    if user_id and not broker:
+        broker = svc.get_selected_broker(user_id)
+        if broker:
+            session["live_broker"] = broker
     if user_id and not broker:
         connections = svc.list_user_connections(user_id)
         if connections:
             connections.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
             broker = (connections[0].get("broker") or "").lower()
-            if broker:
+            if broker in SUPPORTED_BROKERS:
                 session["live_broker"] = broker
+                svc.set_selected_broker(user_id, broker)
     conn_id = svc.conn_id_for(user_id, broker) if (user_id and broker) else None
     return user_id, broker, conn_id
 
@@ -267,6 +274,9 @@ def login():
     if user_id:
         session.clear()
         session["user_id"] = user_id
+        selected_broker = svc.get_selected_broker(user_id)
+        if selected_broker:
+            session["live_broker"] = selected_broker
         session.permanent = True
         return redirect(url_for("live.dashboard"))
     log.warning("failed /live/login attempt")
@@ -319,17 +329,24 @@ def dashboard():
 @csrf_protect
 def connect():
     svc.ensure_schema()
+    user_id = current_user_id()
     if request.method == "GET":
+        selected = (
+            session.get("live_broker")
+            or svc.get_selected_broker(user_id)
+            or "angel"
+        )
         return render_template(
             "live_connect.html",
             csrf_token=issue_csrf(),
             brokers=SUPPORTED_BROKERS,
-            selected=session.get("live_broker", "angel"),  # Angel default
+            selected=selected if selected in SUPPORTED_BROKERS else "angel",
         )
     broker = request.form.get("broker", "")
     if broker not in SUPPORTED_BROKERS:
         return redirect(url_for("live.connect"))
     session["live_broker"] = broker
+    svc.set_selected_broker(user_id, broker)
     return redirect(url_for("live.credentials", broker=broker))
 
 
@@ -377,6 +394,7 @@ def credentials(broker):
                           account_ref=_account_ref_from_creds(broker, creds),
                           status="configured")
     session["live_broker"] = broker
+    svc.set_selected_broker(user_id, broker)
     log.info("stored credentials user=%s broker=%s (fields=%s)",
              user_id, broker, sorted(creds.keys()))  # field NAMES only
     if broker == "zerodha" and creds.get("api_key") and creds.get("api_secret"):
@@ -398,6 +416,7 @@ def zerodha_login():
     if not api_key:
         return redirect(url_for("live.credentials", broker="zerodha"))
     session["live_broker"] = "zerodha"
+    svc.set_selected_broker(user_id, "zerodha")
     return redirect(build_login_url(api_key))
 
 
@@ -440,6 +459,8 @@ def zerodha_callback():
         )
         if blob.get("access_token"):
             _refresh_broker_funds(user_id, "zerodha", conn_id, blob)
+        session["live_broker"] = "zerodha"
+        svc.set_selected_broker(user_id, "zerodha")
         log.info("stored zerodha request_token user=%s (status=%s)", user_id, status)
     return redirect(url_for("live.configure"))
 

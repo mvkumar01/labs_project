@@ -72,6 +72,40 @@ def conn_id_for(user_id: str, broker: str) -> str:
     return f"{user_id}:{broker}"
 
 
+_USER_PREF_CONN_ID = "__user__"
+_SUPPORTED_BROKERS = {"angel", "zerodha"}
+
+
+def get_selected_broker(user_id: str, conn: sqlite3.Connection = None) -> str | None:
+    """Return the user's persisted broker selection, if any.
+
+    This is intentionally user-scoped rather than session-scoped so logout/login
+    does not fall back to whichever broker row happened to be updated last.
+    """
+    own = conn is None
+    if own:
+        conn = get_live_conn()
+    try:
+        row = conn.execute(
+            "SELECT value FROM live_config "
+            "WHERE user_id = ? AND conn_id = ? AND key = 'selected_broker'",
+            (user_id, _USER_PREF_CONN_ID),
+        ).fetchone()
+        broker = (row["value"] if row else "").strip().lower()
+        return broker if broker in _SUPPORTED_BROKERS else None
+    finally:
+        if own:
+            conn.close()
+
+
+def set_selected_broker(user_id: str, broker: str,
+                        conn: sqlite3.Connection = None) -> None:
+    broker = (broker or "").strip().lower()
+    if broker not in _SUPPORTED_BROKERS:
+        return
+    set_config(user_id, _USER_PREF_CONN_ID, "selected_broker", broker, conn)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # USER MANAGEMENT (spec §10) — live_users
 # ══════════════════════════════════════════════════════════════════════════
