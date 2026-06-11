@@ -47,6 +47,10 @@ LOT_SIZE = 65              # NIFTY lot size
 ITM_DISTANCE = 200         # ITM option distance
 EOD_EXIT_TIME = dtime(*[int(x) for x in EOD_CUTOFF.split(":")])  # 15:25 IST
 _OWNER_STALE_S = 30        # a runner_owner heartbeat older than this is stale
+PC400_TRAIL_ARM_PNL = 40.0
+PC400_TRAIL_DRAWDOWN = 20.0
+PC400_TRAIL_VIX_CUTOFF = 17.0
+_SPOT_TRAIL_CACHE = {}
 IST = timezone(timedelta(hours=5, minutes=30))
 UNDERLYING = "NIFTY"
 
@@ -274,6 +278,185 @@ def get_latest_alpha():
     except Exception as e:
         log.warning("latest hybrid alpha unavailable: %s", type(e).__name__)
         return None
+
+
+def get_latest_spot():
+    """Read-only latest 1-minute NIFTY spot from the shared market-data CSV."""
+    try:
+        from live.engine.alpha_hybrid import latest_spot_1min
+
+        return latest_spot_1min()
+    except Exception as e:
+        log.warning("latest spot unavailable: %s", type(e).__name__)
+        return None
+
+
+def _as_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_ist_minute_naive(value):
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=IST)
+        return dt.astimezone(IST).replace(second=0, microsecond=0, tzinfo=None)
+    except Exception:
+        return None
+
+
+def _csv_ts_to_ist_naive(value):
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            return dt.replace(second=0, microsecond=0)
+        return dt.astimezone(IST).replace(second=0, microsecond=0, tzinfo=None)
+    except Exception:
+        return None
+
+
+def get_spot_trail_snapshot(state: dict) -> dict:
+    """Latest spot plus restart-safe favorable peak since entry.
+
+    The PC400 trail must survive restarts and mid-day deploys. Rebuild the
+    favorable spot excursion from the shared CSV keyed by file mtime, then
+    combine it with the persisted peak_pnl in evaluate_pc400_spot_trail().
+    """
+    latest = get_latest_spot()
+    entry_dt = _to_ist_minute_naive(state.get("entry_time"))
+    entry_spot = _as_float(state.get("entry_spot"))
+    side = (state.get("side") or "").upper()
+    if entry_dt is None or entry_spot is None or side not in {"CALL", "PUT"}:
+        return {"spot": latest, "peak_pnl": None}
+
+    path = SHARED_LIVE_DIR / entry_dt.date().isoformat() / f"{UNDERLYING}_options_1min.csv"
+    try:
+        st = path.stat()
+    except OSError:
+        return {"spot": latest, "peak_pnl": None}
+
+    key = (str(path), st.st_mtime_ns, st.st_size, entry_dt.isoformat(), side, entry_spot)
+    cached = _SPOT_TRAIL_CACHE.get("entry")
+    if cached and cached[0] == key:
+        return cached[1]
+
+    latest_csv_spot = None
+    best_spot = None
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = DictReader(handle)
+            last_ts = None
+            last_spot = None
+            for row in reader:
+                ts = _csv_ts_to_ist_naive(row.get("timestamp"))
+                spot = _as_float(row.get("spot"))
+                if ts is None or spot is None or ts < entry_dt:
+                    continue
+                # The CSV has one row per option contract per minute. Spot is
+                # duplicated, so process each timestamp once using its last row.
+                if last_ts is not None and ts != last_ts:
+                    latest_csv_spot = last_spot
+                    if side == "CALL":
+                        best_spot = last_spot if best_spot is None else max(best_spot, last_spot)
+                    else:
+                        best_spot = last_spot if best_spot is None else min(best_spot, last_spot)
+                last_ts = ts
+                last_spot = spot
+            if last_ts is not None:
+                latest_csv_spot = last_spot
+                if side == "CALL":
+                    best_spot = last_spot if best_spot is None else max(best_spot, last_spot)
+                else:
+                    best_spot = last_spot if best_spot is None else min(best_spot, last_spot)
+    except Exception as e:
+        log.warning("spot trail snapshot unavailable: %s", type(e).__name__)
+        return {"spot": latest, "peak_pnl": None}
+
+    if best_spot is None:
+        result = {"spot": latest, "peak_pnl": None}
+    else:
+        peak = best_spot - entry_spot if side == "CALL" else entry_spot - best_spot
+        result = {"spot": latest_csv_spot if latest_csv_spot is not None else latest,
+                  "peak_pnl": peak}
+    _SPOT_TRAIL_CACHE["entry"] = (key, result)
+    return result
+
+
+def _pc400_trail_uses_spot(tier: str | None, side: str | None,
+                           gap_direction: str | None, vix_at_open) -> bool:
+    """Bot A/v22 PC400 trail-cell selector, broker-neutral."""
+    if (tier or "").upper() not in {"PC400", "PC800"}:
+        return False
+    side = (side or "").upper()
+    gap_direction = (gap_direction or "").upper()
+    vix = _as_float(vix_at_open)
+    vix_low = vix is None or vix < PC400_TRAIL_VIX_CUTOFF
+    return (
+        vix_low
+        or (side == "PUT" and gap_direction == "UP")
+        or (side == "CALL" and gap_direction == "DOWN")
+    )
+
+
+def evaluate_pc400_spot_trail(state: dict, alpha_bar: dict | None,
+                              spot) -> dict | None:
+    """Evaluate the Bot A/v22 PC400 spot trail for an open live position.
+
+    Returns a small decision dict and the updated per-trade peak_pnl. The
+    caller persists peak_pnl even when the trail is not armed/fired so a
+    restart keeps the same trailing state.
+    """
+    if not alpha_bar or state.get("position") != "OPEN":
+        return None
+    side = (state.get("side") or "").upper()
+    if side not in {"CALL", "PUT"}:
+        return None
+    entry_spot = _as_float(state.get("entry_spot"))
+    observed_peak = None
+    if isinstance(spot, dict):
+        observed_peak = _as_float(spot.get("peak_pnl"))
+        current_spot = _as_float(spot.get("spot"))
+    else:
+        current_spot = _as_float(spot)
+    if entry_spot is None or current_spot is None:
+        return None
+
+    pnl = current_spot - entry_spot if side == "CALL" else entry_spot - current_spot
+    prior_peak = _as_float(state.get("peak_pnl")) or 0.0
+    peak_pnl = max(prior_peak, pnl, observed_peak or 0.0)
+
+    tier = alpha_bar.get("tier") or alpha_bar.get("bucket")
+    use_trail = _pc400_trail_uses_spot(
+        tier, side, alpha_bar.get("gap_direction"), alpha_bar.get("vix_at_open")
+    )
+
+    stop = None
+    should_exit = False
+    if use_trail and peak_pnl >= PC400_TRAIL_ARM_PNL:
+        if side == "CALL":
+            stop = entry_spot + (peak_pnl - PC400_TRAIL_DRAWDOWN)
+            should_exit = current_spot <= stop
+        else:
+            stop = entry_spot - (peak_pnl - PC400_TRAIL_DRAWDOWN)
+            should_exit = current_spot >= stop
+
+    return {
+        "exit": should_exit,
+        "reason": "v22_trail" if should_exit else None,
+        "peak_pnl": peak_pnl,
+        "pnl": pnl,
+        "stop": stop,
+        "use_trail": use_trail,
+    }
 
 
 def _engine_for(conn_id: str, signal_engines: dict) -> AlphaSignalEngine:
@@ -514,6 +697,40 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     alpha_bar = get_latest_alpha()
     if alpha_bar is None:
         return
+
+    # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
+    # Run it before alpha_seen de-duplication so repeated polls can arm/fire it.
+    if current_open:
+        trail = evaluate_pc400_spot_trail(st, alpha_bar, get_spot_trail_snapshot(st))
+        if trail is not None:
+            prior_peak = _as_float(st.get("peak_pnl")) or 0.0
+            if trail["peak_pnl"] > prior_peak:
+                st["peak_pnl"] = trail["peak_pnl"]
+                svc.save_trade_state(user_id, conn_id, st)
+            if trail["exit"]:
+                log.info(
+                    "spot trail exit conn=%s side=%s spot_pnl=%.2f peak_pnl=%.2f stop=%s",
+                    conn_id, current_side, trail["pnl"], trail["peak_pnl"], trail["stop"],
+                )
+                exit_price = adapter.get_ltp(current_symbol)
+                result = _route_order(
+                    adapter, user_id, conn_id, action="EXIT", side=current_side,
+                    symbol=current_symbol, qty=current_qty, price=exit_price,
+                    dry_run=dry_run,
+                )
+                if _order_applied(result.status, dry_run=dry_run):
+                    _record_exit_result(
+                        user_id,
+                        conn_id,
+                        st,
+                        exit_price=result.avg_fill_price or exit_price,
+                        qty=current_qty,
+                        reason=trail["reason"],
+                        dry_run=dry_run,
+                    )
+                    svc.reset_trade_state(user_id, conn_id)
+                return
+
     alpha_key = (alpha_bar.get("timestamp"), alpha_bar.get("alpha"))
     if alpha_seen.get(conn_id) == alpha_key:
         return
