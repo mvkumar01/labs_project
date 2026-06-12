@@ -181,16 +181,21 @@ def _compute_alpha_series(snapshot_df: pd.DataFrame, trade_date: str,
         in_range = bucket_df[(bucket_df["strike"] >= lower) & (bucket_df["strike"] <= upper)]
         if in_range.empty:
             rows.append({"timestamp": bucket, "spot": float(bucket_df["spot"].iloc[-1]),
-                         "alpha": None, "denom_alg": None})
+                         "alpha": None, "alpha_abs": None, "denom_alg": None})
             continue
         pe_delta = float(in_range.loc[in_range["type"] == "pe", "delta_oi"].sum())
         ce_delta = float(in_range.loc[in_range["type"] == "ce", "delta_oi"].sum())
         denom = pe_delta + ce_delta
         alpha = ((pe_delta - ce_delta) * 100 / denom) if denom else 0.0
+        # v2.8.1 abs-denom sibling (bounded [-100, +100]) — routed per tier
+        # in hybrid_alpha_bars; the std algebraic alpha above is unchanged.
+        denom_abs = abs(pe_delta) + abs(ce_delta)
+        alpha_abs = ((pe_delta - ce_delta) * 100 / denom_abs) if denom_abs else 0.0
         rows.append({
             "timestamp": bucket,
             "spot": float(bucket_df["spot"].iloc[-1]),
             "alpha": round(alpha, 2),
+            "alpha_abs": round(alpha_abs, 2),
             "denom_alg": denom,
         })
     series = pd.DataFrame(rows)
@@ -205,7 +210,9 @@ def _compute_alpha_series(snapshot_df: pd.DataFrame, trade_date: str,
 def _read_locked_hybrid_state(trade_date: str) -> dict | None:
     if not HYBRID_STATE_FILE.exists():
         return None
-    state = json.loads(HYBRID_STATE_FILE.read_text(encoding="utf-8"))
+    # utf-8-sig: a BOM here would otherwise raise and silently no-trade the
+    # whole day (same failure class as the live_env.json incident).
+    state = json.loads(HYBRID_STATE_FILE.read_text(encoding="utf-8-sig"))
     if state.get("trade_date") != trade_date:
         return None
     if not (state.get("locked") and state.get("verified_open_locked")):
@@ -215,12 +222,53 @@ def _read_locked_hybrid_state(trade_date: str) -> dict | None:
     return state
 
 
-def latest_hybrid_alpha(trade_date: str | None = None) -> dict | None:
-    """Return the latest non-null locked hybrid alpha bar, or None for no-trade."""
+# Single-entry caches. The runner polls every ~2s per connection; recomputing
+# the whole pandas pipeline each time is wasted CPU. Keyed on file mtimes +
+# wall-clock minute (the completed-bar cutoff depends on "now").
+_BARS_CACHE: dict = {}
+_SPOT_CACHE: dict = {}
+
+
+def hybrid_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]:
+    """All COMPLETED 5-min hybrid alpha bars for the day, oldest -> newest.
+
+    Returns (state, bars). (None, []) on no-trade (SKIP / not locked / no data).
+
+    COMPLETED-BAR DISCIPLINE (2026-06 audit fix): the in-progress 5-min bucket
+    is EXCLUDED. It mutates as 1-min rows land, which previously made the
+    runner re-evaluate the same bar on every mutation — entries/exits could
+    fire on intra-bar alpha noise that does not exist at bar close, diverging
+    from the validated backtest semantics. A bucket is included only once its
+    window has fully elapsed (bucket_start + 5min <= now IST).
+
+    ALPHA ROUTING (v2.8.1 champion parity): on PC50 gap-UP days the bar's
+    `alpha` is the ABS-DENOM value (regime range, bounded [-100, +100]); all
+    other cells keep the std algebraic alpha. `alpha_imb` always carries the
+    std value, `denom_alg` the algebraic denominator (v7.8 guard input).
+    NOTE: PC400 non-carve-out champion cell (Gemini c2 range + abs-denom) is
+    NOT reproducible from the locked static range file — that cell degrades
+    to regime range + std alpha (= production v7.9 behaviour) by design.
+    """
     trade_date = trade_date or datetime.now(IST).date().isoformat()
+    csv_path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
+
+    def _mtime(p: Path) -> int:
+        try:
+            return p.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    key = (trade_date, _mtime(csv_path), _mtime(HYBRID_STATE_FILE),
+           datetime.now(IST).strftime("%H:%M"))
+    cached = _BARS_CACHE.get("entry")
+    if cached and cached[0] == key:
+        return cached[1]
+
     state = _read_locked_hybrid_state(trade_date)
     if state is None:
-        return None
+        result = (None, [])
+        _BARS_CACHE["entry"] = (key, result)
+        return result
 
     lower = float(state["lower"])
     upper = float(state["upper"])
@@ -229,36 +277,84 @@ def latest_hybrid_alpha(trade_date: str | None = None) -> dict | None:
     snapshot_df = _prepare_snapshot_frame(live_df, baseline_df)
     series = _compute_alpha_series(snapshot_df, trade_date, lower, upper)
     series = series.dropna(subset=["alpha"]).copy()
-    if series.empty:
-        return None
 
-    row = series.iloc[-1]
-    alpha = float(row["alpha"])
-    return {
-        "timestamp": row["timestamp"].isoformat(),
-        "trade_date": trade_date,
-        "alpha": alpha,
-        "alpha_imb": alpha,
-        "spot": None if pd.isna(row.get("spot")) else float(row["spot"]),
-        "denom_alg": None if pd.isna(row.get("denom_alg")) else float(row["denom_alg"]),
-        "bucket": state.get("bucket") or "PC50",
-        "tier": state.get("bucket") or "PC50",
-        "gap_direction": state.get("direction"),
-        # 09:15 locked VIX — consumed by the v2.9.1 PC50 gap-UP spot exit
-        # overlay (VIX gate). None when verify_hybrid_range had no VIX.
-        "vix_at_open": state.get("vix_at_open"),
-        "lower": lower,
-        "upper": upper,
-        "range_state": {
-            "verified_open": state.get("verified_open"),
-            "gap_pts": state.get("gap_pts"),
-            "base_bucket": state.get("base_bucket"),
-            "base_width": state.get("base_width"),
-            "overlay_applied": state.get("overlay_applied"),
-        },
-        "pc50_range_source": state.get("pc50_range_source"),
-        "pc250_range_source": state.get("pc250_range_source"),
-        "pc400_range_source": state.get("pc400_range_source"),
-        "pc400_in_carve_out": state.get("pc400_in_carve_out"),
-        "pc400_carve_out_reason": state.get("pc400_carve_out_reason"),
-    }
+    # Completed windows only: bucket_start + 5min <= now.
+    cutoff = pd.Timestamp(datetime.now(IST)) - pd.Timedelta(minutes=5)
+    series = series[series["timestamp"] <= cutoff]
+
+    bucket = state.get("bucket") or "PC50"
+    direction = state.get("direction")
+    use_abs = bucket == "PC50" and direction == "UP"   # v2.8.1 cell
+
+    bars: list[dict] = []
+    for _, row in series.iterrows():
+        alpha_std = float(row["alpha"])
+        alpha_abs = None if pd.isna(row.get("alpha_abs")) else float(row["alpha_abs"])
+        alpha = alpha_abs if (use_abs and alpha_abs is not None) else alpha_std
+        bars.append({
+            "timestamp": row["timestamp"].isoformat(),
+            "trade_date": trade_date,
+            "alpha": alpha,
+            "alpha_imb": alpha_std,
+            "alpha_formula": "abs_denom" if (use_abs and alpha_abs is not None) else "std",
+            "spot": None if pd.isna(row.get("spot")) else float(row["spot"]),
+            "denom_alg": None if pd.isna(row.get("denom_alg")) else float(row["denom_alg"]),
+            "bucket": bucket,
+            "tier": bucket,
+            "gap_direction": direction,
+            # 09:15 locked VIX — v2.9.1 overlay gate + PC400 regime selection.
+            "vix_at_open": state.get("vix_at_open"),
+            "lower": lower,
+            "upper": upper,
+            "range_state": {
+                "verified_open": state.get("verified_open"),
+                "gap_pts": state.get("gap_pts"),
+                "base_bucket": state.get("base_bucket"),
+                "base_width": state.get("base_width"),
+                "overlay_applied": state.get("overlay_applied"),
+            },
+            "pc50_range_source": state.get("pc50_range_source"),
+            "pc250_range_source": state.get("pc250_range_source"),
+            "pc400_range_source": state.get("pc400_range_source"),
+            "pc400_in_carve_out": state.get("pc400_in_carve_out"),
+            "pc400_carve_out_reason": state.get("pc400_carve_out_reason"),
+        })
+
+    result = (state, bars)
+    _BARS_CACHE["entry"] = (key, result)
+    return result
+
+
+def latest_hybrid_alpha(trade_date: str | None = None) -> dict | None:
+    """Return the latest COMPLETED locked hybrid alpha bar, or None for no-trade."""
+    _, bars = hybrid_alpha_bars(trade_date)
+    return bars[-1] if bars else None
+
+
+def latest_spot_1min(trade_date: str | None = None) -> float | None:
+    """Latest 1-min NIFTY spot from the shared live CSV (collector cadence).
+
+    Used by the runner's spot-reference exits (trail / v7.11 / PC250 spot
+    TP-SL) which need fresher spot than the 5-min completed bar. Cached by
+    file mtime so the per-2s poll loop costs one parse per collector write.
+    """
+    trade_date = trade_date or datetime.now(IST).date().isoformat()
+    path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
+    if not path.exists():
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    cached = _SPOT_CACHE.get("entry")
+    if cached and cached[0] == key:
+        return cached[1]
+    try:
+        df = pd.read_csv(path, usecols=["spot"])
+        spots = pd.to_numeric(df["spot"], errors="coerce").dropna()
+        value = float(spots.iloc[-1]) if not spots.empty else None
+    except Exception:
+        value = None
+    _SPOT_CACHE["entry"] = (key, value)
+    return value
