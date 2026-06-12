@@ -197,6 +197,37 @@ class ZerodhaAdapter(BrokerAdapter):
             )
         # get_ltp is a DATA fetch — run it direct BEFORE entering the proxy
         # scope so only the placement itself consumes the static IP.
+        pos = self.get_position()
+        requested_symbol = str(symbol or "").strip().upper()
+        broker_symbol = str(pos.symbol or "").strip().upper()
+        requested_qty = abs(int(qty or 0))
+        broker_qty = int(pos.qty or 0)
+        if broker_symbol != requested_symbol or broker_qty <= 0:
+            return OrderResult(
+                broker_order_id=None,
+                status="NO_LONG_POSITION",
+                avg_fill_price=None,
+                raw={
+                    "requested_symbol": requested_symbol,
+                    "requested_qty": requested_qty,
+                    "broker_symbol": pos.symbol,
+                    "broker_qty": pos.qty,
+                    "reason": reason,
+                },
+            )
+        if requested_qty <= 0 or requested_qty > broker_qty:
+            return OrderResult(
+                broker_order_id=None,
+                status="EXIT_QTY_EXCEEDS_POSITION",
+                avg_fill_price=None,
+                raw={
+                    "requested_symbol": requested_symbol,
+                    "requested_qty": requested_qty,
+                    "broker_symbol": pos.symbol,
+                    "broker_qty": pos.qty,
+                    "reason": reason,
+                },
+            )
         exit_price = self.get_ltp(symbol)
         with order_proxy(self._kite):
             order_id = self._kite.place_order(

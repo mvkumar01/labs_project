@@ -253,11 +253,11 @@ def reconcile_on_startup(adapter, user_id: str, conn_id: str, conn=None) -> Reco
         svc.set_config(user_id, conn_id, "reconcile_message", msg, conn)
         return ReconcileResult(False, db_symbol, db_qty, None, 0, msg)
 
-    broker_open = pos.qty != 0
+    broker_open = pos.qty > 0
     if not db_open and not broker_open:
         ok, msg = True, "both flat"
     elif (db_open and broker_open and pos.symbol == db_symbol
-          and abs(pos.qty) == abs(db_qty)):
+          and pos.qty == abs(db_qty)):
         ok, msg = True, "both open — agree (broker truth adopted)"
     else:
         ok = False
@@ -666,8 +666,54 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     except Exception as e:
         log.warning("get_position failed conn=%s: %s", conn_id, type(e).__name__)
         return
-    broker_open = pos.qty != 0
+    broker_open = pos.qty > 0
     db_open = st.get("position") == "OPEN"
+
+    if not dry_run and db_open:
+        db_symbol = str(st.get("symbol") or "").strip().upper()
+        broker_symbol = str(pos.symbol or "").strip().upper()
+        db_qty = int(st.get("qty") or 0) or svc.get_lots(user_id, conn_id) * LOT_SIZE
+        if int(pos.qty or 0) < 0:
+            msg = (
+                f"MISMATCH db={db_symbol}/{db_qty} "
+                f"broker={broker_symbol}/{pos.qty}; short position detected, automation blocked"
+            )
+            log.warning("live state mismatch | conn=%s %s", conn_id, msg)
+            prior_msg = svc.get_config(user_id, conn_id, "reconcile_message")
+            svc.set_config(user_id, conn_id, "reconcile_blocked", "1")
+            svc.set_config(user_id, conn_id, "reconcile_message", msg)
+            if prior_msg != msg:
+                notify_telegram(f"LIVE automation blocked: {msg}")
+            return
+        if not broker_open:
+            log.warning(
+                "live state stale: DB open but broker has no matching long; "
+                "resetting DB state | conn=%s db=%s/%s broker=%s/%s",
+                conn_id, db_symbol, db_qty, broker_symbol, pos.qty,
+            )
+            svc.reset_trade_state(user_id, conn_id)
+            svc.set_config(user_id, conn_id, "reconcile_blocked", "0")
+            svc.set_config(
+                user_id,
+                conn_id,
+                "reconcile_message",
+                "DB open state cleared because broker is flat/not long",
+            )
+            st = svc.get_trade_state(user_id, conn_id)
+            db_open = False
+        elif broker_symbol != db_symbol or int(pos.qty or 0) != abs(db_qty):
+            msg = (
+                f"MISMATCH db={db_symbol}/{db_qty} "
+                f"broker={broker_symbol}/{pos.qty}; automation blocked"
+            )
+            log.warning("live state mismatch | conn=%s %s", conn_id, msg)
+            prior_msg = svc.get_config(user_id, conn_id, "reconcile_message")
+            svc.set_config(user_id, conn_id, "reconcile_blocked", "1")
+            svc.set_config(user_id, conn_id, "reconcile_message", msg)
+            if prior_msg != msg:
+                notify_telegram(f"LIVE automation blocked: {msg}")
+            return
+
     current_open = db_open if dry_run else broker_open
     current_symbol = st.get("symbol") if dry_run and db_open else pos.symbol
     current_side = st.get("side") if dry_run and db_open else pos.side

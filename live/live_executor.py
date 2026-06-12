@@ -265,6 +265,85 @@ def _refresh_order_result(adapter, result: OrderResult, *,
 # ══════════════════════════════════════════════════════════════════════════
 # USER-SCOPED IDEMPOTENCY (spec §9) — key build + single-chokepoint placement
 # ══════════════════════════════════════════════════════════════════════════
+def _blocked_exit(idem_key: str, status: str, raw: dict, conn=None) -> OrderResult:
+    svc.update_order_ledger(idem_key, status=status, placed_at=_now_iso(), conn=conn)
+    return OrderResult(
+        broker_order_id=None,
+        status=status,
+        avg_fill_price=None,
+        raw=raw,
+    )
+
+
+def _verify_matching_long_before_exit(adapter, *, symbol: str, qty: int,
+                                      conn_id: str, idem_key: str,
+                                      conn=None) -> OrderResult | None:
+    """Fail closed before any live SELL.
+
+    This live strategy is long-options only. If the broker is flat, short, on a
+    different contract, or has less quantity than requested, sending SELL could
+    create an unintended written option. In that case, block without touching
+    the broker order endpoint.
+    """
+    try:
+        pos = adapter.get_position()
+    except Exception as e:
+        log.warning(
+            "EXIT blocked: broker position read failed | conn=%s symbol=%s key=%s type=%s",
+            conn_id, symbol, idem_key, type(e).__name__,
+        )
+        return _blocked_exit(
+            idem_key,
+            "POSITION_CHECK_FAILED",
+            {
+                "requested_symbol": symbol,
+                "requested_qty": qty,
+                "error_type": type(e).__name__,
+            },
+            conn,
+        )
+
+    requested_symbol = str(symbol or "").strip().upper()
+    broker_symbol = str(pos.symbol or "").strip().upper()
+    requested_qty = abs(int(qty or 0))
+    broker_qty = int(pos.qty or 0)
+    if broker_symbol != requested_symbol or broker_qty <= 0:
+        log.warning(
+            "EXIT blocked: no matching long position | conn=%s requested=%s/%s "
+            "broker=%s/%s key=%s",
+            conn_id, requested_symbol, requested_qty, broker_symbol, broker_qty, idem_key,
+        )
+        return _blocked_exit(
+            idem_key,
+            "NO_LONG_POSITION",
+            {
+                "requested_symbol": symbol,
+                "requested_qty": requested_qty,
+                "broker_symbol": pos.symbol,
+                "broker_qty": pos.qty,
+            },
+            conn,
+        )
+    if requested_qty <= 0 or requested_qty > broker_qty:
+        log.warning(
+            "EXIT blocked: qty exceeds broker long position | conn=%s symbol=%s "
+            "requested=%s broker=%s key=%s",
+            conn_id, requested_symbol, requested_qty, broker_qty, idem_key,
+        )
+        return _blocked_exit(
+            idem_key,
+            "EXIT_QTY_EXCEEDS_POSITION",
+            {
+                "requested_symbol": symbol,
+                "requested_qty": requested_qty,
+                "broker_symbol": pos.symbol,
+                "broker_qty": pos.qty,
+            },
+            conn,
+        )
+    return None
+
+
 def build_idem_key(*, conn_id, trade_date, strategy_version, bar_timestamp,
                    action, side, entry_rule, symbol) -> str:
     """Operator-mandated key format (spec §9). conn_id == "<user_id>:<broker>"
@@ -345,6 +424,14 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         svc.update_order_ledger(idem_key, status="GATE_BLOCKED", conn=conn)
         return OrderResult(broker_order_id=None, status="GATE_BLOCKED",
                            avg_fill_price=None, raw={"failed_gates": failed})
+
+    if action == "EXIT":
+        blocked = _verify_matching_long_before_exit(
+            adapter, symbol=symbol, qty=qty, conn_id=conn_id,
+            idem_key=idem_key, conn=conn,
+        )
+        if blocked is not None:
+            return blocked
 
     try:
         if action == "EXIT":
