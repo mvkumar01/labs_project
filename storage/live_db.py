@@ -226,6 +226,45 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
             conn.execute("ALTER TABLE live_trade_state ADD COLUMN qty INTEGER")
             conn.commit()
 
+        # Dry/live PnL split (2026-06-12): realized_pnl/trade_count are REAL
+        # money only; dry-run results accumulate separately. Backfilled from
+        # live_trades (net_pnl is authoritative) so historical rows where the
+        # two were mixed are corrected once.
+        day_cols = _cols("live_day_pnl")
+        if "realized_pnl_dry" not in day_cols:
+            conn.execute(
+                "ALTER TABLE live_day_pnl ADD COLUMN realized_pnl_dry REAL DEFAULT 0")
+            conn.execute(
+                "ALTER TABLE live_day_pnl ADD COLUMN trade_count_dry INTEGER DEFAULT 0")
+            conn.commit()
+            trade_cols = _cols("live_trades")
+            pnl_expr = ("COALESCE(net_pnl, pnl)" if "net_pnl" in trade_cols
+                        else "pnl")
+            conn.execute(f"""
+                UPDATE live_day_pnl SET
+                  realized_pnl = COALESCE((
+                    SELECT SUM({pnl_expr}) FROM live_trades t
+                    WHERE t.conn_id = live_day_pnl.conn_id AND t.dry_run = 0
+                      AND substr(COALESCE(t.exit_time, t.entry_time, ''), 1, 10)
+                          = live_day_pnl.trade_date), 0),
+                  trade_count = COALESCE((
+                    SELECT COUNT(*) FROM live_trades t
+                    WHERE t.conn_id = live_day_pnl.conn_id AND t.dry_run = 0
+                      AND substr(COALESCE(t.exit_time, t.entry_time, ''), 1, 10)
+                          = live_day_pnl.trade_date), 0),
+                  realized_pnl_dry = COALESCE((
+                    SELECT SUM({pnl_expr}) FROM live_trades t
+                    WHERE t.conn_id = live_day_pnl.conn_id AND t.dry_run = 1
+                      AND substr(COALESCE(t.exit_time, t.entry_time, ''), 1, 10)
+                          = live_day_pnl.trade_date), 0),
+                  trade_count_dry = COALESCE((
+                    SELECT COUNT(*) FROM live_trades t
+                    WHERE t.conn_id = live_day_pnl.conn_id AND t.dry_run = 1
+                      AND substr(COALESCE(t.exit_time, t.entry_time, ''), 1, 10)
+                          = live_day_pnl.trade_date), 0)
+            """)
+            conn.commit()
+
         # v7.11 drift-protective-stop per-trade state (PC400 gap-DN PUT).
         # Tracked on the open position so a runner restart cannot lose the
         # confirmation/armed latches mid-trade.

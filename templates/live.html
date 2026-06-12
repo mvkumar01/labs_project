@@ -74,7 +74,7 @@
 
     <!-- Live stats -->
     <div class="stat-grid">
-      <div class="stat"><div class="k">Today P&amp;L</div><div id="stat-pnl" class="v">₹0</div></div>
+      <div class="stat"><div class="k">Today P&amp;L (LIVE)</div><div id="stat-pnl" class="v">₹0</div><div id="stat-pnl-dry" class="stat-note">DRY ₹0</div></div>
       <div class="stat"><div class="k">Daily Loss Cap</div><div id="stat-cap" class="v">₹{{ daily_loss_cap|round(0)|int }}</div></div>
       <div class="stat">
         <div class="k">Available Funds</div>
@@ -137,13 +137,20 @@
           <div class="history-sub">Completed trades for this account and broker.</div>
         </div>
         <div class="trade-filter">
-          <label for="trade-date">Date</label>
-          <input id="trade-date" type="date" value="{{ trade_date }}">
+          <label for="trade-date-from">From</label>
+          <input id="trade-date-from" type="date" value="{{ trade_date }}">
+          <label for="trade-date-to">To</label>
+          <input id="trade-date-to" type="date" value="{{ trade_date }}">
         </div>
         <div class="trade-pnl-card">
-          <div class="k">Filtered P&amp;L</div>
+          <div class="k">P&amp;L (LIVE)</div>
           <div id="trade-pnl" class="v">+&#8377;0</div>
           <div id="trade-count" class="stat-note">0 trades</div>
+        </div>
+        <div class="trade-pnl-card">
+          <div class="k">P&amp;L (DRY)</div>
+          <div id="trade-pnl-dry" class="v">+&#8377;0</div>
+          <div id="trade-count-dry" class="stat-note">0 trades</div>
         </div>
       </div>
       <table class="orders">

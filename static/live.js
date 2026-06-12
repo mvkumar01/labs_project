@@ -71,14 +71,21 @@
     if (className !== undefined) el.className = className;
   }
 
-  function selectedTradeDate() {
-    var input = document.getElementById("trade-date");
-    return input && input.value ? input.value : "";
+  function selectedDateRange() {
+    var from = document.getElementById("trade-date-from");
+    var to = document.getElementById("trade-date-to");
+    return {
+      from: from && from.value ? from.value : "",
+      to: to && to.value ? to.value : ""
+    };
   }
 
   function statusUrl() {
-    var d = selectedTradeDate();
-    return d ? "/live/status?trade_date=" + encodeURIComponent(d) : "/live/status";
+    var r = selectedDateRange();
+    var params = [];
+    if (r.from) params.push("date_from=" + encodeURIComponent(r.from));
+    if (r.to) params.push("date_to=" + encodeURIComponent(r.to));
+    return params.length ? "/live/status?" + params.join("&") : "/live/status";
   }
 
   function applyFunds(s) {
@@ -170,18 +177,30 @@
   }
 
   function applyTradeHistory(s) {
-    var dateInput = document.getElementById("trade-date");
-    if (dateInput && s.trade_date && !dateInput.value) dateInput.value = s.trade_date;
+    var fromInput = document.getElementById("trade-date-from");
+    if (fromInput && s.date_from && !fromInput.value) fromInput.value = s.date_from;
+    var toInput = document.getElementById("trade-date-to");
+    if (toInput && s.date_to && !toInput.value) toInput.value = s.date_to;
 
     var pnl = document.getElementById("trade-pnl");
     if (pnl) {
-      pnl.textContent = fmtRs(s.trade_pnl);
-      pnl.className = "v " + (Number(s.trade_pnl || 0) >= 0 ? "pos" : "neg");
+      pnl.textContent = fmtRs(s.live_pnl);
+      pnl.className = "v " + (Number(s.live_pnl || 0) >= 0 ? "pos" : "neg");
     }
     var count = document.getElementById("trade-count");
     if (count) {
-      var n = Number(s.trade_count || 0);
+      var n = Number(s.live_count || 0);
       count.textContent = n.toLocaleString("en-IN") + (n === 1 ? " trade" : " trades");
+    }
+    var pnlDry = document.getElementById("trade-pnl-dry");
+    if (pnlDry) {
+      pnlDry.textContent = fmtRs(s.dry_pnl);
+      pnlDry.className = "v " + (Number(s.dry_pnl || 0) >= 0 ? "pos" : "neg");
+    }
+    var countDry = document.getElementById("trade-count-dry");
+    if (countDry) {
+      var nd = Number(s.dry_count || 0);
+      countDry.textContent = nd.toLocaleString("en-IN") + (nd === 1 ? " trade" : " trades");
     }
     renderTrades(s.trades);
   }
@@ -247,8 +266,10 @@
 
         var pnl = document.getElementById("stat-pnl");
         if (pnl) {
-          pnl.textContent = fmtRs(s.today_pnl);
-          pnl.className = "v " + (Number(s.today_pnl) >= 0 ? "pos" : "neg");
+          pnl.textContent = fmtRs(s.today_pnl_live !== undefined ? s.today_pnl_live : s.today_pnl);
+          pnl.className = "v " + (Number(s.today_pnl_live !== undefined ? s.today_pnl_live : s.today_pnl) >= 0 ? "pos" : "neg");
+          var pnlDryNote = document.getElementById("stat-pnl-dry");
+          if (pnlDryNote) pnlDryNote.textContent = "DRY " + fmtRs(s.today_pnl_dry || 0);
         }
         var cap = document.getElementById("stat-cap");
         if (cap) cap.textContent = "₹" + Number(s.daily_loss_cap || 0).toLocaleString("en-IN");
@@ -317,8 +338,10 @@
       });
     }
 
-    var tradeDate = document.getElementById("trade-date");
-    if (tradeDate) tradeDate.addEventListener("change", refreshStatus);
+    var tradeFrom = document.getElementById("trade-date-from");
+    if (tradeFrom) tradeFrom.addEventListener("change", refreshStatus);
+    var tradeTo = document.getElementById("trade-date-to");
+    if (tradeTo) tradeTo.addEventListener("change", refreshStatus);
 
     // Broker selector highlight (connect page).
     var radios = document.querySelectorAll('input[name="broker"]');

@@ -694,30 +694,59 @@ def get_day_pnl(user_id: str, conn_id: str, trade_date: str = None,
         ).fetchone()
         if row is None:
             return {"trade_date": trade_date, "user_id": user_id, "conn_id": conn_id,
-                    "realized_pnl": 0.0, "trade_count": 0, "halted": 0}
-        return dict(row)
+                    "realized_pnl": 0.0, "trade_count": 0,
+                    "realized_pnl_dry": 0.0, "trade_count_dry": 0, "halted": 0}
+        out = dict(row)
+        # Older rows predate the dry/live split — surface explicit zeros.
+        out.setdefault("realized_pnl_dry", 0.0)
+        out.setdefault("trade_count_dry", 0)
+        if out.get("realized_pnl_dry") is None:
+            out["realized_pnl_dry"] = 0.0
+        if out.get("trade_count_dry") is None:
+            out["trade_count_dry"] = 0
+        return out
     finally:
         if own:
             conn.close()
 
 
 def add_day_pnl(user_id: str, conn_id: str, delta_pnl: float,
-                trade_date: str = None, conn: sqlite3.Connection = None) -> None:
+                trade_date: str = None, conn: sqlite3.Connection = None,
+                dry_run: bool = False) -> None:
+    """Accumulate realized PnL into the bucket matching the trade's mode.
+
+    `realized_pnl`/`trade_count` are REAL-money only; dry-run results go to
+    `realized_pnl_dry`/`trade_count_dry`. The two must never mix — display and
+    the daily-loss gate both rely on this separation."""
     own = conn is None
     if own:
         conn = get_live_conn()
     try:
         trade_date = trade_date or _today_ist_iso()
-        with conn:
-            conn.execute(
+        if dry_run:
+            sql = (
                 "INSERT INTO live_day_pnl "
-                "(trade_date, user_id, conn_id, realized_pnl, trade_count, halted) "
-                "VALUES (?, ?, ?, ?, 1, 0) "
+                "(trade_date, user_id, conn_id, realized_pnl, trade_count, "
+                " realized_pnl_dry, trade_count_dry, halted) "
+                "VALUES (?, ?, ?, 0, 0, ?, 1, 0) "
                 "ON CONFLICT(trade_date, conn_id) DO UPDATE SET "
-                "realized_pnl = live_day_pnl.realized_pnl + excluded.realized_pnl, "
-                "trade_count = live_day_pnl.trade_count + 1",
-                (trade_date, user_id, conn_id, delta_pnl),
+                "realized_pnl_dry = COALESCE(live_day_pnl.realized_pnl_dry, 0) "
+                "  + excluded.realized_pnl_dry, "
+                "trade_count_dry = COALESCE(live_day_pnl.trade_count_dry, 0) + 1"
             )
+        else:
+            sql = (
+                "INSERT INTO live_day_pnl "
+                "(trade_date, user_id, conn_id, realized_pnl, trade_count, "
+                " realized_pnl_dry, trade_count_dry, halted) "
+                "VALUES (?, ?, ?, ?, 1, 0, 0, 0) "
+                "ON CONFLICT(trade_date, conn_id) DO UPDATE SET "
+                "realized_pnl = COALESCE(live_day_pnl.realized_pnl, 0) "
+                "  + excluded.realized_pnl, "
+                "trade_count = COALESCE(live_day_pnl.trade_count, 0) + 1"
+            )
+        with conn:
+            conn.execute(sql, (trade_date, user_id, conn_id, delta_pnl))
     finally:
         if own:
             conn.close()
@@ -781,21 +810,34 @@ def record_trade(user_id: str, conn_id: str, *, side: str, symbol: str,
 # live_trades read helpers
 # ══════════════════════════════════════════════════════════════════════════
 def trade_history(user_id: str, conn_id: str, trade_date: str = None,
-                  limit: int = 100, conn: sqlite3.Connection = None) -> dict:
-    """Completed live_trades for one user's selected broker connection/date."""
+                  limit: int = 100, conn: sqlite3.Connection = None,
+                  date_from: str = None, date_to: str = None) -> dict:
+    """Completed live_trades for one user's selected broker connection.
+
+    Date filtering: pass `date_from`/`date_to` (inclusive IST dates) for a
+    range; `trade_date` remains as a single-day shorthand. Default = today.
+    Summary PnL/count are returned SPLIT by mode (live vs dry) and never mixed
+    into one number."""
     own = conn is None
     if own:
         conn = get_live_conn()
     try:
-        trade_date = trade_date or _today_ist_iso()
+        date_from = date_from or trade_date or _today_ist_iso()
+        date_to = date_to or trade_date or _today_ist_iso()
+        if date_to < date_from:
+            date_from, date_to = date_to, date_from
         limit = max(1, min(int(limit or 100), 500))
         date_expr = "substr(COALESCE(exit_time, entry_time, ''), 1, 10)"
-        params = (user_id, conn_id, trade_date)
+        params = (user_id, conn_id, date_from, date_to)
         summary = conn.execute(
-            f"SELECT COALESCE(SUM(COALESCE(net_pnl, pnl)), 0) AS trade_pnl, "
+            f"SELECT "
+            f"COALESCE(SUM(CASE WHEN dry_run = 0 THEN COALESCE(net_pnl, pnl) END), 0) AS live_pnl, "
+            f"SUM(CASE WHEN dry_run = 0 THEN 1 ELSE 0 END) AS live_count, "
+            f"COALESCE(SUM(CASE WHEN dry_run = 1 THEN COALESCE(net_pnl, pnl) END), 0) AS dry_pnl, "
+            f"SUM(CASE WHEN dry_run = 1 THEN 1 ELSE 0 END) AS dry_count, "
             f"COUNT(*) AS trade_count "
             f"FROM live_trades "
-            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} = ?",
+            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} BETWEEN ? AND ?",
             params,
         ).fetchone()
         rows = conn.execute(
@@ -803,14 +845,23 @@ def trade_history(user_id: str, conn_id: str, trade_date: str = None,
             f"COALESCE(net_pnl, pnl) AS pnl, gross_pnl, charges_total, net_pnl, "
             f"charges_json, entry_time, exit_time, reason, dry_run "
             f"FROM live_trades "
-            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} = ? "
+            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} BETWEEN ? AND ? "
             f"ORDER BY COALESCE(exit_time, entry_time, '') DESC LIMIT ?",
             (*params, limit),
         ).fetchall()
+        live_pnl = float(summary["live_pnl"] if summary else 0.0)
+        dry_pnl = float(summary["dry_pnl"] if summary else 0.0)
         return {
-            "trade_date": trade_date,
-            "trade_pnl": float(summary["trade_pnl"] if summary else 0.0),
+            "trade_date": date_from if date_from == date_to else None,
+            "date_from": date_from,
+            "date_to": date_to,
+            # Back-compat field: LIVE money only (never mixes in dry results).
+            "trade_pnl": live_pnl,
             "trade_count": int(summary["trade_count"] if summary else 0),
+            "live_pnl": live_pnl,
+            "live_count": int(summary["live_count"] or 0) if summary else 0,
+            "dry_pnl": dry_pnl,
+            "dry_count": int(summary["dry_count"] or 0) if summary else 0,
             "trades": [dict(r) for r in rows],
         }
     finally:

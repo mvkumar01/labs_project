@@ -73,15 +73,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _valid_date(value: str | None) -> str | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return value
+    except ValueError:
+        return None
+
+
 def _status_trade_date() -> str:
-    value = (request.args.get("trade_date") or "").strip()
-    if value:
-        try:
-            datetime.strptime(value, "%Y-%m-%d")
-            return value
-        except ValueError:
-            pass
-    return svc.today_ist_iso()
+    return _valid_date(request.args.get("trade_date")) or svc.today_ist_iso()
+
+
+def _status_date_range() -> tuple[str, str]:
+    """Inclusive IST date range for trade history: ?date_from=&date_to=
+    (or legacy single ?trade_date=). Defaults to today/today."""
+    single = _valid_date(request.args.get("trade_date"))
+    date_from = _valid_date(request.args.get("date_from")) or single or svc.today_ist_iso()
+    date_to = _valid_date(request.args.get("date_to")) or single or svc.today_ist_iso()
+    if date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return date_from, date_to
 
 
 def _is_stale_iso(value: str | None, *, max_age_s: int) -> bool:
@@ -651,9 +666,10 @@ def status():
     if not conn_id:
         return jsonify({"mode": "DISARMED", "connected": False})
     reconcile_blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
-    trade_date = _status_trade_date()
+    date_from, date_to = _status_date_range()
     day = svc.get_day_pnl(user_id, conn_id)
-    trades = svc.trade_history(user_id, conn_id, trade_date=trade_date, limit=100)
+    trades = svc.trade_history(user_id, conn_id, limit=100,
+                               date_from=date_from, date_to=date_to)
     open_mtm = svc.open_position_mtm(user_id, conn_id)
     connection = svc.get_connection(user_id, conn_id) or {}
     if (
@@ -669,7 +685,10 @@ def status():
         "lots": svc.get_lots(user_id, conn_id),
         "bot_variant": svc.get_config(user_id, conn_id, "bot_variant"),
         "daily_loss_cap": svc.get_daily_loss_cap(user_id, conn_id),
+        # Realized buckets are SEPARATE: today_pnl == LIVE money only.
         "today_pnl": float(day.get("realized_pnl") or 0.0),
+        "today_pnl_live": float(day.get("realized_pnl") or 0.0),
+        "today_pnl_dry": float(day.get("realized_pnl_dry") or 0.0),
         "reconcile_ok": (not reconcile_blocked),
         "reconcile_warning": svc.get_config(user_id, conn_id, "reconcile_message"),
         "broker": connection.get("broker"),
@@ -679,9 +698,15 @@ def status():
         "funds_updated_at": connection.get("funds_updated_at"),
         "funds_error": connection.get("funds_error"),
         "last_orders": svc.recent_orders(user_id, conn_id, limit=20),
-        "trade_date": trades["trade_date"],
+        "trade_date": trades.get("trade_date"),
+        "date_from": trades["date_from"],
+        "date_to": trades["date_to"],
         "trade_pnl": trades["trade_pnl"],
         "trade_count": trades["trade_count"],
+        "live_pnl": trades["live_pnl"],
+        "live_count": trades["live_count"],
+        "dry_pnl": trades["dry_pnl"],
+        "dry_count": trades["dry_count"],
         "trades": trades["trades"],
         "open_mtm": open_mtm,
     })

@@ -96,12 +96,20 @@ def is_killed(user_id: str, conn_id: str, conn=None) -> bool:
     return svc.is_kill_switch_on(user_id, conn_id, conn)
 
 
-def check_daily_loss(user_id: str, conn_id: str, conn=None) -> bool:
+def check_daily_loss(user_id: str, conn_id: str, conn=None,
+                     dry_run: bool | None = None) -> bool:
     """True if THIS conn is still within its daily-loss cap and not halted
-    (i.e. trading may continue). Mirrors the spec gate-5 semantics."""
+    (i.e. trading may continue). Mirrors the spec gate-5 semantics.
+
+    `dry_run` selects which realized bucket is checked: dry losses must never
+    halt live trading and live losses must never halt a dry test. When None,
+    the conn's current mode decides."""
     day = svc.get_day_pnl(user_id, conn_id, conn=conn)
     cap = svc.get_daily_loss_cap(user_id, conn_id, conn)
-    realized = float(day.get("realized_pnl") or 0.0)
+    if dry_run is None:
+        dry_run = svc.get_mode(user_id, conn_id, conn) == "DRY_RUN"
+    bucket = "realized_pnl_dry" if dry_run else "realized_pnl"
+    realized = float(day.get(bucket) or 0.0)
     halted = int(day.get("halted") or 0)
     return realized > -abs(cap) and halted == 0
 
@@ -208,8 +216,11 @@ def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_pric
         reason=reason,
         dry_run=1 if dry_run else 0,
     )
-    svc.add_day_pnl(user_id, conn_id, net_pnl)
-    if not check_daily_loss(user_id, conn_id):
+    # PnL buckets are segregated: a dry-run exit must never move the LIVE
+    # realized number (and vice versa) — display AND daily-loss gating both
+    # read the bucket matching the trade's own mode.
+    svc.add_day_pnl(user_id, conn_id, net_pnl, dry_run=dry_run)
+    if not check_daily_loss(user_id, conn_id, dry_run=dry_run):
         svc.set_day_halted(user_id, conn_id, 1)
     msg = (
         f"EXIT {position.get('symbol')} @ {float(exit_price)} | reason={reason} "
@@ -298,6 +309,20 @@ def _as_float(value):
     try:
         return float(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _ist_date_of(value) -> str | None:
+    """IST calendar date (YYYY-MM-DD) of an ISO timestamp, or None."""
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(IST).date().isoformat()
+    except Exception:
         return None
 
 
@@ -661,6 +686,52 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     now_t = _now_ist().time()
 
     st = svc.get_trade_state(user_id, conn_id)
+
+    # ── Stale-position guard (2026-06-12 incident) ────────────────────────
+    # An OPEN trade state from a PREVIOUS IST date must never be acted on:
+    # positions are intraday (MIS/INTRADAY) — by the next morning the broker
+    # auto-squared it or the user exited manually. Acting on it would either
+    # attempt a naked SELL or fabricate PnL from a day-old entry price.
+    # Reset WITHOUT recording any trade.
+    if st.get("position") == "OPEN":
+        entry_date = _ist_date_of(st.get("entry_time"))
+        if entry_date is not None and entry_date != _today_ist_iso():
+            log.warning(
+                "stale OPEN state from %s cleared (no trade recorded) | conn=%s sym=%s",
+                entry_date, conn_id, st.get("symbol"),
+            )
+            svc.reset_trade_state(user_id, conn_id)
+            svc.set_config(
+                user_id, conn_id, "reconcile_message",
+                f"stale {entry_date} position state cleared at startup — no PnL recorded",
+            )
+            notify_telegram(
+                f"⚠️ Cleared stale {entry_date} position state for {st.get('symbol')} "
+                f"(no trade recorded — verify at broker)"
+            )
+            st = svc.get_trade_state(user_id, conn_id)
+
+    # ── Mode-isolation guard ──────────────────────────────────────────────
+    # A position entered in LIVE mode (virtual=0) must never be exited by the
+    # DRY path (it would fabricate dry PnL while real money still sits at the
+    # broker), and a dry position (virtual=1) means nothing to the LIVE path.
+    if dry_run and st.get("position") == "OPEN" and not int(st.get("virtual") or 0):
+        msg = ("DRY mode found a LIVE-entered position state "
+               f"({st.get('symbol')}) — automation paused; re-arm LIVE to manage "
+               "it or resolve at the broker")
+        if svc.get_config(user_id, conn_id, "reconcile_message") != msg:
+            log.warning("mode mismatch | conn=%s %s", conn_id, msg)
+            svc.set_config(user_id, conn_id, "reconcile_message", msg)
+            notify_telegram(f"⚠️ {msg}")
+        return
+    if not dry_run and st.get("position") == "OPEN" and int(st.get("virtual") or 0):
+        log.warning(
+            "LIVE mode clearing leftover DRY position state | conn=%s sym=%s",
+            conn_id, st.get("symbol"),
+        )
+        svc.reset_trade_state(user_id, conn_id)
+        st = svc.get_trade_state(user_id, conn_id)
+
     try:
         pos = adapter.get_position()
     except Exception as e:
@@ -723,23 +794,37 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         else abs(pos.qty)
     )
 
-    # EOD forced square-off (independent of signal cycle).
-    if current_open and eod_watchdog(now_t):
-        exit_price = adapter.get_ltp(current_symbol)
-        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
-                              symbol=current_symbol, qty=current_qty, price=exit_price,
-                              dry_run=dry_run)
-        if _order_applied(result.status, dry_run=dry_run):
-            _record_exit_result(
-                user_id,
-                conn_id,
-                st,
-                exit_price=result.avg_fill_price or exit_price,
-                qty=current_qty,
-                reason="eod",
-                dry_run=dry_run,
-            )
-            svc.reset_trade_state(user_id, conn_id)
+    # ── EOD watchdog (independent of signal cycle) ────────────────────────
+    # At/after the cutoff: square off any open position, then AUTO-DISARM a
+    # LIVE_ARMED connection (a live bot must never stay armed overnight).
+    # DRY_RUN stays armed — only real-money arming is turned off. No new
+    # entries are ever evaluated past the cutoff.
+    if eod_watchdog(now_t):
+        squared_off = not current_open
+        if current_open:
+            exit_price = adapter.get_ltp(current_symbol)
+            result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
+                                  symbol=current_symbol, qty=current_qty, price=exit_price,
+                                  dry_run=dry_run)
+            if _order_applied(result.status, dry_run=dry_run):
+                _record_exit_result(
+                    user_id,
+                    conn_id,
+                    st,
+                    exit_price=result.avg_fill_price or exit_price,
+                    qty=current_qty,
+                    reason="eod",
+                    dry_run=dry_run,
+                )
+                svc.reset_trade_state(user_id, conn_id)
+                squared_off = True
+        if squared_off and mode == ex.Mode.LIVE_ARMED:
+            try:
+                ex.disarm(user_id, conn_id)
+                log.info("EOD auto-disarm | conn=%s", conn_id)
+                notify_telegram("🔒 EOD: LIVE disarmed (flat) — re-arm tomorrow to trade")
+            except Exception as e:
+                log.warning("EOD disarm failed conn=%s: %s", conn_id, type(e).__name__)
         return
 
     blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
