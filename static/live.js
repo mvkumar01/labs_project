@@ -34,7 +34,27 @@
   }
 
   function fmtTime(v) {
-    return (v || "").replace("T", " ").slice(0, 19);
+    if (!v) return "";
+    var text = String(v).trim();
+    var iso = text.indexOf("T") >= 0 ? text : text.replace(" ", "T");
+    if (!/[zZ]$/.test(iso) && !/[+-]\d\d:\d\d$/.test(iso)) iso += "Z";
+    var d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return text.replace("T", " ").slice(0, 19);
+    var parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(d).reduce(function (acc, part) {
+      acc[part.type] = part.value;
+      return acc;
+    }, {});
+    return parts.year + "-" + parts.month + "-" + parts.day + " " +
+      parts.hour + ":" + parts.minute + ":" + parts.second + " IST";
   }
 
   function addCell(row, text, className) {
@@ -42,6 +62,13 @@
     td.textContent = text;
     if (className) td.className = className;
     row.appendChild(td);
+  }
+
+  function setText(id, value, className) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = value;
+    if (className !== undefined) el.className = className;
   }
 
   function selectedTradeDate() {
@@ -101,7 +128,7 @@
         ? '<span class="tag-dry">DRY</span>'
         : '<span class="tag-live">LIVE</span>';
       tr.innerHTML =
-        "<td>" + (o.created_at || "").replace("T", " ").slice(0, 19) + "</td>" +
+        "<td>" + fmtTime(o.created_at) + "</td>" +
         "<td>" + (o.action || "") + " " + (o.side || "") + "</td>" +
         "<td>" + (o.symbol || "") + "</td>" +
         "<td>" + (o.qty || 0) + "</td>" +
@@ -116,7 +143,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!trades || !trades.length) {
-      tb.innerHTML = '<tr><td colspan="9" style="color:#64748b">No completed trades for this date.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="11" style="color:#64748b">No completed trades for this date.</td></tr>';
       return;
     }
     trades.forEach(function (t) {
@@ -127,6 +154,9 @@
       addCell(tr, String(t.qty || 0));
       addCell(tr, fmtPrice(t.entry_price));
       addCell(tr, fmtPrice(t.exit_price));
+      addCell(tr, t.gross_pnl === null || t.gross_pnl === undefined ? "--" : fmtRs(t.gross_pnl),
+        Number(t.gross_pnl || 0) >= 0 ? "pos" : "neg");
+      addCell(tr, t.charges_total === null || t.charges_total === undefined ? "--" : fmtMoney(t.charges_total));
       addCell(tr, fmtRs(t.pnl), Number(t.pnl || 0) >= 0 ? "pos" : "neg");
       addCell(tr, t.reason || "");
 
@@ -154,6 +184,45 @@
       count.textContent = n.toLocaleString("en-IN") + (n === 1 ? " trade" : " trades");
     }
     renderTrades(s.trades);
+  }
+
+  function applyOpenMtm(s) {
+    var mtm = s.open_mtm || {};
+    if (!document.getElementById("open-mtm-card")) return;
+    if (!mtm.open) {
+      setText("open-mtm-sub", "No open position.");
+      setText("open-mtm-net", "--", "v");
+      setText("open-mtm-updated", "");
+      setText("open-mtm-symbol", "--");
+      setText("open-mtm-qty", "--");
+      setText("open-mtm-entry", "--");
+      setText("open-mtm-ltp", "--");
+      setText("open-mtm-gross", "--");
+      setText("open-mtm-charges", "--");
+      return;
+    }
+
+    var mode = mtm.dry_run ? "DRY" : "LIVE";
+    setText("open-mtm-sub", mode + " " + (mtm.side || "") + " opened " + fmtTime(mtm.entry_time));
+    setText("open-mtm-symbol", mtm.symbol || "--");
+    setText("open-mtm-qty", String(mtm.qty || 0));
+    setText("open-mtm-entry", fmtPrice(mtm.entry_price));
+
+    if (!mtm.ltp_available) {
+      setText("open-mtm-net", "--", "v");
+      setText("open-mtm-updated", mtm.error ? "LTP unavailable: " + mtm.error : "LTP unavailable");
+      setText("open-mtm-ltp", "--");
+      setText("open-mtm-gross", "--");
+      setText("open-mtm-charges", "--");
+      return;
+    }
+
+    setText("open-mtm-ltp", fmtPrice(mtm.latest_price));
+    setText("open-mtm-gross", fmtRs(mtm.gross_pnl));
+    setText("open-mtm-charges", fmtMoney(mtm.charges_total));
+    setText("open-mtm-net", fmtRs(mtm.net_pnl),
+      "v " + (Number(mtm.net_pnl || 0) >= 0 ? "pos" : "neg"));
+    setText("open-mtm-updated", mtm.latest_time ? "updated " + fmtTime(mtm.latest_time) : "");
   }
 
   function refreshStatus() {
@@ -190,6 +259,7 @@
 
         renderOrders(s.last_orders);
         applyTradeHistory(s);
+        applyOpenMtm(s);
       })
       .catch(function () { /* transient; next poll retries */ });
   }

@@ -189,10 +189,10 @@ def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_pric
                         qty: int, reason: str, dry_run: bool) -> None:
     entry_price = float(position.get("entry_price") or 0.0)
     qty = abs(int(qty or 0))
-    pnl = position.get("pnl")
-    if pnl is None:
-        pnl = (float(exit_price) - entry_price) * qty
-    pnl = float(pnl)
+    pnl_info = svc.calc_net_option_pnl(entry_price, float(exit_price), qty)
+    gross_pnl = float(pnl_info["gross_pnl"])
+    net_pnl = float(pnl_info["net_pnl"])
+    charges_total = float(pnl_info["charges"]["total_charges"])
     now_iso = _now_iso()
     svc.record_trade(
         user_id,
@@ -202,16 +202,19 @@ def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_pric
         entry_price=entry_price,
         exit_price=float(exit_price),
         qty=qty,
-        pnl=pnl,
+        pnl=gross_pnl,
         entry_time=position.get("entry_time"),
         exit_time=now_iso,
         reason=reason,
         dry_run=1 if dry_run else 0,
     )
-    svc.add_day_pnl(user_id, conn_id, pnl)
+    svc.add_day_pnl(user_id, conn_id, net_pnl)
     if not check_daily_loss(user_id, conn_id):
         svc.set_day_halted(user_id, conn_id, 1)
-    msg = f"🔴 EXIT {position.get('symbol')} @ {float(exit_price)} | reason={reason} | qty={qty} | PnL={pnl}"
+    msg = (
+        f"EXIT {position.get('symbol')} @ {float(exit_price)} | reason={reason} "
+        f"| qty={qty} | gross={gross_pnl} | charges={charges_total} | net={net_pnl}"
+    )
     if dry_run:
         msg += " [DRY-RUN]"
     notify_telegram(msg)
@@ -669,7 +672,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     current_symbol = st.get("symbol") if dry_run and db_open else pos.symbol
     current_side = st.get("side") if dry_run and db_open else pos.side
     current_qty = (
-        svc.get_lots(user_id, conn_id) * LOT_SIZE
+        int(st.get("qty") or 0) or svc.get_lots(user_id, conn_id) * LOT_SIZE
         if dry_run and db_open
         else abs(pos.qty)
     )
@@ -762,6 +765,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             state_symbol = (result.raw or {}).get("broker_symbol") or symbol
             st.update({"position": "OPEN", "side": side, "symbol": state_symbol,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
+                       "qty": qty,
+                       "virtual": 1 if dry_run else 0,
                        "entry_rule": sig.get("rule"), "entry_spot": alpha_bar.get("spot")})
             svc.save_trade_state(user_id, conn_id, st)
             entry_price = result.avg_fill_price or price

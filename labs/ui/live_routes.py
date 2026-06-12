@@ -654,6 +654,7 @@ def status():
     trade_date = _status_trade_date()
     day = svc.get_day_pnl(user_id, conn_id)
     trades = svc.trade_history(user_id, conn_id, trade_date=trade_date, limit=100)
+    open_mtm = svc.open_position_mtm(user_id, conn_id)
     connection = svc.get_connection(user_id, conn_id) or {}
     if (
         broker
@@ -682,4 +683,5 @@ def status():
         "trade_pnl": trades["trade_pnl"],
         "trade_count": trades["trade_count"],
         "trades": trades["trades"],
+        "open_mtm": open_mtm,
     })

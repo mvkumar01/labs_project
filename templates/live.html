@@ -93,6 +93,29 @@
       <div class="stat"><div class="k">Lots</div><div id="stat-lots" class="v">{{ lots }}</div></div>
     </div>
 
+    <!-- Open position MTM from shared 1-minute option data -->
+    <div id="open-mtm-card" class="card open-mtm-card">
+      <div class="open-mtm-head">
+        <div>
+          <h3>Open position MTM</h3>
+          <div id="open-mtm-sub" class="history-sub">No open position.</div>
+        </div>
+        <div class="trade-pnl-card">
+          <div class="k">Estimated Net P&amp;L</div>
+          <div id="open-mtm-net" class="v">--</div>
+          <div id="open-mtm-updated" class="stat-note"></div>
+        </div>
+      </div>
+      <div class="open-mtm-grid">
+        <div><span>Symbol</span><strong id="open-mtm-symbol">--</strong></div>
+        <div><span>Qty</span><strong id="open-mtm-qty">--</strong></div>
+        <div><span>Entry</span><strong id="open-mtm-entry">--</strong></div>
+        <div><span>Latest LTP</span><strong id="open-mtm-ltp">--</strong></div>
+        <div><span>Gross P&amp;L</span><strong id="open-mtm-gross">--</strong></div>
+        <div><span>Est. Charges</span><strong id="open-mtm-charges">--</strong></div>
+      </div>
+    </div>
+
     <!-- Recent orders (dry-run rows clearly tagged) -->
     <div class="card">
       <h3>Recent orders</h3>
@@ -132,13 +155,15 @@
             <th>Qty</th>
             <th>Entry</th>
             <th>Exit</th>
-            <th>P&amp;L</th>
+            <th>Gross</th>
+            <th>Charges</th>
+            <th>Net P&amp;L</th>
             <th>Reason</th>
             <th>Mode</th>
           </tr>
         </thead>
         <tbody id="trades-body">
-          <tr><td colspan="9" style="color:#64748b;">Loading...</td></tr>
+          <tr><td colspan="11" style="color:#64748b;">Loading...</td></tr>
         </tbody>
       </table>
     </div>

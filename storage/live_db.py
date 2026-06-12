@@ -145,6 +145,10 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 exit_price  REAL,
                 qty         INTEGER,
                 pnl         REAL,
+                gross_pnl   REAL,
+                charges_total REAL,
+                charges_json TEXT,
+                net_pnl     REAL,
                 entry_time  TEXT,
                 exit_time   TEXT,
                 reason      TEXT,
@@ -161,6 +165,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 entry_spot           REAL,
                 entry_time           TEXT,
                 entry_price          REAL,
+                qty                  INTEGER,
                 virtual              INTEGER,
                 peak_pnl             REAL,
                 entry_rule           TEXT,
@@ -204,6 +209,37 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
             conn.execute(
                 "ALTER TABLE live_broker_connections ADD COLUMN funds_error TEXT")
             conn.commit()
+
+        trade_cols = _cols("live_trades")
+        for col, decl in (
+            ("gross_pnl", "REAL"),
+            ("charges_total", "REAL"),
+            ("charges_json", "TEXT"),
+            ("net_pnl", "REAL"),
+        ):
+            if col not in trade_cols:
+                conn.execute(f"ALTER TABLE live_trades ADD COLUMN {col} {decl}")
+                conn.commit()
+
+        state_cols = _cols("live_trade_state")
+        if "qty" not in state_cols:
+            conn.execute("ALTER TABLE live_trade_state ADD COLUMN qty INTEGER")
+            conn.commit()
+
+        # v7.11 drift-protective-stop per-trade state (PC400 gap-DN PUT).
+        # Tracked on the open position so a runner restart cannot lose the
+        # confirmation/armed latches mid-trade.
+        state_cols = _cols("live_trade_state")
+        for col, decl in (
+            ("drift_min_alpha", "REAL"),
+            ("drift_confirmed", "INTEGER DEFAULT 0"),
+            ("drift_armed", "INTEGER DEFAULT 0"),
+            ("drift_stop", "REAL"),
+        ):
+            if col not in state_cols:
+                conn.execute(
+                    f"ALTER TABLE live_trade_state ADD COLUMN {col} {decl}")
+                conn.commit()
 
         for _t in (
             "live_users",

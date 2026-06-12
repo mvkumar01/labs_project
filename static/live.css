@@ -147,6 +147,26 @@ code {
 }
 .trade-pnl-card .v { font-size: 17px; font-weight: 700; margin-top: 3px; }
 
+.open-mtm-card { border-color: #334155; }
+.open-mtm-head {
+  display: grid; grid-template-columns: 1fr 190px; gap: 14px;
+  align-items: end; margin-bottom: 14px;
+}
+.open-mtm-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;
+}
+.open-mtm-grid div {
+  background: #0f1117; border: 1px solid #232739; border-radius: 8px;
+  padding: 10px 12px;
+}
+.open-mtm-grid span {
+  display: block; color: #94a3b8; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .5px; margin-bottom: 5px;
+}
+.open-mtm-grid strong {
+  color: #f1f5f9; font-size: 14px; font-weight: 700; overflow-wrap: anywhere;
+}
+
 /* ── Orders table ── */
 table.orders { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.orders th, table.orders td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #232739; }
@@ -171,4 +191,6 @@ table.orders td.neg { color: #f87171; }
   .mode-banner { align-items: flex-start; flex-direction: column; gap: 12px; }
   .session-warning { align-items: flex-start; flex-direction: column; }
   .trade-history-head { grid-template-columns: 1fr; align-items: stretch; }
+  .open-mtm-head { grid-template-columns: 1fr; align-items: stretch; }
+  .open-mtm-grid { grid-template-columns: repeat(2, 1fr); }
 }

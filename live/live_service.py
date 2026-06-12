@@ -26,12 +26,13 @@ import os
 import sqlite3
 import sys
 import uuid
+from csv import DictReader
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.labs_config import STATE_DIR
+from config.labs_config import SHARED_LIVE_DIR, STATE_DIR, UNDERLYINGS
 from storage.live_db import get_live_conn, init_live_db
 
 
@@ -79,6 +80,49 @@ def conn_id_for(user_id: str, broker: str) -> str:
 
 _USER_PREF_CONN_ID = "__user__"
 _SUPPORTED_BROKERS = {"angel", "zerodha"}
+LIVE_UNDERLYING = "NIFTY"
+
+
+def calc_option_charges(entry_price: float, exit_price: float, qty: int,
+                        orders: int = 2) -> dict:
+    """Charges formula supplied by the operator for live option P&L."""
+    entry_price = float(entry_price or 0.0)
+    exit_price = float(exit_price or 0.0)
+    qty = abs(int(qty or 0))
+    buy_turnover = entry_price * qty
+    sell_turnover = exit_price * qty
+    total_turnover = buy_turnover + sell_turnover
+
+    brokerage = 20 * orders
+    stt = sell_turnover * 0.0015
+    exchange_txn = total_turnover * 0.000325
+    sebi = total_turnover * 0.000001
+    stamp = buy_turnover * 0.00003
+    gst = 0.18 * (brokerage + exchange_txn + sebi)
+    total_charges = brokerage + stt + exchange_txn + sebi + stamp + gst
+
+    return {
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "exchange_txn": round(exchange_txn, 2),
+        "sebi": round(sebi, 2),
+        "stamp": round(stamp, 2),
+        "gst": round(gst, 2),
+        "total_charges": round(total_charges, 2),
+    }
+
+
+def calc_net_option_pnl(entry_price: float, exit_price: float, qty: int) -> dict:
+    qty = abs(int(qty or 0))
+    gross_pnl = (float(exit_price or 0.0) - float(entry_price or 0.0)) * qty
+    charges = calc_option_charges(entry_price, exit_price, qty)
+    net_pnl = gross_pnl - charges["total_charges"]
+    return {
+        "gross_pnl": round(gross_pnl, 2),
+        "charges": charges,
+        "net_pnl": round(net_pnl, 2),
+        "net_points": round(net_pnl / qty, 2) if qty else 0.0,
+    }
 
 
 def get_selected_broker(user_id: str, conn: sqlite3.Connection = None) -> str | None:
@@ -542,6 +586,7 @@ def _default_trade_state(user_id: str, conn_id: str) -> dict:
         "entry_spot": None,
         "entry_time": None,
         "entry_price": None,
+        "qty": None,
         "virtual": 0,
         "peak_pnl": 0.0,
         "entry_rule": None,
@@ -588,13 +633,14 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
             conn.execute(
                 "INSERT INTO live_trade_state "
                 "(conn_id, user_id, position, side, symbol, entry_spot, entry_time, "
-                " entry_price, virtual, peak_pnl, entry_rule, max_alpha_seen, "
+                " entry_price, qty, virtual, peak_pnl, entry_rule, max_alpha_seen, "
                 " entry_grace_until, daily_trades_date, daily_trades_by_tier, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(conn_id) DO UPDATE SET "
                 "position=excluded.position, side=excluded.side, symbol=excluded.symbol, "
                 "entry_spot=excluded.entry_spot, entry_time=excluded.entry_time, "
                 "entry_price=excluded.entry_price, virtual=excluded.virtual, "
+                "qty=excluded.qty, "
                 "peak_pnl=excluded.peak_pnl, entry_rule=excluded.entry_rule, "
                 "max_alpha_seen=excluded.max_alpha_seen, "
                 "entry_grace_until=excluded.entry_grace_until, "
@@ -603,8 +649,9 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                 "updated_at=excluded.updated_at",
                 (conn_id, user_id, state.get("position", "NONE"), state.get("side"),
                  state.get("symbol"), state.get("entry_spot"), state.get("entry_time"),
-                 state.get("entry_price"), int(state.get("virtual", 0) or 0),
-                 state.get("peak_pnl", 0.0), state.get("entry_rule"),
+                 state.get("entry_price"), state.get("qty"),
+                 int(state.get("virtual", 0) or 0), state.get("peak_pnl", 0.0),
+                 state.get("entry_rule"),
                  state.get("max_alpha_seen"), state.get("entry_grace_until"),
                  state.get("daily_trades_date"), by_tier or "{}", _now_iso()),
             )
@@ -708,14 +755,21 @@ def record_trade(user_id: str, conn_id: str, *, side: str, symbol: str,
         conn = get_live_conn()
     try:
         trade_id = uuid.uuid4().hex
+        computed = calc_net_option_pnl(entry_price, exit_price, qty)
+        gross_pnl = float(computed["gross_pnl"])
+        charges_total = float(computed["charges"]["total_charges"])
+        net_pnl = float(computed["net_pnl"])
         with conn:
             conn.execute(
                 "INSERT INTO live_trades "
                 "(trade_id, user_id, conn_id, side, symbol, entry_price, exit_price, "
-                " qty, pnl, entry_time, exit_time, reason, dry_run) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " qty, pnl, gross_pnl, charges_total, charges_json, net_pnl, "
+                " entry_time, exit_time, reason, dry_run) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade_id, user_id, conn_id, side, symbol, entry_price, exit_price,
-                 qty, pnl, entry_time, exit_time, reason, int(dry_run)),
+                 qty, net_pnl, gross_pnl, charges_total,
+                 json.dumps(computed["charges"], sort_keys=True), net_pnl,
+                 entry_time, exit_time, reason, int(dry_run)),
             )
         return trade_id
     finally:
@@ -738,14 +792,16 @@ def trade_history(user_id: str, conn_id: str, trade_date: str = None,
         date_expr = "substr(COALESCE(exit_time, entry_time, ''), 1, 10)"
         params = (user_id, conn_id, trade_date)
         summary = conn.execute(
-            f"SELECT COALESCE(SUM(pnl), 0) AS trade_pnl, COUNT(*) AS trade_count "
+            f"SELECT COALESCE(SUM(COALESCE(net_pnl, pnl)), 0) AS trade_pnl, "
+            f"COUNT(*) AS trade_count "
             f"FROM live_trades "
             f"WHERE user_id = ? AND conn_id = ? AND {date_expr} = ?",
             params,
         ).fetchone()
         rows = conn.execute(
-            f"SELECT trade_id, side, symbol, entry_price, exit_price, qty, pnl, "
-            f"entry_time, exit_time, reason, dry_run "
+            f"SELECT trade_id, side, symbol, entry_price, exit_price, qty, "
+            f"COALESCE(net_pnl, pnl) AS pnl, gross_pnl, charges_total, net_pnl, "
+            f"charges_json, entry_time, exit_time, reason, dry_run "
             f"FROM live_trades "
             f"WHERE user_id = ? AND conn_id = ? AND {date_expr} = ? "
             f"ORDER BY COALESCE(exit_time, entry_time, '') DESC LIMIT ?",
@@ -760,6 +816,107 @@ def trade_history(user_id: str, conn_id: str, trade_date: str = None,
     finally:
         if own:
             conn.close()
+
+
+def _parse_iso_to_ist_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            return dt.date().isoformat()
+        from datetime import timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return dt.astimezone(ist).date().isoformat()
+    except Exception:
+        return None
+
+
+def _latest_option_ltp_from_csv(symbol: str, trade_date: str) -> dict:
+    path = SHARED_LIVE_DIR / trade_date / f"{LIVE_UNDERLYING}_options_1min.csv"
+    if not path.exists():
+        return {"ok": False, "error": "market_data_missing", "path": str(path)}
+
+    latest = None
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = DictReader(handle)
+            for row in reader:
+                if str(row.get("tradingsymbol") or "").strip() != symbol:
+                    continue
+                try:
+                    ltp = float(row.get("ltp") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if ltp <= 0:
+                    continue
+                latest = {
+                    "ltp": ltp,
+                    "timestamp": row.get("timestamp"),
+                    "spot": row.get("spot"),
+                }
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "path": str(path)}
+    if latest is None:
+        return {"ok": False, "error": "symbol_ltp_missing", "path": str(path)}
+    latest["ok"] = True
+    latest["path"] = str(path)
+    return latest
+
+
+def open_position_mtm(user_id: str, conn_id: str,
+                      conn: sqlite3.Connection = None) -> dict:
+    """Estimated open-position MTM from shared 1-minute option data."""
+    st = get_trade_state(user_id, conn_id, conn=conn)
+    if (st.get("position") or "").upper() != "OPEN":
+        return {"open": False}
+
+    symbol = str(st.get("symbol") or "").strip()
+    entry_price = float(st.get("entry_price") or 0.0)
+    qty = int(st.get("qty") or 0)
+    if qty <= 0:
+        qty = get_lots(user_id, conn_id, conn) * UNDERLYINGS[LIVE_UNDERLYING]["lot_size"]
+    trade_date = _parse_iso_to_ist_date(st.get("entry_time")) or _today_ist_iso()
+
+    ltp_row = _latest_option_ltp_from_csv(symbol, trade_date)
+    base = {
+        "open": True,
+        "side": st.get("side"),
+        "symbol": symbol,
+        "qty": qty,
+        "entry_price": entry_price,
+        "entry_time": st.get("entry_time"),
+        "entry_rule": st.get("entry_rule"),
+        "dry_run": 1 if int(st.get("virtual") or 0) else 0,
+    }
+    if not ltp_row.get("ok"):
+        base.update({
+            "ltp_available": False,
+            "error": ltp_row.get("error"),
+            "latest_price": None,
+            "latest_time": None,
+            "gross_pnl": None,
+            "charges_total": None,
+            "net_pnl": None,
+            "net_points": None,
+        })
+        return base
+
+    latest_price = float(ltp_row["ltp"])
+    pnl_info = calc_net_option_pnl(entry_price, latest_price, qty)
+    base.update({
+        "ltp_available": True,
+        "latest_price": latest_price,
+        "latest_time": ltp_row.get("timestamp"),
+        "spot": ltp_row.get("spot"),
+        "gross_pnl": pnl_info["gross_pnl"],
+        "charges": pnl_info["charges"],
+        "charges_total": pnl_info["charges"]["total_charges"],
+        "net_pnl": pnl_info["net_pnl"],
+        "net_points": pnl_info["net_points"],
+    })
+    return base
 
 
 # Encrypted credential storage (Fernet) - keyed per conn_id
