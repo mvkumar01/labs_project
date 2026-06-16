@@ -519,6 +519,12 @@ def configure():
         except ValueError:
             cap = 3000.0
         svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap))
+
+        # Alpha v2.10: book role for THIS connection. "r2" turns this connection
+        # into the R2 consistency book; "main" (default) is the RECO/Run-F book.
+        # A connection runs exactly one book — run R2 on a SEPARATE connection.
+        role = (request.form.get("book_role", "main") or "main").strip().lower()
+        svc.set_config(user_id, conn_id, "book_role", "r2" if role == "r2" else "main")
         return redirect(url_for("live.dashboard"))
 
     return render_template(
@@ -532,6 +538,7 @@ def configure():
         lot_sizes=LOT_SIZES,
         mode=svc.get_mode(user_id, conn_id),
         kill_switch=svc.is_kill_switch_on(user_id, conn_id),
+        book_role=svc.get_book_role(user_id, conn_id),
     )
 
 

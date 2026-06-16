@@ -59,6 +59,17 @@
           <div class="hint">Realized loss beyond this halts new entries for the day.</div>
         </div>
 
+        <div class="field">
+          <label for="book_role">Book</label>
+          <select id="book_role" name="book_role">
+            <option value="main" {{ 'selected' if book_role != 'r2' else '' }}>Main — RECO / Run-F (default)</option>
+            <option value="r2" {{ 'selected' if book_role == 'r2' else '' }}>R2 — consistency book (wall-range 09:45 + VIX-scaled TP)</option>
+          </select>
+          <div class="hint">R2 is a separate, diversifying book — run it on its OWN
+            connection (not the same broker account as your main book), in small
+            size. Default is Main. R2 only starts trading after 09:45.</div>
+        </div>
+
         <div class="btn-row">
           <button type="submit" class="btn btn-primary">Save Configuration</button>
         </div>

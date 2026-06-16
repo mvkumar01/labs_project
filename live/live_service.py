@@ -52,6 +52,11 @@ CONFIG_DEFAULTS = {
     "reconcile_blocked": "0",
     "reconcile_message": "",
     "runner_owner": "",
+    # Alpha v2.10: which book this connection runs. "main" = RECO/Run-F book
+    # (default, unchanged behaviour). "r2" = R2 consistency book (wall-range
+    # @09:45 + VIX-scaled TP). A connection runs exactly one book; R2 must be a
+    # SEPARATE connection from the main book (single-net-position reconcile).
+    "book_role": "main",
 }
 
 # Fernet ciphertext mirror file (gitignored). One blob per conn_id keyed inside.
@@ -322,6 +327,12 @@ def is_kill_switch_on(user_id, conn_id, conn=None) -> bool:
 
 def get_lots(user_id, conn_id, conn=None) -> int:
     return get_config_int(user_id, conn_id, "lots", conn)
+
+
+def get_book_role(user_id, conn_id, conn=None) -> str:
+    """'main' (RECO/Run-F) or 'r2' (R2 consistency book). Default 'main'."""
+    role = (get_config(user_id, conn_id, "book_role", conn) or "main").strip().lower()
+    return "r2" if role == "r2" else "main"
 
 
 def is_armed(user_id, conn_id, conn=None) -> bool:

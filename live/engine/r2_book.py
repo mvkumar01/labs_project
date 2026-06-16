@@ -37,6 +37,7 @@ from live.engine.alpha_hybrid import (
     _prepare_snapshot_frame,
     _compute_alpha_series,
     _market_schedule,
+    _read_locked_hybrid_state,
     latest_spot_1min,  # re-exported for the runner's R2 spot-exit polling
 )
 
@@ -49,7 +50,49 @@ R2_TP_LOW_VIX = 15.0        # vix_open < 13 -> TP 15
 R2_TP_HIGH_VIX = 60.0       # vix_open >= 13 -> TP 60
 R2_VIX_TP_SPLIT = 13.0
 
+# R2 is a wall-FRAME book, not a PC tier — it uses the validated simple alpha
+# shell (±25 crossover, alpha SL at 0 / TP at ±100), NOT the tiered engine.
+# Spot risk is the VIX-scaled TP overlay above (no spot SL).
+R2_ENTRY_T = 25.0
+R2_ALPHA_TP = 100.0
+
 _R2_BARS_CACHE: dict = {}
+
+
+def r2_signal(prev_alpha: float | None, alpha: float,
+              position: str, side: str | None) -> dict:
+    """R2 alpha-shell entry/exit (NOT the tiered engine).
+
+    Convention matches the main book: alpha = (ΔPE-ΔCE)/denom; rising through
+    +T -> CALL (put-writing = support = bullish), falling through -T -> PUT.
+
+    Entries (position NONE): first crossover of ±R2_ENTRY_T.
+    Exits  (position OPEN):  alpha SL at 0 / alpha TP at ±R2_ALPHA_TP.
+    Returns {"action": ENTER|EXIT|HOLD, "side": CALL|PUT|None, "reason": str}.
+    The VIX-scaled spot TP (r2_vix_tp_exit) is checked separately by the runner
+    as a spot overlay BEFORE this (TP wins).
+    """
+    if position == "OPEN":
+        if side == "call":
+            if alpha <= 0:
+                return {"action": "EXIT", "side": "CALL", "reason": "r2_alpha_sl"}
+            if alpha >= R2_ALPHA_TP:
+                return {"action": "EXIT", "side": "CALL", "reason": "r2_alpha_tp"}
+        elif side == "put":
+            if alpha >= 0:
+                return {"action": "EXIT", "side": "PUT", "reason": "r2_alpha_sl"}
+            if alpha <= -R2_ALPHA_TP:
+                return {"action": "EXIT", "side": "PUT", "reason": "r2_alpha_tp"}
+        return {"action": "HOLD", "side": None, "reason": "r2_hold"}
+
+    # No position: first-crossover entries (need a prior bar to define a cross).
+    if prev_alpha is None:
+        return {"action": "HOLD", "side": None, "reason": "r2_no_prev"}
+    if prev_alpha <= R2_ENTRY_T and alpha > R2_ENTRY_T:
+        return {"action": "ENTER", "side": "CALL", "reason": "r2_cross"}
+    if prev_alpha >= -R2_ENTRY_T and alpha < -R2_ENTRY_T:
+        return {"action": "ENTER", "side": "PUT", "reason": "r2_cross"}
+    return {"action": "HOLD", "side": None, "reason": "r2_no_cross"}
 
 
 def _r50(x: float) -> int:
@@ -166,6 +209,11 @@ def r2_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]:
     lock_spot = float(lb["spot"].iloc[-1])
     lower, upper = compute_r2_range(lb[["strike", "type", "delta_oi"]], lock_spot)
 
+    # 09:15 locked VIX (day-global) for the VIX-scaled TP gate — reuse the main
+    # book's locked hybrid state if present (same trade date). None -> high-VIX TP.
+    locked = _read_locked_hybrid_state(trade_date)
+    vix_at_open = locked.get("vix_at_open") if locked else None
+
     series = _compute_alpha_series(snapshot_df, trade_date, lower, upper)
     series = series.dropna(subset=["alpha"]).copy()
     series = series[series["timestamp"] >= pd.Timestamp(lock_bucket)]
@@ -176,6 +224,7 @@ def r2_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]:
         "trade_date": trade_date, "book": "R2",
         "lock_bar": pd.Timestamp(lock_bucket).isoformat(),
         "lock_spot": lock_spot, "lower": lower, "upper": upper,
+        "vix_at_open": vix_at_open,
     }
     bars: list[dict] = []
     for _, row in series.iterrows():
@@ -192,6 +241,7 @@ def r2_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]:
             "tier": "R2",
             "lower": lower, "upper": upper,
             "lock_spot": lock_spot,
+            "vix_at_open": vix_at_open,
         })
 
     result = (state, bars)

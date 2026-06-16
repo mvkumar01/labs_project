@@ -40,6 +40,9 @@ from live.brokers.angel import AngelAdapter
 from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine
+from live.engine.r2_book import (
+    r2_alpha_bars, r2_signal, r2_vix_tp_exit, latest_spot_1min as r2_latest_spot,
+)
 log = logging.getLogger("live.runner")
 
 POLL_INTERVAL = 2          # seconds
@@ -644,6 +647,96 @@ def _ensure_connected_adapter(user_id: str, conn_id: str, *, adapters: dict,
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# R2 consistency book — signal path (Alpha v2.10). Reuses every shared helper
+# (_route_order / _record_exit_result / resolve_itm_option / check_daily_loss).
+# Entries: simple ±25 alpha crossover on the R2 wall-range. Exits: VIX-scaled
+# spot TP (checked FIRST, no spot SL) then alpha SL(0)/TP(±100). Sizing: this
+# connection's own (small) lots. Position/reconcile/EOD are handled by the
+# shared code in process_connection before this is called.
+# ══════════════════════════════════════════════════════════════════════════
+def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
+                       current_open: bool, current_symbol, current_side,
+                       current_qty: int, dry_run: bool, alpha_seen: dict) -> None:
+    blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
+    state_r2, bars = r2_alpha_bars()
+    if not bars:
+        return
+    alpha_bar = bars[-1]
+    cur_alpha = alpha_bar.get("alpha")
+    if cur_alpha is None:
+        return
+    prev_alpha = bars[-2]["alpha"] if len(bars) >= 2 else None
+    trade_date = _today_ist_iso()
+    side_l = (current_side or "").lower()
+
+    # 1) VIX-scaled spot TP — checked FIRST, no spot SL (per-cycle, like the
+    #    main book's PC400 trail). Uses the captured entry_spot + fresh 1-min spot.
+    if current_open:
+        entry_spot = _as_float(st.get("entry_spot"))
+        spot = r2_latest_spot() or alpha_bar.get("spot")
+        if entry_spot is not None and spot is not None:
+            reason = r2_vix_tp_exit(side_l, entry_spot, float(spot),
+                                    alpha_bar.get("vix_at_open"))
+            if reason:
+                exit_price = adapter.get_ltp(current_symbol)
+                result = _route_order(adapter, user_id, conn_id, action="EXIT",
+                                      side=current_side, symbol=current_symbol,
+                                      qty=current_qty, price=exit_price, dry_run=dry_run)
+                if _order_applied(result.status, dry_run=dry_run):
+                    _record_exit_result(user_id, conn_id, st,
+                                        exit_price=result.avg_fill_price or exit_price,
+                                        qty=current_qty, reason=reason, dry_run=dry_run)
+                    svc.reset_trade_state(user_id, conn_id)
+                return
+
+    # De-dup: one evaluation per completed R2 bar.
+    alpha_key = ("R2", alpha_bar.get("timestamp"), cur_alpha)
+    if alpha_seen.get(conn_id) == alpha_key:
+        return
+    alpha_seen[conn_id] = alpha_key
+
+    sig = r2_signal(prev_alpha, float(cur_alpha),
+                    "OPEN" if current_open else "NONE",
+                    side_l if current_open else None)
+    log.info("r2 signal conn=%s ts=%s alpha=%s prev=%s pos=%s sig=%s",
+             conn_id, alpha_bar.get("timestamp"), cur_alpha, prev_alpha,
+             "OPEN" if current_open else "NONE", sig)
+
+    if (sig["action"] == "ENTER" and not current_open and not blocked
+            and check_daily_loss(user_id, conn_id)):
+        side = sig["side"]
+        symbol = resolve_itm_option(adapter, side, trade_date=trade_date)
+        qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        price = adapter.get_ltp(symbol)
+        result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
+                              symbol=symbol, qty=qty, price=price, dry_run=dry_run,
+                              entry_rule="r2")
+        if _order_applied(result.status, dry_run=dry_run):
+            state_symbol = (result.raw or {}).get("broker_symbol") or symbol
+            st.update({"position": "OPEN", "side": side, "symbol": state_symbol,
+                       "entry_price": result.avg_fill_price or price,
+                       "entry_time": _now_iso(), "qty": qty,
+                       "virtual": 1 if dry_run else 0, "entry_rule": "r2",
+                       "entry_spot": alpha_bar.get("spot")})
+            svc.save_trade_state(user_id, conn_id, st)
+            msg = (f"🟢 R2 ENTER {side} {state_symbol} @ {result.avg_fill_price or price} "
+                   f"| spot={alpha_bar.get('spot')} | alpha={cur_alpha}")
+            notify_telegram(msg + (" [DRY-RUN]" if dry_run else ""))
+
+    elif sig["action"] == "EXIT" and current_open:
+        exit_price = adapter.get_ltp(current_symbol)
+        result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
+                              symbol=current_symbol, qty=current_qty,
+                              price=exit_price, dry_run=dry_run)
+        if _order_applied(result.status, dry_run=dry_run):
+            _record_exit_result(user_id, conn_id, st,
+                                exit_price=result.avg_fill_price or exit_price,
+                                qty=current_qty, reason=sig.get("reason") or "r2_signal_exit",
+                                dry_run=dry_run)
+            svc.reset_trade_state(user_id, conn_id)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # Per-connection cycle
 # ══════════════════════════════════════════════════════════════════════════
 def process_connection(user_id: str, conn_id: str, *, adapters: dict,
@@ -825,6 +918,19 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 notify_telegram("🔒 EOD: LIVE disarmed (flat) — re-arm tomorrow to trade")
             except Exception as e:
                 log.warning("EOD disarm failed conn=%s: %s", conn_id, type(e).__name__)
+        return
+
+    # ── Alpha v2.10: R2 consistency book runs a different signal path ─────
+    # All the shared per-conn machinery above (claim/mode/connect/reconcile/
+    # stale+mode guards/position read/EOD square-off) applies to R2 too — only
+    # the SIGNAL+EXIT logic differs. With book_role="main" (default) nothing
+    # below changes: byte-for-byte today's behaviour.
+    if svc.get_book_role(user_id, conn_id) == "r2":
+        _process_r2_signal(
+            user_id, conn_id, adapter=adapter, st=st, current_open=current_open,
+            current_symbol=current_symbol, current_side=current_side,
+            current_qty=current_qty, dry_run=dry_run, alpha_seen=alpha_seen,
+        )
         return
 
     blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1

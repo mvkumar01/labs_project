@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
 from live.engine.r2_book import (
-    compute_r2_range, r2_tp_points, r2_vix_tp_exit,
+    compute_r2_range, r2_tp_points, r2_vix_tp_exit, r2_signal,
     R2_TP_LOW_VIX, R2_TP_HIGH_VIX,
 )
 
@@ -64,5 +64,21 @@ ok(r2_vix_tp_exit("put", 25000, 25100, 11.0) is None, "PUT adverse move -> NO SL
 # high VIX (TP=60)
 ok(r2_vix_tp_exit("call", 25000, 25059, 18.0) is None, "CALL no exit below +60 (high vix)")
 ok(r2_vix_tp_exit("call", 25000, 25060, 18.0) == "r2_vix_tp", "CALL TP hit at +60 (high vix)")
+
+# --- r2_signal: entries (±25 crossover) ------------------------------------
+ok(r2_signal(20, 30, "NONE", None)["action"] == "ENTER"
+   and r2_signal(20, 30, "NONE", None)["side"] == "CALL", "cross up +25 -> ENTER CALL")
+ok(r2_signal(-20, -30, "NONE", None)["side"] == "PUT", "cross down -25 -> ENTER PUT")
+ok(r2_signal(30, 40, "NONE", None)["action"] == "HOLD", "already above T, no fresh cross -> HOLD")
+ok(r2_signal(None, 50, "NONE", None)["action"] == "HOLD", "no prev alpha -> HOLD")
+ok(r2_signal(10, 20, "NONE", None)["action"] == "HOLD", "below T -> HOLD")
+
+# --- r2_signal: exits (alpha SL 0 / TP ±100) -------------------------------
+ok(r2_signal(50, -1, "OPEN", "call")["action"] == "EXIT"
+   and r2_signal(50, -1, "OPEN", "call")["reason"] == "r2_alpha_sl", "CALL alpha<=0 -> SL exit")
+ok(r2_signal(50, 100, "OPEN", "call")["reason"] == "r2_alpha_tp", "CALL alpha>=100 -> TP exit")
+ok(r2_signal(50, 40, "OPEN", "call")["action"] == "HOLD", "CALL in-between -> HOLD")
+ok(r2_signal(-50, 1, "OPEN", "put")["reason"] == "r2_alpha_sl", "PUT alpha>=0 -> SL exit")
+ok(r2_signal(-50, -100, "OPEN", "put")["reason"] == "r2_alpha_tp", "PUT alpha<=-100 -> TP exit")
 
 print(f"\nAll {n} assertions passed — R2 book pure logic verified.")
