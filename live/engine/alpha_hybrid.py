@@ -245,9 +245,12 @@ def hybrid_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]
     `alpha` is the ABS-DENOM value (regime range, bounded [-100, +100]); all
     other cells keep the std algebraic alpha. `alpha_imb` always carries the
     std value, `denom_alg` the algebraic denominator (v7.8 guard input).
-    NOTE: PC400 non-carve-out champion cell (Gemini c2 range + abs-denom) is
-    NOT reproducible from the locked static range file — that cell degrades
-    to regime range + std alpha (= production v7.9 behaviour) by design.
+    NOTE: the general PC400 non-carve-out Gemini c2 cell is NOT reproducible
+    from the locked static range file — it degrades to regime range + std alpha
+    by design. EXCEPTION (v2.10 C1): on PC400 gap-DN |sgap|>=250 days, alphaIMB's
+    09:45 wall-lock writer writes the wall-lock lower/upper PLUS a
+    `pc400_v210_biggap` tag into the locked state; when present, this reader
+    uses that range with abs-denom alpha (full C1). Absent tag -> unchanged.
     """
     trade_date = trade_date or datetime.now(IST).date().isoformat()
     csv_path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
@@ -284,7 +287,14 @@ def hybrid_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]
 
     bucket = state.get("bucket") or "PC50"
     direction = state.get("direction")
-    use_abs = bucket == "PC50" and direction == "UP"   # v2.8.1 cell
+    # v2.8.1 cell: PC50 gap-UP uses abs-denom. v2.10 C1: PC400 gap-DN big-gap
+    # (|sgap|>=250) Gemini wall-lock cell also uses abs-denom. The cell is
+    # signalled by `pc400_v210_biggap` in the locked state, written by
+    # alphaIMB's 09:45 wall-lock writer together with the wall-lock lower/upper.
+    # If that tag is absent (writer not yet deployed) this is False -> behaviour
+    # is exactly as before (PC400 degrades to regime+std, per the NOTE above).
+    pc400_v210_biggap = bool(state.get("pc400_v210_biggap"))
+    use_abs = (bucket == "PC50" and direction == "UP") or pc400_v210_biggap
 
     bars: list[dict] = []
     for _, row in series.iterrows():
@@ -318,6 +328,7 @@ def hybrid_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]
             "pc400_range_source": state.get("pc400_range_source"),
             "pc400_in_carve_out": state.get("pc400_in_carve_out"),
             "pc400_carve_out_reason": state.get("pc400_carve_out_reason"),
+            "pc400_v210_biggap": pc400_v210_biggap,   # v2.10 C1 cell
         })
 
     result = (state, bars)
