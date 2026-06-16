@@ -159,6 +159,19 @@ class AngelAdapter(BrokerAdapter):
                 return Position(symbol=sym, qty=qty, side=side)
         return Position(symbol=None, qty=0, side=None)
 
+    def get_net_book(self) -> dict:
+        """All nonzero NIFTY net legs: {tradingsymbol: signed_qty}."""
+        resp = self._smart.position()
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            return {}
+        book = {}
+        for p in resp.get("data") or []:
+            sym = p.get("tradingsymbol", "")
+            qty = int(p.get("netqty", 0) or 0)
+            if sym.startswith("NIFTY") and qty != 0:
+                book[sym] = qty
+        return book
+
     def get_order_status(self, broker_order_id: str) -> dict:
         try:
             resp = self._smart.orderBook()

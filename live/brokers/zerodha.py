@@ -152,6 +152,20 @@ class ZerodhaAdapter(BrokerAdapter):
                 return Position(symbol=sym, qty=p["quantity"], side=side)
         return Position(symbol=None, qty=0, side=None)
 
+    def get_net_book(self) -> dict:
+        """All nonzero NIFTY MIS net legs: {tradingsymbol: signed_qty}."""
+        try:
+            net = self._kite.positions()["net"]
+        except Exception:
+            return {}
+        book = {}
+        for p in net:
+            sym = p.get("tradingsymbol", "")
+            qty = int(p.get("quantity") or 0)
+            if sym.startswith("NIFTY") and p.get("product") == "MIS" and qty != 0:
+                book[sym] = qty
+        return book
+
     def get_order_status(self, broker_order_id: str) -> dict:
         for o in self._kite.orders():
             if str(o.get("order_id")) == str(broker_order_id):
