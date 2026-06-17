@@ -43,6 +43,7 @@ from live.engine.signal_engine import AlphaSignalEngine
 from live.engine.r2_book import (
     r2_alpha_bars, r2_signal, r2_vix_tp_exit, latest_spot_1min as r2_latest_spot,
 )
+from live.engine.order_manager import SourcePos, reconcile as om_reconcile, plan_orders
 log = logging.getLogger("live.runner")
 
 POLL_INTERVAL = 2          # seconds
@@ -647,6 +648,184 @@ def _ensure_connected_adapter(user_id: str, conn_id: str, *, adapters: dict,
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# Order-manager mode (Alpha v2.10+) — net main + R2 onto ONE broker account.
+# Pure netting/reconcile lives in order_manager.py (unit-tested); this is the
+# broker/DB wiring around it. Fail-closed: any reconcile mismatch or partial
+# fill blocks and defers to next cycle. Per-source ledger = live_source_ledger.
+# ══════════════════════════════════════════════════════════════════════════
+_OM_HOLD = object()   # sentinel: source keeps its current position (no order)
+
+
+def _om_ledger_to_sourcepos(rows: dict) -> dict:
+    out = {}
+    for src, r in rows.items():
+        out[src] = SourcePos(
+            source=src, symbol=r["symbol"], side=r["side"], qty=int(r["qty"] or 0),
+            entry_price=float(r["entry_price"] or 0), entry_spot=r.get("entry_spot"),
+            entry_rule=r.get("entry_rule"))
+    return out
+
+
+def _om_enabled_sources(user_id, conn_id) -> list:
+    srcs = ["main"]
+    if svc.get_config_int(user_id, conn_id, "om_r2_enabled") == 1:
+        srcs.append("r2")
+    return srcs
+
+
+def _om_desired_main(user_id, conn_id, adapter, pos, signal_engines, blocked):
+    bar = get_latest_alpha()
+    if bar is None or bar.get("alpha") is None:
+        return _OM_HOLD
+    engine = _engine_for(conn_id + "::main", signal_engines)
+    sig = evaluate_signal(engine, bar, "OPEN" if pos else "NONE",
+                          pos.side.lower() if pos else None,
+                          entry_rule=pos.entry_rule if pos else None,
+                          entry_spot=pos.entry_spot if pos else None)
+    if (sig["action"] == "ENTER" and pos is None and not blocked
+            and check_daily_loss(user_id, conn_id)):
+        side = sig["side"]
+        symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
+        qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        return SourcePos("main", symbol, side, qty,
+                         entry_price=adapter.get_ltp(symbol),
+                         entry_spot=bar.get("spot"), entry_rule=sig.get("rule") or "main")
+    if sig["action"] == "EXIT" and pos is not None:
+        return None
+    return _OM_HOLD
+
+
+def _om_desired_r2(user_id, conn_id, adapter, pos, blocked):
+    _, bars = r2_alpha_bars()
+    if not bars or bars[-1].get("alpha") is None:
+        return _OM_HOLD
+    bar = bars[-1]
+    cur = float(bar["alpha"])
+    prev = bars[-2]["alpha"] if len(bars) >= 2 else None
+    if pos is not None:                          # VIX-scaled spot TP first (no SL)
+        spot = r2_latest_spot() or bar.get("spot")
+        if pos.entry_spot is not None and spot is not None and r2_vix_tp_exit(
+                pos.side.lower(), float(pos.entry_spot), float(spot), bar.get("vix_at_open")):
+            return None
+    sig = r2_signal(prev, cur, "OPEN" if pos else "NONE", pos.side.lower() if pos else None)
+    if (sig["action"] == "ENTER" and pos is None and not blocked
+            and check_daily_loss(user_id, conn_id)):
+        side = sig["side"]
+        symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
+        qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        return SourcePos("r2", symbol, side, qty,
+                         entry_price=adapter.get_ltp(symbol),
+                         entry_spot=bar.get("spot"), entry_rule="r2")
+    if sig["action"] == "EXIT" and pos is not None:
+        return None
+    return _OM_HOLD
+
+
+def _process_om(user_id: str, conn_id: str, *, adapter, dry_run: bool,
+                signal_engines: dict, alpha_seen: dict) -> None:
+    # 1) Reconcile broker net book vs per-source ledger (fail-closed).
+    try:
+        broker_net = adapter.get_net_book()
+    except Exception as e:
+        log.warning("om get_net_book failed conn=%s: %s", conn_id, type(e).__name__)
+        return
+    rows = svc.get_ledger(user_id, conn_id)
+    ledger = _om_ledger_to_sourcepos(rows)
+    ok, msg = om_reconcile(ledger, broker_net)
+    if not ok:
+        if svc.get_config(user_id, conn_id, "reconcile_message") != msg:
+            log.warning("om reconcile block conn=%s %s", conn_id, msg)
+            svc.set_config(user_id, conn_id, "reconcile_blocked", "1")
+            svc.set_config(user_id, conn_id, "reconcile_message", msg)
+            notify_telegram(f"⚠️ OM blocked: {msg}")
+        return
+    svc.set_config(user_id, conn_id, "reconcile_blocked", "0")
+    svc.set_config(user_id, conn_id, "reconcile_message", "")
+
+    # 2) EOD watchdog — flatten ALL sources, then disarm a flat LIVE conn.
+    if eod_watchdog(_now_ist().time()):
+        desired = {src: None for src in ledger}     # flatten everything held
+        if desired:
+            _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net,
+                        dry_run, exit_reason="eod")
+        if not svc.get_ledger(user_id, conn_id) and ex.get_mode(user_id, conn_id) == ex.Mode.LIVE_ARMED:
+            try:
+                ex.disarm(user_id, conn_id)
+                notify_telegram("🔒 EOD: OM disarmed (flat)")
+            except Exception as e:
+                log.warning("om EOD disarm failed conn=%s: %s", conn_id, type(e).__name__)
+        return
+
+    blocked = svc.get_config_int(user_id, conn_id, "reconcile_blocked") == 1
+
+    # 3) Build each enabled source's desired target.
+    desired: dict = {}
+    for src in _om_enabled_sources(user_id, conn_id):
+        pos = ledger.get(src)
+        if src == "r2":
+            tgt = _om_desired_r2(user_id, conn_id, adapter, pos, blocked)
+        else:
+            tgt = _om_desired_main(user_id, conn_id, adapter, pos, signal_engines, blocked)
+        if tgt is not _OM_HOLD:
+            desired[src] = tgt
+    if not desired:
+        return
+
+    _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net, dry_run)
+
+
+def _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net, dry_run,
+                exit_reason="signal_exit"):
+    """Plan netted orders, place them, and commit the ledger + per-source
+    trades ONLY if every order applied (fail-closed)."""
+    orders, _ = plan_orders(ledger, desired, broker_net)
+    fills: dict = {}
+    all_ok = True
+    for o in orders:
+        side = "CALL" if o.symbol.endswith("CE") else "PUT"
+        action = "ENTER" if o.txn == "BUY" else "EXIT"
+        price = adapter.get_ltp(o.symbol)
+        result = _route_order(adapter, user_id, conn_id, action=action, side=side,
+                              symbol=o.symbol, qty=o.qty, price=price, dry_run=dry_run,
+                              entry_rule="om")
+        if _order_applied(result.status, dry_run=dry_run):
+            fills[o.symbol] = result.avg_fill_price or price
+        else:
+            all_ok = False
+            log.warning("om order NOT applied conn=%s %s %s x%s",
+                        conn_id, o.txn, o.symbol, o.qty)
+    if not all_ok:
+        svc.set_config(user_id, conn_id, "reconcile_blocked", "1")
+        svc.set_config(user_id, conn_id, "reconcile_message",
+                       "OM partial/failed fill — blocked; reconcile next cycle")
+        notify_telegram("⚠️ OM partial fill — blocked, will reconcile")
+        return
+
+    # Commit ledger + record per-source trades.
+    for src, tgt in desired.items():
+        prev = ledger.get(src)
+        if tgt is None and prev is not None:                 # source exited
+            exit_price = fills.get(prev.symbol) or adapter.get_ltp(prev.symbol)
+            _record_exit_result(
+                user_id, conn_id,
+                {"side": prev.side, "symbol": prev.symbol,
+                 "entry_price": prev.entry_price, "qty": prev.qty,
+                 "entry_rule": prev.entry_rule, "virtual": 1 if dry_run else 0},
+                exit_price=exit_price, qty=prev.qty, reason=f"{src}:{exit_reason}",
+                dry_run=dry_run)
+            svc.clear_source_pos(user_id, conn_id, src)
+            notify_telegram(f"🔴 OM EXIT {src} {prev.symbol} @ {exit_price}"
+                            + (" [DRY]" if dry_run else ""))
+        elif isinstance(tgt, SourcePos):                     # source entered
+            ep = fills.get(tgt.symbol) or tgt.entry_price
+            svc.set_source_pos(user_id, conn_id, src, symbol=tgt.symbol, side=tgt.side,
+                               qty=tgt.qty, entry_price=ep, entry_spot=tgt.entry_spot,
+                               entry_rule=tgt.entry_rule, virtual=1 if dry_run else 0)
+            notify_telegram(f"🟢 OM ENTER {src} {tgt.side} {tgt.symbol} @ {ep}"
+                            + (" [DRY]" if dry_run else ""))
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # R2 consistency book — signal path (Alpha v2.10). Reuses every shared helper
 # (_route_order / _record_exit_result / resolve_itm_option / check_daily_loss).
 # Entries: simple ±25 alpha crossover on the R2 wall-range. Exits: VIX-scaled
@@ -758,6 +937,17 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     adapter = _ensure_connected_adapter(
         user_id, conn_id, adapters=adapters, adapter_factory=adapter_factory)
     if adapter is None:
+        return
+
+    # ── Order-manager mode: multi-source netting on ONE account ───────────
+    # Diverges here (BEFORE the single-position reconcile/guards, which assume
+    # one position). Default exec_mode="single" -> never taken. OM does its own
+    # net-book reconcile + per-source ledger.
+    if svc.get_exec_mode(user_id, conn_id) == "order_manager":
+        if is_killed(user_id, conn_id):
+            return
+        _process_om(user_id, conn_id, adapter=adapter, dry_run=dry_run,
+                    signal_engines=signal_engines, alpha_seen=alpha_seen)
         return
 
     # Reconcile once per boot per conn/mode, before any signal.
