@@ -70,6 +70,24 @@
             size. Default is Main. R2 only starts trading after 09:45.</div>
         </div>
 
+        <div class="field">
+          <label for="exec_mode">Execution mode</label>
+          <select id="exec_mode" name="exec_mode">
+            <option value="single" {{ 'selected' if exec_mode != 'order_manager' else '' }}>Single book (default)</option>
+            <option value="order_manager" {{ 'selected' if exec_mode == 'order_manager' else '' }}>Order manager — main + R2 netted on THIS account</option>
+          </select>
+          <div class="hint">Order manager runs the main book AND R2 on this one
+            account, netting both onto a single position book (per-source ledger).
+            Use this instead of a separate R2 connection. Start in DRY-RUN.</div>
+        </div>
+
+        <div class="field">
+          <label><input type="checkbox" name="om_r2_enabled" value="1" {{ 'checked' if om_r2_enabled else '' }}>
+            Enable R2 source (order-manager mode only)</label>
+          <div class="hint">Adds the R2 consistency book as a second source under the
+            order manager. No effect unless Execution mode = Order manager.</div>
+        </div>
+
         <div class="btn-row">
           <button type="submit" class="btn btn-primary">Save Configuration</button>
         </div>

@@ -525,6 +525,13 @@ def configure():
         # A connection runs exactly one book — run R2 on a SEPARATE connection.
         role = (request.form.get("book_role", "main") or "main").strip().lower()
         svc.set_config(user_id, conn_id, "book_role", "r2" if role == "r2" else "main")
+
+        # Order-manager mode: run main + R2 netted on THIS one account.
+        em = (request.form.get("exec_mode", "single") or "single").strip().lower()
+        svc.set_config(user_id, conn_id, "exec_mode",
+                       "order_manager" if em == "order_manager" else "single")
+        svc.set_config(user_id, conn_id, "om_r2_enabled",
+                       1 if request.form.get("om_r2_enabled") in ("1", "on", "true") else 0)
         return redirect(url_for("live.dashboard"))
 
     return render_template(
@@ -539,6 +546,8 @@ def configure():
         mode=svc.get_mode(user_id, conn_id),
         kill_switch=svc.is_kill_switch_on(user_id, conn_id),
         book_role=svc.get_book_role(user_id, conn_id),
+        exec_mode=svc.get_exec_mode(user_id, conn_id),
+        om_r2_enabled=svc.get_config_int(user_id, conn_id, "om_r2_enabled") == 1,
     )
 
 
