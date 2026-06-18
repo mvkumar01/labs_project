@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live — Alpha v2.11 paper tracker</title>
+  <link rel="stylesheet" href="/static/labs.css">
+  <style>
+    .cards{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
+    .card{background:#1b2230;border:1px solid #2b3445;border-radius:10px;padding:12px 16px;min-width:120px}
+    .card .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.04em}
+    .card .v{font-size:22px;font-weight:600;margin-top:4px}
+    .green{color:#16a34a}.red{color:#dc2626}.muted{color:#8a93a6}
+    table.perf{width:100%;border-collapse:collapse;margin-top:8px}
+    table.perf th,table.perf td{padding:6px 10px;border-bottom:1px solid #232b3a;text-align:right;font-size:13px}
+    table.perf th:first-child,table.perf td:first-child{text-align:left}
+    .sub{color:#8a93a6;font-size:13px;margin:4px 0 12px}
+    .note{color:#8a93a6;font-size:12px;margin-top:18px;line-height:1.5}
+    canvas{max-width:100%;background:#1b2230;border:1px solid #2b3445;border-radius:10px;margin-top:8px}
+  </style>
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    <nav>
+      <a href="/labs">Dashboard</a>
+      <a href="/labs/backtest">Backtest</a>
+      <a href="/labs/live" class="active">Live</a>
+      <a href="/labs/new" class="btn-primary">+ New Bot</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Live — Alpha v2.11 (paper)</h1>
+    <p class="sub">Persistent paper run of the live champion (Run F + RECO W1/W3/C1),
+       1 lot, priced off shared-store option LTP. <b>Net P&amp;L includes charges.</b>
+       Updated end-of-day. No real orders.</p>
+
+    {% if stats.get('error') %}
+      <p class="empty">Tracker not initialised yet ({{ stats.error }}). It populates after the first EOD run.</p>
+    {% elif not rows %}
+      <p class="empty">No paper sessions recorded yet. Runs daily after market close.</p>
+    {% else %}
+    <div class="cards">
+      <div class="card"><div class="k">Net P&amp;L (after charges)</div>
+        <div class="v {{ 'green' if stats.net_total>0 else ('red' if stats.net_total<0 else '') }}">₹{{ "{:,.0f}".format(stats.net_total) }}</div></div>
+      <div class="card"><div class="k">Days</div><div class="v">{{ stats.days }} <span class="muted" style="font-size:13px">({{ stats.traded_days }} traded)</span></div></div>
+      <div class="card"><div class="k">Win days</div><div class="v">{{ stats.win_pct }}% <span class="muted" style="font-size:13px">({{ stats.win_days }})</span></div></div>
+      <div class="card"><div class="k">Best / Worst day</div><div class="v"><span class="green">+₹{{ "{:,.0f}".format(stats.best) }}</span> / <span class="red">₹{{ "{:,.0f}".format(stats.worst) }}</span></div></div>
+      <div class="card"><div class="k">Charges paid</div><div class="v muted">₹{{ "{:,.0f}".format(stats.charges_total) }}</div></div>
+    </div>
+
+    <canvas id="curve" height="120"></canvas>
+
+    {% if trades %}
+    <h2 style="margin-top:24px">Latest session — {{ stats.latest_date }}</h2>
+    <table class="perf">
+      <thead><tr><th>#</th><th>Side</th><th>Strike</th><th>Entry</th><th>Exit</th>
+        <th>Spot in/out</th><th>Prem in/out</th><th>Pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th><th>Exit</th></tr></thead>
+      <tbody>
+      {% for t in trades %}
+        <tr>
+          <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }}</td>
+          <td>{{ t.entry_ts[11:16] }}</td><td>{{ t.exit_ts[11:16] }}</td>
+          <td>{{ "%.0f"|format(t.entry_spot) }} → {{ "%.0f"|format(t.exit_spot) }}</td>
+          <td>{{ "%.1f"|format(t.entry_prem) }} → {{ "%.1f"|format(t.exit_prem) }}</td>
+          <td class="{{ 'green' if t.pnl_pts>0 else ('red' if t.pnl_pts<0 else '') }}">{{ "%+.0f"|format(t.pnl_pts) }}</td>
+          <td>₹{{ "{:,.0f}".format(t.gross_rs) }}</td><td class="muted">₹{{ "{:,.0f}".format(t.charges_rs) }}</td>
+          <td class="{{ 'green' if t.net_rs>0 else ('red' if t.net_rs<0 else '') }}">₹{{ "{:,.0f}".format(t.net_rs) }}</td>
+          <td class="muted">{{ t.exit_reason }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <h2 style="margin-top:24px">Daily history</h2>
+    <table class="perf">
+      <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Trades</th><th>Pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td>{{ r.trade_date }}</td><td class="muted">{{ r.status }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td>
+          <td>{{ r.n_trades }}</td>
+          <td class="{{ 'green' if r.pnl_pts>0 else ('red' if r.pnl_pts<0 else '') }}">{{ "%+.0f"|format(r.pnl_pts or 0) }}</td>
+          <td>₹{{ "{:,.0f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.0f}".format(r.charges_rs or 0) }}</td>
+          <td class="{{ 'green' if r.net_rs>0 else ('red' if r.net_rs<0 else '') }}">₹{{ "{:,.0f}".format(r.net_rs or 0) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <p class="note">
+      Strategy = live Alpha champion v2.11 (single book; no Locked overlay; no R2), replayed on the
+      same 5-min OI snapshots + locked hybrid range the real bot uses. 1 lot ({{ 65 }} qty). Options
+      modelled at the ATM strike; net P&amp;L deducts brokerage + STT + exchange + GST + SEBI + stamp.
+      Paper only — never places real orders.
+    </p>
+    {% endif %}
+  </main>
+</div>
+{% if stats.get('curve') %}
+<script>
+  const curve = {{ stats.curve | tojson }};
+  const c = document.getElementById('curve');
+  if (c && curve.length) {
+    const ctx = c.getContext('2d'); const W = c.width = c.offsetWidth, H = c.height;
+    const ys = curve.map(p => p.cum); const mn = Math.min(0, ...ys), mx = Math.max(0, ...ys);
+    const pad = 24, span = (mx - mn) || 1;
+    const x = i => pad + i * (W - 2*pad) / Math.max(curve.length - 1, 1);
+    const y = v => H - pad - (v - mn) * (H - 2*pad) / span;
+    ctx.strokeStyle = '#2b3445'; ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W-pad, y(0)); ctx.stroke();
+    ctx.strokeStyle = '#16a34a'; ctx.lineWidth = 2; ctx.beginPath();
+    curve.forEach((p,i) => { i ? ctx.lineTo(x(i), y(p.cum)) : ctx.moveTo(x(i), y(p.cum)); }); ctx.stroke();
+  }
+</script>
+{% endif %}
+</body>
+</html>

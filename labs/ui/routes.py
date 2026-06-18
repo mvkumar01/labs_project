@@ -219,3 +219,52 @@ def _parse_legs(form) -> list[dict]:
             "stoploss_conditions_json": form.get(f"leg_{code}_stoploss_conditions", "[]"),
         })
     return legs
+
+
+# ── Live (persistent paper strategy tracker) ─────────────────────────────────
+@labs_bp.route("/live")
+def live_strategy():
+    """Daily PAPER performance of the live Alpha champion (v2.11). Read-only,
+    no login — populated EOD by pa_paper_tracker.py. Net PnL includes charges."""
+    from storage.db import get_conn
+    rows, trades, stats = [], [], {}
+    try:
+        conn = get_conn()
+        cur = conn.execute(
+            "SELECT trade_date, status, tier, gap_dir, n_trades, pnl_pts, gross_rs, "
+            "charges_rs, net_rs FROM paper_strategy_daily ORDER BY trade_date DESC LIMIT 120")
+        cols = [c[0] for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        if rows:
+            net = [float(r["net_rs"] or 0) for r in rows]
+            traded = [r for r in rows if r["status"] == "traded"]
+            wins = [n for n in net if n > 0]
+            stats = {
+                "net_total": round(sum(net), 2),
+                "charges_total": round(sum(float(r["charges_rs"] or 0) for r in rows), 2),
+                "days": len(rows),
+                "traded_days": len(traded),
+                "win_days": len(wins),
+                "win_pct": round(100 * len(wins) / max(len([n for n in net if n != 0]), 1)),
+                "best": round(max(net), 2) if net else 0,
+                "worst": round(min(net), 2) if net else 0,
+            }
+            # cumulative (oldest -> newest) for the equity curve
+            cum = 0.0
+            curve = []
+            for r in sorted(rows, key=lambda x: x["trade_date"]):
+                cum += float(r["net_rs"] or 0)
+                curve.append({"date": r["trade_date"], "cum": round(cum, 2)})
+            stats["curve"] = curve
+        latest = rows[0]["trade_date"] if rows else None
+        if latest:
+            cur2 = conn.execute(
+                "SELECT seq, side, strike, entry_ts, exit_ts, entry_spot, exit_spot, "
+                "entry_prem, exit_prem, pnl_pts, gross_rs, charges_rs, net_rs, entry_rule, "
+                "exit_reason FROM paper_strategy_trades WHERE trade_date=? ORDER BY seq", (latest,))
+            tcols = [c[0] for c in cur2.description]
+            trades = [dict(zip(tcols, r)) for r in cur2.fetchall()]
+            stats["latest_date"] = latest
+    except Exception as exc:  # never 500 the page if the table is empty/new
+        stats = {"error": str(exc)}
+    return render_template("live_strategy.html", rows=rows, trades=trades, stats=stats)
