@@ -190,7 +190,11 @@ class AlphaSignalEngine:
     #   LOCKED_RULE_pc50up_tp50sl30_vix15.md (backtest +246.70 over Run F;
     #   thin/lumpy — 14 of 105 PC50-UP trades modified). Operator-promoted
     #   2026-05-31.
-    ENABLE_V29_1_PC50_GAP_UP_SPOT_EXIT = True
+    # REMOVED 2026-06-18 for champion v2.11: the +246.70 edge was a 1-minute
+    # sampling artifact; on production-faithful 5-min snapshots it nets only
+    # +2.7 (and -59 in the recent window). Flag OFF -> PC50 gap-UP uses Run F
+    # alpha exits exactly. See alphaIMB docs/backtest_1min_sampling.md.
+    ENABLE_V29_1_PC50_GAP_UP_SPOT_EXIT = False
     V29_1_PC50_UP_TP_PTS = 50.0    # spot TP: favorable move from entry_spot
     V29_1_PC50_UP_SL_PTS = 30.0    # spot SL: adverse move from entry_spot
     V29_1_PC50_UP_VIX_GATE = 15.0  # apply only when vix_at_open >= this
