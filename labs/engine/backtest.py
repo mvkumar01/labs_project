@@ -80,14 +80,16 @@ def scan_data_ranges() -> dict[str, Any]:
         spot_days = {s.trade_date for s in sources if s.underlying == underlying and s.data_type == "spot"}
         option_days = {s.trade_date for s in sources if s.underlying == underlying and s.data_type == "options"}
         all_days = sorted(spot_days | option_days)
+        # Spot is also derivable from the `spot` column inside options files.
+        effective_spot_days = spot_days | option_days
         result["underlyings"][underlying] = {
             "first_date": all_days[0] if all_days else None,
             "last_date": all_days[-1] if all_days else None,
             "trading_days": len(all_days),
-            "spot_exists": bool(spot_days),
+            "spot_exists": bool(effective_spot_days),
             "options_exists": bool(option_days),
-            "sma50_warmup_possible": _sma50_possible(underlying, sources),
-            "spot_days": len(spot_days),
+            "sma50_warmup_possible": bool(effective_spot_days),
+            "spot_days": len(effective_spot_days),
             "option_days": len(option_days),
         }
 
@@ -132,26 +134,30 @@ def run_backtest(
         if options_source:
             data_files.append(options_source.label)
 
-        if spot_source is None:
-            skipped_days.append({"date": trade_date, "reason": "No spot data"})
-            log.warning("[backtest] skip %s %s: No spot data", underlying, trade_date)
-            continue
         if options_source is None:
             skipped_days.append({"date": trade_date, "reason": "No options data for selected date"})
             log.warning("[backtest] skip %s %s: No options data for selected date", underlying, trade_date)
             continue
 
-        day_spot = _load_source(spot_source, parse_dates=["timestamp"])
-        options_df = _load_source(options_source, parse_dates=["timestamp"])
-        day_spot = _normalize_spot(day_spot)
-        options_df = _normalize_options(options_df, underlying)
+        options_df = _normalize_options(_load_source(options_source, parse_dates=["timestamp"]), underlying)
+
+        if spot_source is not None:
+            day_spot = _normalize_spot(_load_source(spot_source, parse_dates=["timestamp"]))
+        else:
+            # Shared-store format has no separate spot file — derive spot from the
+            # `spot` column embedded in the options snapshots.
+            day_spot = _spot_from_options(options_df)
+            if day_spot.empty:
+                skipped_days.append({"date": trade_date, "reason": "No spot data"})
+                log.warning("[backtest] skip %s %s: No spot data", underlying, trade_date)
+                continue
         warmup_spot = _load_warmup_spot(sources, underlying, trade_date, day_spot)
 
         log.info(
             "[backtest] %s %s files spot=%s options=%s rows spot=%s warmup=%s options=%s",
             underlying,
             trade_date,
-            spot_source.label,
+            spot_source.label if spot_source else f"{options_source.label} (spot col)",
             options_source.label,
             len(day_spot),
             len(warmup_spot),
@@ -587,6 +593,24 @@ def _normalize_spot(df: pd.DataFrame) -> pd.DataFrame:
     return df[["open", "high", "low", "close", "volume"]]
 
 
+def _spot_from_options(options_df: pd.DataFrame) -> pd.DataFrame:
+    """Build a spot OHLC frame from the `spot` column of an options snapshot file.
+
+    The shared-store collector embeds spot in every options row rather than
+    writing a separate spot CSV, so derive one value per timestamp.
+    """
+    if options_df.empty or "spot" not in options_df.columns:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    s = options_df[["timestamp", "spot"]].copy()
+    s["spot"] = pd.to_numeric(s["spot"], errors="coerce")
+    s = s.dropna(subset=["spot"])
+    s = s[s["spot"] > 0]
+    if s.empty:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    s = s.groupby("timestamp", as_index=False)["spot"].last().rename(columns={"spot": "close"})
+    return _normalize_spot(s)
+
+
 def _normalize_options(df: pd.DataFrame, underlying: str) -> pd.DataFrame:
     if df.empty:
         return df
@@ -624,9 +648,16 @@ def _load_warmup_spot(sources: list[DataSource], underlying: str, trade_date: st
     for delta in range(10, 0, -1):
         prior = (current - timedelta(days=delta)).isoformat()
         src = _best_source(sources, underlying, prior, "spot")
-        if not src:
+        if src:
+            frames.append(_normalize_spot(_load_source(src, parse_dates=["timestamp"])))
             continue
-        frames.append(_normalize_spot(_load_source(src, parse_dates=["timestamp"])))
+        # Fall back to spot embedded in that day's options file.
+        opt_src = _best_source(sources, underlying, prior, "options")
+        if opt_src:
+            opt_df = _normalize_options(_load_source(opt_src, parse_dates=["timestamp"]), underlying)
+            prior_spot = _spot_from_options(opt_df)
+            if not prior_spot.empty:
+                frames.append(prior_spot)
     frames.append(day_spot)
     combined = pd.concat(frames, axis=0) if frames else day_spot
     return combined[~combined.index.duplicated(keep="last")].sort_index()
@@ -713,11 +744,14 @@ def _extract_date(text: str) -> str | None:
 
 
 def _extract_underlying(name: str) -> str | None:
+    # Prefer the longest matching name so "BANKNIFTY" is not shadowed by the
+    # "NIFTY" substring check.
     upper = name.upper()
+    best: str | None = None
     for underlying in UNDERLYINGS:
-        if underlying in upper:
-            return underlying
-    return None
+        if underlying in upper and (best is None or len(underlying) > len(best)):
+            best = underlying
+    return best
 
 
 def _extract_data_type(name: str) -> str | None:
