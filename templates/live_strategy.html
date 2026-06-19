@@ -10,7 +10,7 @@
     .card{background:#1b2230;border:1px solid #2b3445;border-radius:10px;padding:12px 16px;min-width:120px}
     .card .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.04em}
     .card .v{font-size:22px;font-weight:600;margin-top:4px}
-    .green{color:#16a34a}.red{color:#dc2626}.muted{color:#8a93a6}
+    .green{color:#16a34a}.red{color:#dc2626}.muted{color:#8a93a6}.amber{color:#f59e0b}
     table.perf{width:100%;border-collapse:collapse;margin-top:8px}
     table.perf th,table.perf td{padding:6px 10px;border-bottom:1px solid #232b3a;text-align:right;font-size:13px}
     table.perf th:first-child,table.perf td:first-child{text-align:left}
@@ -36,7 +36,7 @@
     <h1>Live — Alpha v2.11 (paper)</h1>
     <p class="sub">Persistent paper run of the live champion (Run F + RECO W1/W3/C1),
        1 lot, priced off shared-store option LTP. <b>Net P&amp;L includes charges.</b>
-       Updated end-of-day. No real orders.</p>
+       Updated live through the session (open positions shown as <span class="amber">HOLDING</span>, marked to market). No real orders.</p>
 
     {% if stats.get('error') %}
       <p class="empty">Tracker not initialised yet ({{ stats.error }}). It populates after the first EOD run.</p>
@@ -69,7 +69,7 @@
           <td class="{{ 'green' if t.pnl_pts>0 else ('red' if t.pnl_pts<0 else '') }}">{{ "%+.0f"|format(t.pnl_pts) }}</td>
           <td>₹{{ "{:,.0f}".format(t.gross_rs) }}</td><td class="muted">₹{{ "{:,.0f}".format(t.charges_rs) }}</td>
           <td class="{{ 'green' if t.net_rs>0 else ('red' if t.net_rs<0 else '') }}">₹{{ "{:,.0f}".format(t.net_rs) }}</td>
-          <td class="muted">{{ t.exit_reason }}</td>
+          <td class="{{ 'amber' if t.exit_reason == 'holding' else 'muted' }}">{{ 'HOLDING' if t.exit_reason == 'holding' else t.exit_reason }}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -82,7 +82,7 @@
       <tbody>
       {% for r in rows %}
         <tr>
-          <td>{{ r.trade_date }}</td><td class="muted">{{ r.status }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td>
+          <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td>
           <td>{{ r.n_trades }}</td>
           <td class="{{ 'green' if r.pnl_pts>0 else ('red' if r.pnl_pts<0 else '') }}">{{ "%+.0f"|format(r.pnl_pts or 0) }}</td>
           <td>₹{{ "{:,.0f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.0f}".format(r.charges_rs or 0) }}</td>

@@ -104,6 +104,19 @@ def _r50(x: float) -> int:
     return int(round(float(x) / 50.0) * 50)
 
 
+def _session_over(trade_date: str) -> bool:
+    """True once trade_date's session is finished — a past day, or today at/after
+    15:30 IST. Until then an open position is HELD (marked to market), not squared
+    off as a fake eod at the latest completed bar."""
+    now = datetime.now(IST)
+    today = now.date().isoformat()
+    if trade_date < today:
+        return True
+    if trade_date == today:
+        return (now.hour * 60 + now.minute) >= (15 * 60 + 30)
+    return False
+
+
 def _premium_lookup(trade_date: str) -> dict:
     """(bucket_start_iso, strike, 'ce'|'pe') -> last LTP in that 5-min bucket."""
     path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
@@ -272,14 +285,22 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
         elif action == "EXIT" and pos is not None:
             _close(ts_iso, spot, sig.get("reason") or "alpha_exit")
 
-    if pos is not None:                              # EOD square-off at last bar
+    status = "traded"
+    if pos is not None:
         last = bars[-1]
-        _close(last["timestamp"], float(last["spot"]), "eod")
+        if _session_over(trade_date):
+            # real end-of-day square-off
+            _close(last["timestamp"], float(last["spot"]), "eod")
+        else:
+            # intraday: position is still live — show it as HOLDING, marked to
+            # the latest completed bar (net = "if closed now"), not a fake eod.
+            _close(last["timestamp"], float(last["spot"]), "holding")
+            status = "open"
 
-    _save_daily(conn, trade_date, status="traded", tier=state.get("bucket"),
+    _save_daily(conn, trade_date, status=status, tier=state.get("bucket"),
                 gap_dir=state.get("direction"), trades=trades)
     net = round(sum(t["net_rs"] for t in trades), 2)
-    return {"trade_date": trade_date, "status": "traded", "net_rs": net, "n_trades": len(trades)}
+    return {"trade_date": trade_date, "status": status, "net_rs": net, "n_trades": len(trades)}
 
 
 def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades) -> None:
