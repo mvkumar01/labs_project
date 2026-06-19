@@ -159,13 +159,18 @@ def _load_baseline(trade_date: str) -> pd.DataFrame:
 
 
 def _prepare_snapshot_frame(live_df: pd.DataFrame, baseline_df: pd.DataFrame) -> pd.DataFrame:
-    df = live_df.set_index("timestamp").sort_index()
+    # OI is a point-in-time SNAPSHOT, not an aggregate. The 5-min alpha uses the
+    # OI reading AT each mark (09:15, 09:20, 09:25, …) — selection by timestamp,
+    # NOT a 5-min Grouper.last(). The old .last() took the bucket's final 1-min
+    # row (e.g. 09:19) and labelled it 09:15, shifting the whole series ~4 min and
+    # diverging materially from the validated research backtest (2026-06-19 fix).
+    df = live_df[live_df["timestamp"].dt.minute % 5 == 0].copy()
+    df = df.rename(columns={"timestamp": "bucket"})
     latest = (
-        df.groupby([pd.Grouper(freq="5min", closed="left", label="left"), "strike", "type"])
+        df.sort_values("bucket")
+        .groupby(["bucket", "strike", "type"], as_index=False)
         .last()
         .dropna(subset=["oi"])
-        .reset_index()
-        .rename(columns={"timestamp": "bucket"})
     )
     baseline = baseline_df.rename(columns={"oi": "baseline_oi"})
     merged = latest.merge(baseline, on=["strike", "type"], how="left")

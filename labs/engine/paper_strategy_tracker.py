@@ -28,7 +28,26 @@ import pandas as pd
 from storage.db import get_conn
 from labs.engine.charges import round_trip_charges
 from live.engine.alpha_hybrid import hybrid_alpha_bars
-from live.engine.signal_engine import AlphaSignalEngine
+from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
+
+# Spot-reference exits the strategy applies OUTSIDE engine.evaluate() (the live
+# runner applies the trail; v7.11 is the rule that wasn't wired live — see audit
+# 2026-06-19). Replicated here on the 5-min bar spot to match the research sim.
+TRAIL_ARM = 40.0          # v22 PC400 trail arms once +40 favourable
+TRAIL_GIVE = 20.0         # ...then exits on a 20-pt give-back from peak
+TRAIL_VIX_CUTOFF = 17.0
+
+
+def _trail_uses_spot(tier, side, gap_dir, vix) -> bool:
+    """v22 PC400 trail cell selector (port of runner._pc400_trail_uses_spot)."""
+    if (tier or "").upper() not in ("PC400", "PC800"):
+        return False
+    s, g = (side or "").upper(), (gap_dir or "").upper()
+    try:
+        vix_low = vix is None or float(vix) != float(vix) or float(vix) < TRAIL_VIX_CUTOFF
+    except (TypeError, ValueError):
+        vix_low = True
+    return vix_low or (s == "PUT" and g == "UP") or (s == "CALL" and g == "DOWN")
 from config.labs_config import SHARED_LIVE_DIR, UNDERLYINGS
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -117,12 +136,51 @@ def _premium(lookup: dict, bar_ts_iso: str, strike: int, otype: str) -> float | 
     return lookup.get(key)
 
 
-def run_day(trade_date: str | None = None) -> dict:
+def _bars_for_range(trade_date: str, ov: dict) -> list[dict]:
+    """Backfill path: build the day's bars for an explicit champion range
+    (the live hybrid_range_state only holds today's, so historical days need
+    the range supplied). Uses the same alpha_hybrid pipeline as production."""
+    from live.engine.alpha_hybrid import (
+        _load_live_data, _load_baseline, _prepare_snapshot_frame, _compute_alpha_series)
+    lo, hi = float(ov["lower"]), float(ov["upper"])
+    series = _compute_alpha_series(
+        _prepare_snapshot_frame(_load_live_data(trade_date), _load_baseline(trade_date)),
+        trade_date, lo, hi).dropna(subset=["alpha"])
+    bucket, direction = ov["bucket"], ov["direction"]
+    use_abs = (bucket == "PC50" and direction == "UP") or bool(ov.get("pc400_v210_biggap"))
+    bars = []
+    for _, row in series.iterrows():
+        a_abs = None if pd.isna(row.get("alpha_abs")) else float(row["alpha_abs"])
+        alpha = a_abs if (use_abs and a_abs is not None) else float(row["alpha"])
+        bars.append(dict(
+            timestamp=row["timestamp"].isoformat(), alpha=alpha,
+            spot=None if pd.isna(row.get("spot")) else float(row["spot"]),
+            denom_alg=None if pd.isna(row.get("denom_alg")) else float(row["denom_alg"]),
+            tier=bucket, bucket=bucket, gap_direction=direction,
+            vix_at_open=ov.get("vix"), lower=lo, upper=hi))
+    return bars
+
+
+def run_day(trade_date: str | None = None, override: dict | None = None) -> dict:
+    """Replay one day on paper. `override` (for backfill) supplies the champion
+    range when the live hybrid_range_state isn't available for that date:
+    {lower, upper, bucket, direction, vix, pc400_v210_biggap, skip}."""
     trade_date = trade_date or datetime.now(IST).date().isoformat()
     conn = get_conn()
     _ensure_tables(conn)
 
-    state, bars = hybrid_alpha_bars(trade_date)
+    if override is not None:
+        if override.get("skip") or override.get("bucket") == "SKIP":
+            _save_daily(conn, trade_date, status="no_trade", tier="SKIP",
+                        gap_dir=override.get("direction"), trades=[])
+            return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
+        try:
+            bars = _bars_for_range(trade_date, override)
+        except Exception:
+            bars = []
+        state = {"bucket": override.get("bucket"), "direction": override.get("direction")}
+    else:
+        state, bars = hybrid_alpha_bars(trade_date)
     if not state or not bars:
         _save_daily(conn, trade_date, status="no_trade", tier=(state or {}).get("bucket"),
                     gap_dir=(state or {}).get("direction"), trades=[])
@@ -134,6 +192,9 @@ def run_day(trade_date: str | None = None) -> dict:
 
     pos = side = entry_rule = entry_spot = entry_ts = entry_strike = entry_prem = None
     otype = None
+    peak_pnl = 0.0
+    d_min = d_stop = None
+    d_conf = d_armed = False
     trades: list[dict] = []
 
     def _close(exit_ts, exit_spot, reason):
@@ -160,29 +221,54 @@ def run_day(trade_date: str | None = None) -> dict:
         if bar.get("alpha") is None or bar.get("spot") is None:
             continue
         ts_iso = bar["timestamp"]
+        spot = float(bar["spot"])
         bt = None
         try:
             bt = datetime.fromisoformat(ts_iso).astimezone(IST).time()
         except Exception:
             pass
+
+        # ── spot-reference exits (5-min bar spot, to match the research sim) ──
+        if pos is not None:
+            fav = (spot - entry_spot) if side == "CALL" else (entry_spot - spot)
+            if fav > peak_pnl:
+                peak_pnl = fav
+            # v22 PC400 spot trail (arm +40, give-back 20)
+            if _trail_uses_spot(bar.get("tier"), side, bar.get("gap_direction"),
+                                bar.get("vix_at_open")) and peak_pnl >= TRAIL_ARM:
+                if side == "CALL" and spot <= entry_spot + (peak_pnl - TRAIL_GIVE):
+                    _close(ts_iso, spot, "v22_trail")
+                elif side == "PUT" and spot >= entry_spot - (peak_pnl - TRAIL_GIVE):
+                    _close(ts_iso, spot, "v22_trail")
+            # v7.11 PC400 gap-DN PUT drift-protective stop
+            if (pos is not None and side == "PUT" and (bar.get("tier") or "") == "PC400"
+                    and (bar.get("gap_direction") or "").upper() == "DOWN"):
+                dd = v711_drift_update(d_min, d_conf, d_armed, d_stop,
+                                       float(bar["alpha"]), entry_spot)
+                d_min, d_conf = dd["drift_min_alpha"], dd["drift_confirmation_reached"]
+                d_armed, d_stop = dd["drift_protective_armed"], dd["drift_protective_stop"]
+                if d_armed and d_stop is not None and spot >= d_stop:
+                    _close(ts_iso, spot, "v711_drift_stop")
+
+        # ── alpha entry/exit (engine fed every bar to keep its state in sync) ──
         sig = engine.evaluate(
             current_alpha=float(bar["alpha"]),
             position=("OPEN" if pos is not None else "NONE"), side=side,
             tier=bar.get("tier") or "PC50", entry_rule=entry_rule,
             denom_alg=bar.get("denom_alg"), bar_time_ist=bt,
             gap_direction=bar.get("gap_direction"), today_iso=trade_date,
-            spot=bar.get("spot"), entry_spot=entry_spot, vix_at_open=bar.get("vix_at_open"),
+            spot=spot, entry_spot=entry_spot, vix_at_open=bar.get("vix_at_open"),
         )
         action = sig.get("action")
-        spot = float(bar["spot"])
         if action == "ENTER" and pos is None:
             side = sig.get("side"); entry_rule = sig.get("rule")
             entry_spot = spot; entry_ts = ts_iso; entry_strike = _r50(spot)
             otype = "ce" if side == "CALL" else "pe"
-            entry_prem = _premium(lookup, ts_iso, entry_strike, otype)
-            if entry_prem is None:
-                entry_prem = 150.0   # nominal ATM premium fallback (rare; logged via charges)
+            entry_prem = _premium(lookup, ts_iso, entry_strike, otype) or 150.0
             pos = "open"
+            peak_pnl = 0.0
+            d_min = d_stop = None
+            d_conf = d_armed = False
         elif action == "EXIT" and pos is not None:
             _close(ts_iso, spot, sig.get("reason") or "alpha_exit")
 

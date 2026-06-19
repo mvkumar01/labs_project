@@ -1,0 +1,119 @@
+{
+  "2026-06-01": {
+    "lower": 23550,
+    "upper": 23650,
+    "bucket": "PC50",
+    "direction": "UP",
+    "vix": 16.18,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-02": {
+    "lower": 23000,
+    "upper": 23800,
+    "bucket": "PC400",
+    "direction": "DOWN",
+    "vix": 16.54,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-03": {
+    "lower": 23100,
+    "upper": 23900,
+    "bucket": "PC400",
+    "direction": "DOWN",
+    "vix": 15.36,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-04": {
+    "lower": 23000,
+    "upper": 23800,
+    "bucket": "PC400",
+    "direction": "DOWN",
+    "vix": 16.28,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-05": {
+    "lower": 23400,
+    "upper": 23500,
+    "bucket": "PC50",
+    "direction": "UP",
+    "vix": 15.89,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-08": {
+    "lower": 22900,
+    "upper": 23300,
+    "bucket": "PC400",
+    "direction": "DOWN",
+    "vix": 15.79,
+    "pc400_v210_biggap": true,
+    "skip": false
+  },
+  "2026-06-09": {
+    "lower": 22700,
+    "upper": 23500,
+    "bucket": "PC400",
+    "direction": "UP",
+    "vix": 17.03,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-11": {
+    "lower": 22800,
+    "upper": 23600,
+    "bucket": "PC400",
+    "direction": "DOWN",
+    "vix": 15.63,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-12": {
+    "lower": 22850,
+    "upper": 23650,
+    "bucket": "PC400",
+    "direction": "UP",
+    "vix": null,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-15": {
+    "lower": 23200,
+    "upper": 24000,
+    "bucket": "PC400",
+    "direction": "UP",
+    "vix": null,
+    "pc400_v210_biggap": false,
+    "skip": false
+  },
+  "2026-06-16": {
+    "lower": 23650,
+    "upper": 24050,
+    "bucket": "SKIP",
+    "direction": "UP",
+    "vix": null,
+    "pc400_v210_biggap": false,
+    "skip": true
+  },
+  "2026-06-17": {
+    "lower": 23800,
+    "upper": 24200,
+    "bucket": "SKIP",
+    "direction": "UP",
+    "vix": null,
+    "pc400_v210_biggap": false,
+    "skip": true
+  },
+  "2026-06-18": {
+    "lower": 24000,
+    "upper": 24200,
+    "bucket": "PC50",
+    "direction": "DOWN",
+    "vix": 13.2,
+    "pc400_v210_biggap": false,
+    "skip": false
+  }
+}

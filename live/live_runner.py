@@ -39,7 +39,7 @@ from live.brokers.base import Position
 from live.brokers.angel import AngelAdapter
 from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
-from live.engine.signal_engine import AlphaSignalEngine
+from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
 from live.engine.r2_book import (
     r2_alpha_bars, r2_signal, r2_vix_tp_exit, latest_spot_1min as r2_latest_spot,
 )
@@ -1161,6 +1161,39 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     svc.reset_trade_state(user_id, conn_id)
                 return
 
+    # v7.11 PC400 gap-DN PUT drift-protective stop. Ported 2026-06-19 — it was
+    # defined (v711_drift_update) but never wired into the live path, so the bot
+    # diverged from the validated research sim (which exits the drifted PUT at
+    # break-even instead of riding it to the alpha SL). Per-trade state lives in
+    # the trade-state dict; compares the completed bar spot to the protective stop.
+    if current_open and (current_side or "").upper() == "PUT":
+        _tier = (alpha_bar.get("tier") or alpha_bar.get("bucket") or "").upper()
+        _gap = (alpha_bar.get("gap_direction") or "").upper()
+        _es = _as_float(st.get("entry_spot"))
+        _ca = _as_float(alpha_bar.get("alpha"))
+        _cs = _as_float(alpha_bar.get("spot"))
+        if _tier in ("PC400", "PC800") and _gap == "DOWN" and _es is not None and _ca is not None:
+            dd = v711_drift_update(
+                st.get("drift_min_alpha"), bool(st.get("drift_confirmation_reached")),
+                bool(st.get("drift_protective_armed")), st.get("drift_protective_stop"),
+                _ca, _es)
+            if any(st.get(k) != v for k, v in dd.items()):
+                st.update(dd)
+                svc.save_trade_state(user_id, conn_id, st)
+            if (dd["drift_protective_armed"] and dd["drift_protective_stop"] is not None
+                    and _cs is not None and _cs >= dd["drift_protective_stop"]):
+                exit_price = adapter.get_ltp(current_symbol)
+                result = _route_order(adapter, user_id, conn_id, action="EXIT",
+                                      side=current_side, symbol=current_symbol,
+                                      qty=current_qty, price=exit_price, dry_run=dry_run)
+                if _order_applied(result.status, dry_run=dry_run):
+                    _record_exit_result(
+                        user_id, conn_id, st,
+                        exit_price=result.avg_fill_price or exit_price,
+                        qty=current_qty, reason="v711_drift_stop", dry_run=dry_run)
+                    svc.reset_trade_state(user_id, conn_id)
+                return
+
     alpha_key = (alpha_bar.get("timestamp"), alpha_bar.get("alpha"))
     if alpha_seen.get(conn_id) == alpha_key:
         return
@@ -1194,7 +1227,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
                        "qty": qty,
                        "virtual": 1 if dry_run else 0,
-                       "entry_rule": sig.get("rule"), "entry_spot": alpha_bar.get("spot")})
+                       "entry_rule": sig.get("rule"), "entry_spot": alpha_bar.get("spot"),
+                       "drift_min_alpha": None, "drift_confirmation_reached": False,
+                       "drift_protective_armed": False, "drift_protective_stop": None})
             svc.save_trade_state(user_id, conn_id, st)
             entry_price = result.avg_fill_price or price
             msg = (
