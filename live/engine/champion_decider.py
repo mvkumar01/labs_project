@@ -59,7 +59,9 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
         return None
 
     tier, direction = day["bucket"], day["direction"]
-    use_abs = (tier == "PC50" and direction == "UP") or day["biggap"]
+    # abs_denom ONLY for PC50 gap-UP (research dep_formula rule); C1 biggap keeps
+    # std — matches the +8049 champion validation. See paper_strategy_tracker.
+    use_abs = (tier == "PC50" and direction == "UP")
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs)

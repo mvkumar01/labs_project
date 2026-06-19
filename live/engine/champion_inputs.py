@@ -26,25 +26,37 @@ VIX_TRAIL_CUTOFF = 17.0   # vix_open < cutoff (or missing) -> TRAIL regime
 
 
 def ohlc_by_minute(trade_date: str) -> dict:
-    """{'HH:MM': (open,high,low,close)} from the shared-store 1-min spot column
-    (open=high=low=close=spot).
+    """{'HH:MM': (open,high,low,close)} mirroring the RESEARCH data path:
+    alphaIMB nifty_1min_ohlc.csv 1-min high/low where present, else shared-store
+    1-min spot (open=high=low=close=spot) for any minute the OHLC file lacks.
 
-    Deliberately spot-ONLY: the live bot has no intraday access to sub-minute
-    high/low (it polls latest_spot_1min — the shared-store 1-min spot), so the
-    trail / v7.11 / TP-SL intra-bar checks must run on the same 1-min spot
-    sequence. Using alphaIMB's EOD nifty_1min_ohlc.csv high/low here would (a)
-    be non-deterministic across machines (PA's copy lags the local one — the
-    2026-06-19 06-08 local-vs-PA mismatch) and (b) show PnL the live bot can
-    never achieve. Cost: backtest cells that fired on a 1-min high/low excursion
-    (e.g. 06-08 C1 trail) differ from the research backtest — a real
-    backtest-vs-live gap, documented, not a bug."""
+    /labs/live is a research-backtest replica (operator choice 2026-06-19), so it
+    uses the same 1-min high/low the research champion used for trail / v7.11 /
+    TP-SL intra-bar triggers. Past days resolve to high/low (matches research);
+    today resolves to spot (the OHLC file is EOD, so today isn't in it yet) —
+    which is also exactly what the live bot sees intraday.
+
+    DETERMINISM: a backfilled past day's result depends on nifty_1min_ohlc.csv
+    covering that date. PA's alphaIMB copy MUST be current through the backfill
+    range, else those days silently fall back to spot and diverge (the 2026-06-19
+    06-08 local-vs-PA mismatch). Keep alphaIMB/data/analytics/nifty_1min_ohlc.csv
+    in sync on PA before backfilling."""
     out: dict = {}
+    try:
+        oc = pd.read_csv(ALPHA_DATA_DIR / "analytics" / "nifty_1min_ohlc.csv")
+        oc["ts"] = pd.to_datetime(oc["timestamp"]).dt.tz_localize(None)
+        oc = oc[oc["ts"].dt.strftime("%Y-%m-%d") == trade_date]
+        for _, r in oc.iterrows():
+            out[r["ts"].strftime("%H:%M")] = (
+                float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
+    except Exception:
+        pass
     path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
     if path.exists():
         sdf = pd.read_csv(path, usecols=["timestamp", "spot"])
         for ts_s, sp in sdf.groupby("timestamp")["spot"].first().items():
             hm = str(ts_s)[11:16]
-            if hm:
+            if hm and hm not in out:
                 out[hm] = (float(sp), float(sp), float(sp), float(sp))
     return out
 

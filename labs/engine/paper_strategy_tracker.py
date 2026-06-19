@@ -177,7 +177,13 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
         return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
 
     tier, direction = day["bucket"], day["direction"]
-    use_abs = (tier == "PC50" and direction == "UP") or day["biggap"]
+    # Alpha formula = research dep_formula rule: abs_denom ONLY for PC50 gap-UP,
+    # std otherwise — INCLUDING the C1 PC400-DN biggap cell. The +8049 v2.11
+    # champion (champion_5min.py) validated C1 with std (regime op+-200); the
+    # `pc400_v210_biggap` tag changes the RANGE, not the formula. (The deployed
+    # production C1 uses gemini_c2+abs_denom, a separate cell not reproducible
+    # here — see labs-champion-engine notes / 2026-06-19 C1 investigation.)
+    use_abs = (tier == "PC50" and direction == "UP")
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs)
