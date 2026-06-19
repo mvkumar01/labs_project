@@ -175,16 +175,23 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_v78_denom_guard=True,
              enable_v79_d2=True,
              enable_rule3_dn_put=True,
-             enable_v711_drift_protective=True):
+             enable_v711_drift_protective=True,
+             close_eod=True, return_state=False):
     """Faithful port of v79_v281_isolation.sim() with the champion flag set.
 
     Returns (pnl_pts, trades) where each trade carries entry/exit timestamps,
     spots, alpha, rule tag and exit reason — enough for the paper tracker to
     price premiums and compute charges. pc250 gap-UP flip is dormant in the
     champion (flag False), so that branch is omitted here.
+
+    `close_eod` (default True): square off any open position at the last bar
+    (EOD semantics — backtest / EOD paper run). Set False for the live
+    "replay-to-now" decider so the in-flight position is returned, not closed.
+    `return_state` (default False): also return the open-position state dict
+    (or None) as a third tuple element — the live decider's reconcile target.
     """
     if adf is None or len(adf) < 2:
-        return 0.0, []
+        return (0.0, [], None) if return_state else (0.0, [])
     is_up = sgap > 0
     gap_dir = "UP" if is_up else "DN"
     crossover_th = 25 if tier == "PC50" else 30
@@ -556,8 +563,14 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                 if rule_tag != "D2":
                     d2_pending = False; d2_nbw = None; d2_prev_oi = None
 
-    # EOD close
-    if pos:
+    # EOD close (backtest/EOD) OR return the in-flight position (replay-to-now)
+    open_state = None
+    if pos and not close_eod:
+        open_state = dict(
+            side="CALL" if pos == "call" else "PUT",
+            entry_ts=entry_ts, entry_spot=esp, entry_alpha=entry_alpha,
+            entry_rule=entry_rule, tier=tier, gap_direction=gap_dir)
+    elif pos:
         lsp = ohlc.get_spot(adf.iloc[-1]["timestamp"]) or esp
         t = (lsp - esp) if pos == "call" else (esp - lsp)
         pnl += t
@@ -568,4 +581,6 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             entry_spot=esp, exit_spot=lsp,
             entry_rule=entry_rule, tier=tier,
         ))
+    if return_state:
+        return round(pnl, 2), trades, open_state
     return round(pnl, 2), trades

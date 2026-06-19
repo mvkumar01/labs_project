@@ -40,6 +40,7 @@ from live.brokers.angel import AngelAdapter
 from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
+from live.engine import champion_decider
 from live.engine.r2_book import (
     r2_alpha_bars, r2_signal, r2_vix_tp_exit, latest_spot_1min as r2_latest_spot,
 )
@@ -1128,9 +1129,17 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if alpha_bar is None:
         return
 
+    # decision_engine: "champion_replay" routes the single book through the
+    # replay-to-now champion engine (live.engine.champion_decider) — the SAME
+    # source of truth the paper tracker and research use (Rule 1/2/3 + v7.6/v7.7/
+    # v7.8/v7.9-D2/v7.11 + trail + wall). Default "signal_engine" = legacy path.
+    # In champion mode the trail + v7.11 exits live INSIDE the replay, so the
+    # standalone trail/drift blocks below are skipped to avoid double exits.
+    use_champion = svc.get_config(user_id, conn_id, "decision_engine") == "champion_replay"
+
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
     # Run it before alpha_seen de-duplication so repeated polls can arm/fire it.
-    if current_open:
+    if current_open and not use_champion:
         trail = evaluate_pc400_spot_trail(st, alpha_bar, get_spot_trail_snapshot(st))
         if trail is not None:
             prior_peak = _as_float(st.get("peak_pnl")) or 0.0
@@ -1166,7 +1175,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # diverged from the validated research sim (which exits the drifted PUT at
     # break-even instead of riding it to the alpha SL). Per-trade state lives in
     # the trade-state dict; compares the completed bar spot to the protective stop.
-    if current_open and (current_side or "").upper() == "PUT":
+    if current_open and (current_side or "").upper() == "PUT" and not use_champion:
         _tier = (alpha_bar.get("tier") or alpha_bar.get("bucket") or "").upper()
         _gap = (alpha_bar.get("gap_direction") or "").upper()
         _es = _as_float(st.get("entry_spot"))
@@ -1199,18 +1208,30 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         return
     alpha_seen[conn_id] = alpha_key
 
-    engine = _engine_for(conn_id, signal_engines)
-    sig = evaluate_signal(
-        engine,
-        alpha_bar,
-        "OPEN" if current_open else "NONE",
-        current_side,
-        entry_rule=st.get("entry_rule"),
-        entry_spot=st.get("entry_spot"),
-    )
-    log.info("signal conn=%s ts=%s tier=%s alpha=%s pos=%s sig=%s",
-             conn_id, alpha_bar.get("timestamp"), alpha_bar.get("tier"),
-             alpha_bar.get("alpha"), "OPEN" if current_open else "NONE", sig)
+    if use_champion:
+        # Replay all COMPLETED bars and reconcile to the bot's actual position.
+        # entry_spot for an ENTER comes from the replay (the champion entry bar
+        # spot), NOT the latest bar — keeps fills consistent with the engine.
+        target = champion_decider.champion_target(_today_ist_iso(), now_ist=_now_ist())
+        sig = champion_decider.reconcile(target, current_side if current_open else None)
+        champ_entry_spot = (target or {}).get("entry_spot")
+        log.info("champion conn=%s ts=%s pos=%s target=%s sig=%s",
+                 conn_id, alpha_bar.get("timestamp"),
+                 "OPEN" if current_open else "NONE", target, sig)
+    else:
+        engine = _engine_for(conn_id, signal_engines)
+        sig = evaluate_signal(
+            engine,
+            alpha_bar,
+            "OPEN" if current_open else "NONE",
+            current_side,
+            entry_rule=st.get("entry_rule"),
+            entry_spot=st.get("entry_spot"),
+        )
+        champ_entry_spot = None
+        log.info("signal conn=%s ts=%s tier=%s alpha=%s pos=%s sig=%s",
+                 conn_id, alpha_bar.get("timestamp"), alpha_bar.get("tier"),
+                 alpha_bar.get("alpha"), "OPEN" if current_open else "NONE", sig)
 
     if (sig["action"] == "ENTER" and not current_open and not blocked
             and check_daily_loss(user_id, conn_id)):
@@ -1227,7 +1248,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
                        "qty": qty,
                        "virtual": 1 if dry_run else 0,
-                       "entry_rule": sig.get("rule"), "entry_spot": alpha_bar.get("spot"),
+                       "entry_rule": sig.get("rule"),
+                       "entry_spot": champ_entry_spot if use_champion else alpha_bar.get("spot"),
                        "drift_min_alpha": None, "drift_confirmation_reached": False,
                        "drift_protective_armed": False, "drift_protective_stop": None})
             svc.save_trade_state(user_id, conn_id, st)
