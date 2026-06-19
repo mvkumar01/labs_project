@@ -17,12 +17,49 @@ import pandas as pd
 
 from config.labs_config import SHARED_LIVE_DIR
 from live.engine import champion_sim
+from live.engine.gemini_range import build_dynamic_range_series
 from live.engine.alpha_hybrid import (
     ALPHA_DATA_DIR, _load_baseline, _load_live_data, _prepare_snapshot_frame,
     _previous_trading_days)
 
 SYMBOL = "NIFTY"
 VIX_TRAIL_CUTOFF = 17.0   # vix_open < cutoff (or missing) -> TRAIL regime
+
+# v2.8 R13 PC400 carve-out thresholds (match v79_v281_isolation.select_alpha_source).
+PC400_VIX_BAND_LO = 16.0
+PC400_VIX_BAND_HI = 20.0
+PC400_SGAP_UP_THRESHOLD = 100.0
+PC400_SGAP_DOWN_THRESHOLD = -200.0
+
+
+def pc400_in_carve_out(vix, sgap) -> bool:
+    """v2.8 R13 carve-out: vix-band 16-20, OR sgap_up>100, OR sgap_down<-200.
+    In carve-out -> regime+std; else -> gemini_c2+abs_denom (Run F PC400 routing)."""
+    try:
+        v = float(vix)
+        if v == v and PC400_VIX_BAND_LO <= v < PC400_VIX_BAND_HI:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return sgap > PC400_SGAP_UP_THRESHOLD or sgap < PC400_SGAP_DOWN_THRESHOLD
+
+
+def alpha_source(tier, direction, vix, sgap, biggap) -> tuple[str, bool]:
+    """Run F alpha routing -> (range_source, use_abs).
+      PC50 gap-UP        -> regime, abs_denom
+      PC400 biggap (C1)  -> regime (op+-200 range supplied), std
+      PC400 non-carve    -> gemini_c2, abs_denom
+      else (PC50 DN, PC250 DN, PC400 carve) -> regime, std
+    """
+    if tier == "PC50" and direction == "UP":
+        return "regime", True
+    if tier == "PC400":
+        if biggap:                              # C1: regime op+-200 + std
+            return "regime", False
+        if not pc400_in_carve_out(vix, sgap):   # non-carve -> gemini_c2 + abs_denom
+            return "gemini_c2", True
+        return "regime", False                  # carve-out -> regime + std
+    return "regime", False                      # PC50 DN, PC250 DN -> regime + std
 
 
 def ohlc_by_minute(trade_date: str) -> dict:
@@ -83,10 +120,46 @@ def prev_close(trade_date: str) -> float | None:
     return None
 
 
-def build_sim_inputs(trade_date: str, lo: float, hi: float, use_abs: bool):
+def _gemini_adf(snap: pd.DataFrame, use_abs: bool) -> pd.DataFrame:
+    """Gemini-c2 (confirm2) dynamic-range alpha frame — faithful port of
+    v79_v281_isolation.build_alpha_gemini_c2. Range is detected per-bar from the
+    full OI snapshot; alpha re-computed inside it (std or abs_denom)."""
+    # Keep `bucket` as the original tz-aware IST Series — .values/.to_numpy()
+    # would strip the timezone and shift every bar by 5:30 (UTC), breaking the
+    # ohlc HH:MM lookups and pe_map keys downstream.
+    g = pd.DataFrame({
+        "bucket": snap["bucket"],
+        "strike": snap["strike"].astype(int),
+        "type": snap["type"].astype(str),
+        "delta_oi": snap["delta_oi"].astype(float),
+        "spot": snap["spot"].astype(float),
+    }).reset_index(drop=True)
+    series = build_dynamic_range_series(g, variant="confirm2")
+    if series.empty:
+        return pd.DataFrame(columns=["timestamp", "alpha", "d_pe_sum", "d_ce_sum", "denom", "spot"])
+    d_pe = series["d_pe"].astype(float)
+    d_ce = series["d_ce"].astype(float)
+    if use_abs:
+        denom = (d_pe.abs() + d_ce.abs())
+        alpha = ((d_pe - d_ce) * 100.0 / denom.replace(0, pd.NA)).fillna(0.0)
+    else:
+        denom = (d_pe + d_ce)
+        alpha = series["alpha"].astype(float)
+    return pd.DataFrame({
+        "timestamp": series["timestamp"], "alpha": alpha.round(2),
+        "d_pe_sum": d_pe, "d_ce_sum": d_ce, "denom": denom, "spot": series["spot"],
+    }).sort_values("timestamp").reset_index(drop=True)
+
+
+def build_sim_inputs(trade_date: str, lo: float, hi: float, use_abs: bool,
+                     range_source: str = "regime"):
     """(snapshot_df, adf, ce_map, pe_map) for champion_sim from the alpha_hybrid
-    pipeline the bot uses. adf mirrors research build_alpha_regime; ce_map/pe_map
-    carry per-strike OI for the v7.7 filter and v7.9 D2 wall checks."""
+    pipeline the bot uses. ce_map/pe_map carry per-strike OI for the v7.7 filter
+    and v7.9 D2 wall checks (keyed off the locked [lo,hi] range passed to sim()).
+
+    range_source="regime" -> adf is build_alpha_regime over [lo,hi] (std/abs per
+    use_abs). range_source="gemini_c2" -> adf is the Gemini-c2 dynamic-range alpha
+    (Run F PC400 non-carve-out cell); falls back to regime if gemini is empty."""
     snap = _prepare_snapshot_frame(_load_live_data(trade_date), _load_baseline(trade_date))
     ce_map: dict = {}
     pe_map: dict = {}
@@ -94,16 +167,23 @@ def build_sim_inputs(trade_date: str, lo: float, hi: float, use_abs: bool):
         ce_map[ts] = dict(zip(g["strike"].astype(int), g["oi"].astype(float)))
     for ts, g in snap[snap["type"] == "pe"].groupby("bucket"):
         pe_map[ts] = dict(zip(g["strike"].astype(int), g["oi"].astype(float)))
-    sub = snap[(snap["strike"] >= lo) & (snap["strike"] <= hi)]
-    rows = []
-    for ts, g in sub.groupby("bucket"):
-        d_pe = float(g.loc[g["type"] == "pe", "delta_oi"].sum())
-        d_ce = float(g.loc[g["type"] == "ce", "delta_oi"].sum())
-        denom = (abs(d_pe) + abs(d_ce)) if use_abs else (d_pe + d_ce)
-        alpha = ((d_pe - d_ce) * 100.0 / denom) if denom else 0.0
-        rows.append(dict(timestamp=ts, alpha=round(alpha, 2), d_pe_sum=d_pe,
-                         d_ce_sum=d_ce, denom=denom, spot=float(g["spot"].iloc[-1])))
-    adf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+
+    adf = None
+    if range_source == "gemini_c2":
+        adf = _gemini_adf(snap, use_abs)
+        if adf is None or len(adf) < 2:
+            adf = None  # defensive fallback to regime (matches research select_adf)
+    if adf is None:
+        sub = snap[(snap["strike"] >= lo) & (snap["strike"] <= hi)]
+        rows = []
+        for ts, g in sub.groupby("bucket"):
+            d_pe = float(g.loc[g["type"] == "pe", "delta_oi"].sum())
+            d_ce = float(g.loc[g["type"] == "ce", "delta_oi"].sum())
+            denom = (abs(d_pe) + abs(d_ce)) if use_abs else (d_pe + d_ce)
+            alpha = ((d_pe - d_ce) * 100.0 / denom) if denom else 0.0
+            rows.append(dict(timestamp=ts, alpha=round(alpha, 2), d_pe_sum=d_pe,
+                             d_ce_sum=d_ce, denom=denom, spot=float(g["spot"].iloc[-1])))
+        adf = pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
     return snap, adf, ce_map, pe_map
 
 

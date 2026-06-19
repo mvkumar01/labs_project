@@ -59,12 +59,16 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
         return None
 
     tier, direction = day["bucket"], day["direction"]
-    # abs_denom ONLY for PC50 gap-UP (research dep_formula rule); C1 biggap keeps
-    # std — matches the +8049 champion validation. See paper_strategy_tracker.
-    use_abs = (tier == "PC50" and direction == "UP")
+    # Resolve cell context first (sgap needs 09:15 open + prev close) so the
+    # alpha source (regime vs gemini_c2) + formula follow the Run F routing.
+    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
+    sgap, weekday, use_trail, regime = champion_inputs.day_context(
+        trade_date, ohlc, direction, day["vix"])
+    range_source, use_abs = champion_inputs.alpha_source(
+        tier, direction, day["vix"], sgap, day["biggap"])
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
-            trade_date, day["lower"], day["upper"], use_abs)
+            trade_date, day["lower"], day["upper"], use_abs, range_source=range_source)
     except Exception:
         return None
     if adf is None or adf.empty:
@@ -78,10 +82,6 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     if len(adf) < 2:
         return {"position": "FLAT", "bucket": tier, "direction": direction,
                 "last_closed_reason": None, "n_closed": 0}
-
-    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
-    sgap, weekday, use_trail, regime = champion_inputs.day_context(
-        trade_date, ohlc, direction, day["vix"])
 
     _, trades, open_state = champion_sim.simulate(
         adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
