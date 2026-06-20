@@ -36,6 +36,10 @@ IST = pytz.timezone("Asia/Kolkata")
 _HEADER = ["timestamp", "open", "high", "low", "close", "volume"]
 
 
+class MarketSessionClosed(RuntimeError):
+    """Raised when Kite is serving a stale quote instead of a live session."""
+
+
 def _spot_csv_path(underlying: str, trade_date: str) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     return DATA_DIR / f"{trade_date}_{underlying}_spot_1min.csv"
@@ -49,6 +53,8 @@ def _ensure_header(path: Path) -> None:
 
 def _to_ist_naive(dt: datetime) -> datetime:
     """Return an IST-local naive datetime regardless of input tz."""
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
     if dt.tzinfo is None:
         return dt
     return dt.astimezone(IST).replace(tzinfo=None)
@@ -88,7 +94,13 @@ def collect_spot(kite, underlying: str, trade_date: str, ts: datetime) -> float:
         # No completed bar yet (typically the 09:15 cycle, or a brief Kite-historical lag).
         # Fall back to LTP so options_collector still gets a usable spot.
         index_symbol = cfg["index_symbol"]
-        ltp = float(kite.quote([index_symbol])[index_symbol]["last_price"])
+        quote = kite.quote([index_symbol])[index_symbol]
+        quote_ts = quote.get("timestamp") or quote.get("last_trade_time")
+        if quote_ts is None or _to_ist_naive(quote_ts).date() != _to_ist_naive(ts).date():
+            raise MarketSessionClosed(
+                f"{underlying} quote is stale or undated for {trade_date}"
+            )
+        ltp = float(quote["last_price"])
         return ltp
 
     bar_ts_str = _to_ist_naive(bar["date"]).strftime("%Y-%m-%d %H:%M:%S")

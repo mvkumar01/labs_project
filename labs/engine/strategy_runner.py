@@ -56,7 +56,8 @@ LEG_SIDES = {"C1": "CE", "C2": "CE", "P1": "PE", "P2": "PE"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _market_open(now): return MARKET_OPEN <= now.strftime("%H:%M") <= MARKET_CLOSE
+def _market_open(now):
+    return now.weekday() < 5 and MARKET_OPEN <= now.strftime("%H:%M") <= MARKET_CLOSE
 def _past_eod(now):    return now.strftime("%H:%M") >= EOD_CUTOFF
 def _at_5min_close(now): return (now.minute % 5 == 0) and (now.second < 5)
 

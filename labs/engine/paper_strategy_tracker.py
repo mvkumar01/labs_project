@@ -42,8 +42,9 @@ import pandas as pd
 from storage.db import get_conn
 from labs.engine.charges import round_trip_charges
 from live.engine import champion_inputs, champion_sim
-from live.engine.alpha_hybrid import _pick_nearest_expiry, _read_locked_hybrid_state
+from live.engine.alpha_hybrid import _read_locked_hybrid_state
 from config.labs_config import SHARED_LIVE_DIR, UNDERLYINGS
+from market_data.expiry import select_expiry_code
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SYMBOL = "NIFTY"
@@ -138,7 +139,9 @@ def _premium_lookup(trade_date: str) -> dict:
 
     if "expiry" in df.columns:
         df["expiry"] = df["expiry"].astype(str)
-        nearest = _pick_nearest_expiry(df["expiry"].dropna().unique(), trade_date)
+        nearest = select_expiry_code(
+            df["expiry"].dropna().unique(), trade_date, "nearest_weekly"
+        )
         if nearest is None:
             return {}
         df = df[df["expiry"] == str(nearest)].copy()

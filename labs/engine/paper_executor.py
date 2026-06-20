@@ -14,6 +14,7 @@ import pytz
 from storage.db import get_conn
 from collector.instruments import build_option_symbols
 from config.labs_config import UNDERLYINGS
+from market_data.expiry import expiry_code_from_symbol, select_symbol_for_expiry
 
 IST = pytz.timezone("Asia/Kolkata")
 log = logging.getLogger(__name__)
@@ -61,12 +62,15 @@ def _resolve_contract(kite, bot: dict, params: dict, signal_side: str, spot: flo
     if not matched:
         return None
 
-    # Pick shortest symbol (nearest expiry)
-    symbol = sorted(matched, key=len)[0]
-
-    # Extract expiry from symbol
-    suffix   = symbol[len(bot["underlying"]):]
-    expiry_s = suffix[:5]  # YYMON
+    symbol = select_symbol_for_expiry(
+        matched,
+        bot["underlying"],
+        datetime.now(IST).date(),
+        params.get("expiry_mode", "nearest_weekly"),
+    )
+    if symbol is None:
+        return None
+    expiry_s = expiry_code_from_symbol(symbol, bot["underlying"]) or ""
 
     return {"symbol": symbol, "strike": strike, "expiry": expiry_s, "lot_size": lot_size}
 

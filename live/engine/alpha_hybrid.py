@@ -6,9 +6,7 @@ paper engine or call broker APIs.
 """
 from __future__ import annotations
 
-import calendar
 import json
-import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +14,7 @@ from typing import Any
 import pandas as pd
 
 from config.labs_config import MARKET_CLOSE, MARKET_OPEN, SHARED_LIVE_DIR
+from market_data.expiry import expiry_sort_date, select_expiry_code
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SYMBOL = "NIFTY"
@@ -37,48 +36,12 @@ ALPHA_CONFIG_DIR = ALPHA_BASE_DIR / "config"
 HYBRID_STATE_FILE = ALPHA_CONFIG_DIR / "hybrid_range_state.json"
 PREV_DAY_DIR = ALPHA_DATA_DIR / "prev_day"
 
-_MMM_MAP = {
-    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
-}
-
-
-def _last_tuesday_of_month(year: int, month: int) -> date:
-    for d in range(calendar.monthrange(year, month)[1], 0, -1):
-        if date(year, month, d).weekday() == 1:
-            return date(year, month, d)
-    raise ValueError(f"no Tuesday in {year}-{month}")
-
-
 def _expiry_code_to_date(code: Any) -> date | None:
-    s = str(code).strip().upper()
-    m = re.match(r"^(\d{2})(\d)(\d{2})$", s)
-    if m:
-        yy, mo, dd = m.groups()
-        try:
-            return date(2000 + int(yy), int(mo), int(dd))
-        except ValueError:
-            return None
-    m = re.match(r"^(\d{2})([A-Z]{3})$", s)
-    if m:
-        yy, mmm = m.groups()
-        if mmm not in _MMM_MAP:
-            return None
-        return _last_tuesday_of_month(2000 + int(yy), _MMM_MAP[mmm])
-    return None
+    return expiry_sort_date(code)
 
 
 def _pick_nearest_expiry(expiries, trade_date: str) -> str | None:
-    today = pd.Timestamp(trade_date).date()
-    decoded = []
-    for raw in expiries:
-        expiry_date = _expiry_code_to_date(raw)
-        if expiry_date is not None and expiry_date >= today:
-            decoded.append((expiry_date, str(raw)))
-    if not decoded:
-        return None
-    decoded.sort()
-    return decoded[0][1]
+    return select_expiry_code(expiries, trade_date, "nearest_weekly")
 
 
 def _market_schedule(trade_date: str) -> pd.DatetimeIndex:

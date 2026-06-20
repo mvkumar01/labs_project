@@ -45,6 +45,7 @@ from live.engine.r2_book import (
     r2_alpha_bars, r2_signal, r2_vix_tp_exit, latest_spot_1min as r2_latest_spot,
 )
 from live.engine.order_manager import SourcePos, reconcile as om_reconcile, plan_orders
+from market_data.expiry import select_symbol_for_expiry
 log = logging.getLogger("live.runner")
 
 POLL_INTERVAL = 2          # seconds
@@ -189,7 +190,17 @@ def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str
     candidates = exact or (nearest[1] if nearest else set())
     if not candidates:
         raise RuntimeError(f"no tradingsymbol found for {UNDERLYING} {strike}{opt_type}")
-    return min(candidates, key=lambda s: (len(s), s))
+    symbol = select_symbol_for_expiry(
+        candidates,
+        UNDERLYING,
+        trade_date,
+        "nearest_weekly",
+    )
+    if symbol is None:
+        raise RuntimeError(
+            f"no unexpired nearest contract found for {UNDERLYING} {strike}{opt_type}"
+        )
+    return symbol
 
 
 def _order_applied(status: str, *, dry_run: bool) -> bool:

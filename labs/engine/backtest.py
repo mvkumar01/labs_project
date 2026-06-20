@@ -6,6 +6,7 @@ trades, signals, or daily_summary.
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import math
@@ -14,6 +15,7 @@ import tarfile
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ from labs.engine.position_manager import check_exit
 from labs.engine.resampler import get_resampled_data, to_5min
 from labs.services.bot_service import get_bot, get_legs, list_bots
 from labs.strategies.registry import get_strategy
+from market_data.expiry import expiry_code_from_symbol, select_expiry_code
 
 log = logging.getLogger(__name__)
 
@@ -109,20 +112,42 @@ def scan_data_ranges() -> dict[str, Any]:
     result: dict[str, Any] = {"underlyings": {}, "sources": _source_roots()}
 
     for underlying in UNDERLYINGS:
-        spot_days = {s.trade_date for s in sources if s.underlying == underlying and s.data_type == "spot"}
-        option_days = {s.trade_date for s in sources if s.underlying == underlying and s.data_type == "options"}
-        all_days = sorted(spot_days | option_days)
-        # Spot is also derivable from the `spot` column inside options files.
-        effective_spot_days = spot_days | option_days
+        spot_days = {
+            s.trade_date for s in sources
+            if s.underlying == underlying and s.data_type == "spot"
+            and date.fromisoformat(s.trade_date).weekday() < 5
+        }
+        discovered_option_days = sorted({
+            s.trade_date for s in sources
+            if s.underlying == underlying and s.data_type == "options"
+        })
+        valid_option_days: set[str] = set()
+        rejected_sessions: list[dict[str, Any]] = []
+        for trade_date in discovered_option_days:
+            source = _best_source(sources, underlying, trade_date, "options")
+            if source is None:
+                continue
+            quality = _option_source_quality(source)
+            if quality["valid"]:
+                valid_option_days.add(trade_date)
+            else:
+                rejected_sessions.append({"date": trade_date, "reason": quality["reason"]})
+
+        valid_days = sorted(valid_option_days)
+        # Spot is also derivable from each valid options session.
+        effective_spot_days = spot_days | valid_option_days
         result["underlyings"][underlying] = {
-            "first_date": all_days[0] if all_days else None,
-            "last_date": all_days[-1] if all_days else None,
-            "trading_days": len(all_days),
+            "first_date": valid_days[0] if valid_days else None,
+            "last_date": valid_days[-1] if valid_days else None,
+            "trading_days": len(valid_days),
             "spot_exists": bool(effective_spot_days),
-            "options_exists": bool(option_days),
+            "options_exists": bool(valid_option_days),
             "sma50_warmup_possible": bool(effective_spot_days),
             "spot_days": len(effective_spot_days),
-            "option_days": len(option_days),
+            "option_days": len(valid_option_days),
+            "discovered_option_days": len(discovered_option_days),
+            "rejected_days": len(rejected_sessions),
+            "rejected_sessions": rejected_sessions,
         }
 
     return result
@@ -172,6 +197,18 @@ def run_backtest(
             continue
 
         options_df = _normalize_options(_load_source(options_source, parse_dates=["timestamp"]), underlying)
+        quality = _option_session_quality(options_df, trade_date)
+        if not quality["valid"]:
+            skipped_days.append({
+                "date": trade_date,
+                "reason": "Invalid options session",
+                "detail": quality["reason"],
+            })
+            log.warning(
+                "[backtest] skip %s %s: invalid options session: %s",
+                underlying, trade_date, quality["reason"],
+            )
+            continue
 
         if spot_source is not None:
             day_spot = _normalize_spot(_load_source(spot_source, parse_dates=["timestamp"]))
@@ -426,7 +463,9 @@ def _open_backtest_position(
     spot: float,
     options_until_now: pd.DataFrame,
 ) -> dict | None:
-    contract = _resolve_contract_from_options(bot, params, side, spot, options_until_now)
+    contract = _resolve_contract_from_options(
+        bot, params, side, spot, options_until_now, trade_date
+    )
     if contract is None:
         return None
     ltp = _latest_ltp_from_frame(options_until_now, contract["symbol"])
@@ -487,7 +526,14 @@ def _close_backtest_position(position: dict, exit_ltp: float, exit_spot: float, 
     }
 
 
-def _resolve_contract_from_options(bot: dict, params: dict, side: str, spot: float, options_df: pd.DataFrame) -> dict | None:
+def _resolve_contract_from_options(
+    bot: dict,
+    params: dict,
+    side: str,
+    spot: float,
+    options_df: pd.DataFrame,
+    trade_date: str,
+) -> dict | None:
     if options_df.empty:
         return None
     step = UNDERLYINGS[bot["underlying"]]["strike_step"]
@@ -507,13 +553,29 @@ def _resolve_contract_from_options(bot: dict, params: dict, side: str, spot: flo
         rows = rows[rows["tradingsymbol"].astype(str).str.contains(str(strike), regex=False)]
     if rows.empty:
         return None
-    symbols = sorted(set(rows["tradingsymbol"].astype(str)), key=lambda s: (len(s), s))
-    symbol = symbols[0]
+    rows = rows.copy()
+    if "expiry" in rows.columns:
+        rows["_expiry_code"] = rows["expiry"].astype(str).str.strip().str.upper()
+    else:
+        rows["_expiry_code"] = rows["tradingsymbol"].map(
+            lambda symbol: expiry_code_from_symbol(symbol, bot["underlying"])
+        )
+    expiry = select_expiry_code(
+        rows["_expiry_code"].dropna().unique(),
+        trade_date,
+        params.get("expiry_mode", "nearest_weekly"),
+    )
+    if expiry is None:
+        return None
+    rows = rows[rows["_expiry_code"] == expiry]
+    if rows.empty:
+        return None
+    symbol = sorted(set(rows["tradingsymbol"].astype(str)))[0]
     matched = rows[rows["tradingsymbol"].astype(str) == symbol].iloc[-1]
     return {
         "symbol": symbol,
         "strike": strike,
-        "expiry": str(matched.get("expiry", "")),
+        "expiry": expiry,
     }
 
 
@@ -657,6 +719,129 @@ def _normalize_options(df: pd.DataFrame, underlying: str) -> pd.DataFrame:
         df["strike"] = df["tradingsymbol"].astype(str).str.extract(r"(\d+)(?:CE|PE)$")[0]
     df["underlying"] = df.get("underlying", underlying)
     return df.sort_values("timestamp").reset_index(drop=True)
+
+
+def _option_session_quality(
+    options_df: pd.DataFrame,
+    trade_date: str,
+    *,
+    require_snapshot_count: bool = True,
+) -> dict[str, Any]:
+    """Validate that a discovered options file is a usable full market session."""
+    failures: list[str] = []
+    session_date = date.fromisoformat(trade_date)
+    if session_date.weekday() >= 5:
+        failures.append("weekend capture")
+    if options_df.empty:
+        return {"valid": False, "reason": "empty options file", "snapshots": 0, "expiries": 0}
+
+    required = {"timestamp", "tradingsymbol", "ltp", "spot"}
+    missing = sorted(required.difference(options_df.columns))
+    if missing:
+        return {
+            "valid": False,
+            "reason": f"missing columns: {', '.join(missing)}",
+            "snapshots": 0,
+            "expiries": 0,
+        }
+
+    frame = options_df.copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce")
+    frame = frame.dropna(subset=["timestamp"])
+    frame = frame[frame["timestamp"].dt.date == session_date]
+    if frame.empty:
+        return {"valid": False, "reason": "no rows timestamped on session date", "snapshots": 0, "expiries": 0}
+
+    snapshots = pd.DatetimeIndex(frame["timestamp"].drop_duplicates()).sort_values()
+    snapshot_count = len(snapshots)
+    first_mark = snapshots[0].strftime("%H:%M")
+    last_mark = snapshots[-1].strftime("%H:%M")
+    if first_mark > "09:20":
+        failures.append(f"late start {first_mark}")
+    if last_mark < "15:25":
+        failures.append(f"early end {last_mark}")
+    if require_snapshot_count and snapshot_count < 350:
+        failures.append(f"only {snapshot_count} one-minute snapshots")
+
+    spot = pd.to_numeric(frame["spot"], errors="coerce").dropna()
+    if spot.nunique() <= 1:
+        failures.append("frozen spot series")
+
+    if "expiry" in frame.columns:
+        expiry_codes = {
+            str(value).strip().upper()
+            for value in frame["expiry"].dropna()
+            if str(value).strip()
+        }
+    else:
+        expiry_codes = {
+            code for code in (
+                expiry_code_from_symbol(symbol, str(frame.iloc[0].get("underlying", "")))
+                for symbol in frame["tradingsymbol"].dropna()
+            ) if code
+        }
+    if len(expiry_codes) < 2:
+        failures.append(f"only {len(expiry_codes)} expiry captured")
+
+    return {
+        "valid": not failures,
+        "reason": "; ".join(failures) if failures else "ok",
+        "snapshots": snapshot_count,
+        "first_mark": first_mark,
+        "last_mark": last_mark,
+        "expiries": len(expiry_codes),
+    }
+
+
+def _option_source_quality(source: DataSource) -> dict[str, Any]:
+    try:
+        stat = source.path.stat()
+        return _cached_option_source_quality(source, stat.st_size, stat.st_mtime_ns)
+    except OSError as exc:
+        return {"valid": False, "reason": f"unreadable source: {exc}", "snapshots": 0, "expiries": 0}
+
+
+@lru_cache(maxsize=512)
+def _cached_option_source_quality(
+    source: DataSource,
+    _size: int,
+    _mtime_ns: int,
+) -> dict[str, Any]:
+    try:
+        if source.member is None and source.path.suffix.lower() == ".csv":
+            frame = _normalize_options(
+                _load_csv_quality_sample(source.path),
+                source.underlying,
+            )
+            return _option_session_quality(
+                frame,
+                source.trade_date,
+                require_snapshot_count=False,
+            )
+        frame = _normalize_options(_load_source(source), source.underlying)
+    except Exception as exc:
+        return {"valid": False, "reason": f"unable to read: {exc}", "snapshots": 0, "expiries": 0}
+    return _option_session_quality(frame, source.trade_date)
+
+
+def _load_csv_quality_sample(path: Path) -> pd.DataFrame:
+    """Read only the beginning/end of a large CSV for fast availability scans."""
+    wanted = {"timestamp", "tradingsymbol", "symbol", "ltp", "spot", "expiry", "underlying"}
+    head = pd.read_csv(path, nrows=5_000, usecols=lambda column: column in wanted)
+    size = path.stat().st_size
+    tail_bytes = min(size, 512 * 1024)
+    if size <= tail_bytes:
+        return head
+    with path.open("rb") as handle:
+        handle.seek(-tail_bytes, 2)
+        raw = handle.read()
+    raw = raw.split(b"\n", 1)[-1]
+    header = ",".join(pd.read_csv(path, nrows=0).columns)
+    tail = pd.read_csv(
+        io.StringIO(header + "\n" + raw.decode("utf-8", errors="ignore")),
+        usecols=lambda column: column in wanted,
+    )
+    return pd.concat([head, tail], ignore_index=True)
 
 
 def _latest_ltp_from_frame(options_df: pd.DataFrame, symbol: str) -> float | None:

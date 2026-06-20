@@ -21,7 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 import auth.session_manager as session_manager
-from collector.spot_collector import collect_spot
+from collector.spot_collector import MarketSessionClosed, collect_spot
 from collector.options_collector import collect_options
 from config.labs_config import (
     UNDERLYINGS, MARKET_OPEN, MARKET_CLOSE,
@@ -60,7 +60,7 @@ def _is_auth_error(exc: Exception) -> bool:
 
 def _market_open(now: datetime) -> bool:
     t = now.replace(tzinfo=None).time()
-    return MARKET_OPEN_TIME <= t <= MARKET_CLOSE_TIME
+    return now.weekday() < 5 and MARKET_OPEN_TIME <= t <= MARKET_CLOSE_TIME
 
 
 def _next_minute_boundary(now: datetime) -> datetime:
@@ -118,6 +118,7 @@ def run() -> None:
         ts = now.replace(second=0, microsecond=0)
         auth_fails_this_cycle = 0
         successes_this_cycle  = 0
+        session_closed = False
 
         for underlying in UNDERLYINGS:
             try:
@@ -126,6 +127,12 @@ def run() -> None:
                 log.info("%s ok — spot=%.2f options=%d rows", underlying, spot, n)
                 successes_this_cycle += 1
 
+            except MarketSessionClosed as exc:
+                # A weekday holiday has no fresh historical candle/quote. Stop
+                # the cycle before stale option snapshots can be persisted.
+                log.warning("Market session unavailable: %s", exc)
+                session_closed = True
+                break
             except Exception as exc:
                 if _is_auth_error(exc):
                     log.error(
@@ -137,7 +144,10 @@ def run() -> None:
                     log.error("%s collection error: %s", underlying, exc)
 
         # ── auth failure accounting ───────────────────────────────────────────
-        all_auth_failed = (auth_fails_this_cycle == len(UNDERLYINGS))
+        all_auth_failed = (
+            not session_closed
+            and auth_fails_this_cycle == len(UNDERLYINGS)
+        )
 
         if all_auth_failed:
             consecutive_auth_fails += 1

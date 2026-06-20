@@ -1,13 +1,12 @@
 """
 Builds the list of option instrument tokens to fetch for a given underlying + spot price.
 Strike band: spot ± STRIKE_BAND_PCT, rounded to nearest strike_step.
-Covers the nearest two expiries (CE + PE).
+Covers the nearest two expiries plus the nearest monthly expiry (CE + PE).
 """
 import math
 from datetime import date
-from typing import Optional
-
 from config.labs_config import UNDERLYINGS, STRIKE_BAND_PCT
+from market_data.expiry import expiry_code_from_symbol, is_monthly_expiry
 
 
 def _round_strike(price: float, step: int) -> int:
@@ -47,6 +46,21 @@ def build_option_symbols(
         and i["expiry"] and i["expiry"] >= today
     })
     target_expiries = set(expiries[:max_expiries])
+
+    # Capture enough depth for every supported bot mode. The nearest two dates
+    # support nearest/next; monthly may be a third date early in the month.
+    monthly_expiries = sorted({
+        i["expiry"]
+        for i in instruments
+        if i["name"] == underlying
+        and i["instrument_type"] in ("CE", "PE")
+        and i["expiry"] and i["expiry"] >= today
+        and is_monthly_expiry(
+            expiry_code_from_symbol(i["tradingsymbol"], underlying) or ""
+        )
+    })
+    if monthly_expiries:
+        target_expiries.add(monthly_expiries[0])
 
     symbols = [
         i["tradingsymbol"]

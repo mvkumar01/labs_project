@@ -446,18 +446,18 @@ function initBacktestPage() {
 async function loadBacktestRanges() {
   const tbody = document.getElementById("backtestRangesBody");
   if (!tbody) return;
-  tbody.innerHTML = '<tr><td colspan="7">Loading...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8">Loading...</td></tr>';
   try {
     const res = await fetch("/labs/api/backtest/data-ranges");
     backtestRanges = await res.json();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:#f87171">Failed to scan data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:#f87171">Failed to scan data.</td></tr>';
     return;
   }
 
   const rows = Object.entries(backtestRanges.underlyings || {});
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b">No market data found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b">No market data found.</td></tr>';
     return;
   }
 
@@ -467,6 +467,7 @@ async function loadBacktestRanges() {
       <td>${r.first_date || "None"}</td>
       <td>${r.last_date || "None"}</td>
       <td>${r.trading_days || 0}</td>
+      <td title="${(r.rejected_sessions || []).map(x => `${x.date}: ${x.reason}`).join("\n")}">${r.rejected_days || 0}</td>
       <td>${_yesNo(r.spot_exists)} <span class="muted">(${r.spot_days || 0})</span></td>
       <td>${_yesNo(r.options_exists)} <span class="muted">(${r.option_days || 0})</span></td>
       <td>${_yesNo(r.sma50_warmup_possible)}</td>
