@@ -68,6 +68,38 @@ class DataSource:
         return str(self.path)
 
 
+class OptionSnapshotCursor:
+    """Maintain the latest known row per option contract as time advances.
+
+    Backtest consumers only need each contract's most recent row at ``now``.
+    Re-filtering the complete intraday options history for every spot minute
+    made a multi-day request quadratic in the number of snapshots.
+    """
+
+    def __init__(self, options_df: pd.DataFrame):
+        self._options = options_df
+        self._timestamps = pd.DatetimeIndex(options_df["timestamp"])
+        self._cursor = 0
+        self._latest = options_df.iloc[0:0].copy()
+
+    def at(self, now: datetime) -> pd.DataFrame:
+        end = int(self._timestamps.searchsorted(now, side="right"))
+        if end <= self._cursor:
+            return self._latest
+
+        new_rows = self._options.iloc[self._cursor:end]
+        if self._latest.empty:
+            combined = new_rows.copy()
+        else:
+            combined = pd.concat([self._latest, new_rows], ignore_index=True)
+        self._latest = (
+            combined.drop_duplicates(subset="tradingsymbol", keep="last")
+            .reset_index(drop=True)
+        )
+        self._cursor = end
+        return self._latest
+
+
 def get_backtest_bots() -> list[dict]:
     return [{"bot_id": b["bot_id"], "name": b["name"], "underlying": b["underlying"]} for b in list_bots()]
 
@@ -208,6 +240,7 @@ def _run_day(
     open_positions: dict[str, dict] = {}
     warmup_failed = False
     ever_ready = False
+    option_snapshots = OptionSnapshotCursor(options_df)
 
     for now in day_spot.index:
         t = now.strftime("%H:%M")
@@ -218,7 +251,7 @@ def _run_day(
         if spot_until_now.empty:
             continue
         current_spot = float(spot_until_now.iloc[-1]["close"])
-        options_until_now = options_df[options_df["timestamp"] <= now]
+        options_until_now = option_snapshots.at(now)
         tf_cache = TFCache(spot_until_now, now)
 
         if needs_warmup:
