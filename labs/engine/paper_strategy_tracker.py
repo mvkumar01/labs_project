@@ -23,7 +23,8 @@ degrade to regime+std here — by design (see alpha_hybrid docstring). The track
 faithfully reflects the live bot, which is the point.
 
 Modeling notes (v1, documented for honesty):
-- Option = nearest-expiry ATM strike (nearest 50 to entry spot) for the side;
+- Option = nearest-expiry 200-point ITM strike (ATM is the nearest 50 to entry
+  spot): CALL uses ATM-200 CE and PUT uses ATM+200 PE;
   premium = the shared-store LTP at the exact entry/exit Alpha mark. The same
   strike and expiry are held through exit. The live bot's exact strike pick may
   differ slightly; PnL direction/magnitude is option-premium based (long option:
@@ -51,7 +52,8 @@ SYMBOL = "NIFTY"
 LOT_SIZE = int(UNDERLYINGS.get("NIFTY", {}).get("lot_size", 65))
 PAPER_LOTS = 1                       # tracker trades 1 lot (unit strategy view)
 QTY = LOT_SIZE * PAPER_LOTS
-STRATEGY_VERSION = "alpha_v2.11"
+ITM_DISTANCE = 200
+STRATEGY_VERSION = "alpha_v2.11_itm200"
 
 
 # ── schema (lazy; never touches existing labs.db tables) ─────────────────────
@@ -243,12 +245,13 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
 
 def _price_trade(lookup: dict, t: dict) -> dict:
     """Translate a champion_sim trade into a priced paper trade: option premium
-    off the nearest-expiry shared-store ATM LTP at each exact Alpha mark
+    off the nearest-expiry shared-store ITM-200 LTP at each exact Alpha mark
     plus round-trip charges. Missing quotes are rejected rather than replaced
     with a synthetic premium. pnl_pts is the strategy's validated spot-move
     metric (t['pnl'])."""
     side = "CALL" if t["pos"] == "call" else "PUT"
-    strike = _r50(t["entry_spot"])
+    atm = _r50(t["entry_spot"])
+    strike = atm - ITM_DISTANCE if side == "CALL" else atm + ITM_DISTANCE
     otype = "ce" if side == "CALL" else "pe"
     ets = pd.Timestamp(t["entry_ts"]).isoformat()
     xts = pd.Timestamp(t["exit_ts"]).isoformat()

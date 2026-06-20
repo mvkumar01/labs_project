@@ -66,3 +66,35 @@ def test_price_trade_rejects_missing_exact_ltp() -> None:
 
     with pytest.raises(ValueError, match="Missing exact nearest-expiry LTP"):
         tracker._price_trade({}, trade)
+
+
+@pytest.mark.parametrize(
+    ("pos", "expected_strike", "option_type"),
+    [
+        ("call", 23350, "ce"),
+        ("put", 23750, "pe"),
+    ],
+)
+def test_price_trade_uses_200_point_itm_contract(
+    pos: str, expected_strike: int, option_type: str
+) -> None:
+    entry_ts = "2026-06-01T09:20:00+05:30"
+    exit_ts = "2026-06-01T09:25:00+05:30"
+    lookup = {
+        (entry_ts, expected_strike, option_type): 300.0,
+        (exit_ts, expected_strike, option_type): 320.0,
+    }
+    trade = {
+        "pos": pos,
+        "entry_spot": 23560.0,
+        "exit_spot": 23580.0,
+        "entry_ts": entry_ts,
+        "exit_ts": exit_ts,
+        "pnl": 20.0,
+        "entry_rule": "test",
+        "reason": "test",
+    }
+
+    priced = tracker._price_trade(lookup, trade)
+
+    assert priced["strike"] == expected_strike
