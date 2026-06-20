@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config.labs_config import EOD_CUTOFF, SHARED_LIVE_DIR, STATE_DIR, UNDERLYINGS
+from config.labs_config import EOD_CUTOFF, MARKET_OPEN, SHARED_LIVE_DIR, STATE_DIR, UNDERLYINGS
 from storage.live_db import init_live_db
 from live import live_service as svc
 from live import live_executor as ex
@@ -52,6 +52,7 @@ POLL_INTERVAL = 2          # seconds
 LOT_SIZE = 65              # NIFTY lot size
 ITM_DISTANCE = 200         # ITM option distance
 EOD_EXIT_TIME = dtime(*[int(x) for x in EOD_CUTOFF.split(":")])  # 15:25 IST
+MARKET_OPEN_TIME = dtime(*[int(x) for x in MARKET_OPEN.split(":")])
 _OWNER_STALE_S = 30        # a runner_owner heartbeat older than this is stale
 PC400_TRAIL_ARM_PNL = 40.0
 PC400_TRAIL_DRAWDOWN = 20.0
@@ -124,6 +125,15 @@ def eod_watchdog(now_t: dtime) -> bool:
     """Independent EOD square-off trigger — True once at/after the cutoff.
     Runs every poll, independent of the signal cycle."""
     return now_t >= EOD_EXIT_TIME
+
+
+def market_session_available(now: datetime) -> bool:
+    """Allow processing only from weekday market open onward.
+
+    Post-cutoff processing remains available for the EOD watchdog, while
+    weekends and pre-open hours cannot consume stale alpha.
+    """
+    return now.weekday() < 5 and now.time() >= MARKET_OPEN_TIME
 
 
 def _bar_timestamp_now() -> str:
@@ -942,6 +952,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     mode = ex.get_mode(user_id, conn_id)
     if mode == ex.Mode.DISARMED:
         return  # idle for this conn — evaluate nothing, place nothing
+
+    if not market_session_available(_now_ist()):
+        return
 
     dry_run = mode == ex.Mode.DRY_RUN
 

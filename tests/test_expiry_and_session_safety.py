@@ -10,6 +10,7 @@ from collector.run_collector import _market_open
 from collector.spot_collector import MarketSessionClosed, collect_spot
 from labs.engine.backtest import _option_session_quality, _resolve_contract_from_options
 from labs.engine.strategy_runner import _market_open as _runner_market_open
+from live.live_runner import market_session_available
 from market_data.expiry import select_expiry_code, select_symbol_for_expiry
 
 
@@ -115,6 +116,9 @@ class SessionSafetyTests(unittest.TestCase):
         self.assertTrue(_market_open(datetime(2026, 6, 19, 10, 0)))
         self.assertFalse(_runner_market_open(datetime(2026, 6, 20, 10, 0)))
         self.assertTrue(_runner_market_open(datetime(2026, 6, 19, 10, 0)))
+        self.assertFalse(market_session_available(datetime(2026, 6, 20, 10, 0)))
+        self.assertFalse(market_session_available(datetime(2026, 6, 19, 9, 14)))
+        self.assertTrue(market_session_available(datetime(2026, 6, 19, 9, 15)))
 
     def test_stale_quote_blocks_holiday_capture(self):
         class Kite:
