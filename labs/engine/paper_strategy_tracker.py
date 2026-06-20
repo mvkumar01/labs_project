@@ -23,10 +23,11 @@ degrade to regime+std here — by design (see alpha_hybrid docstring). The track
 faithfully reflects the live bot, which is the point.
 
 Modeling notes (v1, documented for honesty):
-- Option = ATM strike (nearest 50 to entry spot) for the side; premium = the
-  last shared-store LTP in the entry/exit 5-min bucket. The live bot's exact
-  strike pick may differ slightly; PnL direction/magnitude is option-premium
-  based (long option: profit = exit_premium - entry_premium).
+- Option = nearest-expiry ATM strike (nearest 50 to entry spot) for the side;
+  premium = the shared-store LTP at the exact entry/exit Alpha mark. The same
+  strike and expiry are held through exit. The live bot's exact strike pick may
+  differ slightly; PnL direction/magnitude is option-premium based (long option:
+  profit = exit_premium - entry_premium).
 - pnl_pts (spot move) is also recorded — that's the strategy's validated metric.
 - Charges via labs.engine.charges (round-trip, buy-to-open/sell-to-close).
 """
@@ -41,7 +42,7 @@ import pandas as pd
 from storage.db import get_conn
 from labs.engine.charges import round_trip_charges
 from live.engine import champion_inputs, champion_sim
-from live.engine.alpha_hybrid import _read_locked_hybrid_state
+from live.engine.alpha_hybrid import _pick_nearest_expiry, _read_locked_hybrid_state
 from config.labs_config import SHARED_LIVE_DIR, UNDERLYINGS
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -111,7 +112,12 @@ def _session_over(trade_date: str) -> bool:
 
 
 def _premium_lookup(trade_date: str) -> dict:
-    """(bucket_start_iso, strike, 'ce'|'pe') -> last LTP in that 5-min bucket."""
+    """(exact_mark_iso, strike, 'ce'|'pe') -> nearest-expiry LTP.
+
+    Alpha is a point-in-time OI snapshot selected at 09:15, 09:20, ... . Its
+    option price must come from that same timestamp. Never relabel later rows
+    in the bucket as the signal mark or mix in a later expiry.
+    """
     path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
     if not path.exists():
         return {}
@@ -129,15 +135,24 @@ def _premium_lookup(trade_date: str) -> dict:
     df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
     df["ltp"] = pd.to_numeric(df["ltp"], errors="coerce")
     df = df.dropna(subset=["strike", "ltp"])
-    df["bucket"] = df["timestamp"].dt.floor("5min")
+
+    if "expiry" in df.columns:
+        df["expiry"] = df["expiry"].astype(str)
+        nearest = _pick_nearest_expiry(df["expiry"].dropna().unique(), trade_date)
+        if nearest is None:
+            return {}
+        df = df[df["expiry"] == str(nearest)].copy()
+
+    # Match alpha_hybrid._prepare_snapshot_frame's exact-mark selection.
+    df = df[df["timestamp"].dt.minute % 5 == 0].copy()
     out: dict = {}
-    for (bucket, strike, typ), g in df.groupby(["bucket", "strike", "type"]):
-        out[(bucket.isoformat(), int(strike), str(typ))] = float(g.sort_values("timestamp")["ltp"].iloc[-1])
+    for (mark, strike, typ), g in df.groupby(["timestamp", "strike", "type"]):
+        out[(mark.isoformat(), int(strike), str(typ))] = float(g["ltp"].iloc[-1])
     return out
 
 
 def _premium(lookup: dict, bar_ts_iso: str, strike: int, otype: str) -> float | None:
-    # champion_sim entry/exit ts is the 5-min bucket-start (label=left); match directly.
+    # champion_sim entry/exit ts is the exact 5-min OI mark; match directly.
     key = (pd.Timestamp(bar_ts_iso).isoformat(), int(strike), otype)
     return lookup.get(key)
 
@@ -225,18 +240,27 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
 
 def _price_trade(lookup: dict, t: dict) -> dict:
     """Translate a champion_sim trade into a priced paper trade: option premium
-    off the shared-store ATM LTP (spot-move fallback) + round-trip charges. pnl_pts
-    is the strategy's validated spot-move metric (t['pnl'])."""
+    off the nearest-expiry shared-store ATM LTP at each exact Alpha mark
+    plus round-trip charges. Missing quotes are rejected rather than replaced
+    with a synthetic premium. pnl_pts is the strategy's validated spot-move
+    metric (t['pnl'])."""
     side = "CALL" if t["pos"] == "call" else "PUT"
     strike = _r50(t["entry_spot"])
     otype = "ce" if side == "CALL" else "pe"
     ets = pd.Timestamp(t["entry_ts"]).isoformat()
     xts = pd.Timestamp(t["exit_ts"]).isoformat()
-    ep = _premium(lookup, ets, strike, otype) or 150.0
+    ep = _premium(lookup, ets, strike, otype)
     xp = _premium(lookup, xts, strike, otype)
-    if xp is None:
-        move = (t["exit_spot"] - t["entry_spot"]) if side == "CALL" else (t["entry_spot"] - t["exit_spot"])
-        xp = max(0.05, ep + 0.5 * move)
+    if ep is None or xp is None:
+        missing = []
+        if ep is None:
+            missing.append(f"entry {ets}")
+        if xp is None:
+            missing.append(f"exit {xts}")
+        raise ValueError(
+            f"Missing exact nearest-expiry LTP for {otype.upper()} {strike}: "
+            + ", ".join(missing)
+        )
     gross_rs = (float(xp) - float(ep)) * QTY
     ch = round_trip_charges(ep, xp, QTY)
     return dict(
