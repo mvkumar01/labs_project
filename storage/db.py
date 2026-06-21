@@ -1,5 +1,10 @@
-"""
-SQLite connection + schema initialisation.
+"""SQLite connection + schema initialisation.
+
+The Labs DB is shared by PythonAnywhere web workers and always-on tasks, so it
+uses rollback-journal mode. WAL relies on shared-memory semantics that are not
+reliable across PA workers and previously caused stale paper-strategy rows and
+``database disk image is malformed`` errors.
+
 All tables use CREATE TABLE IF NOT EXISTS — safe to call on every startup.
 """
 import sqlite3
@@ -13,9 +18,10 @@ from config.labs_config import DB_PATH
 
 def get_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
