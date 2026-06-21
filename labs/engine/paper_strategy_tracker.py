@@ -23,12 +23,12 @@ degrade to regime+std here — by design (see alpha_hybrid docstring). The track
 faithfully reflects the live bot, which is the point.
 
 Modeling notes (v1, documented for honesty):
-- Option = nearest-expiry 200-point ITM strike (ATM is the nearest 50 to entry
-  spot): CALL uses ATM-200 CE and PUT uses ATM+200 PE;
-  premium = the shared-store LTP at the exact entry/exit Alpha mark. The same
-  strike and expiry are held through exit. The live bot's exact strike pick may
-  differ slightly; PnL direction/magnitude is option-premium based (long option:
-  profit = exit_premium - entry_premium).
+- Primary option = nearest-expiry 200-point ITM strike (ATM is the nearest 50 to
+  entry spot): CALL uses ATM-200 CE and PUT uses ATM+200 PE. For comparison, all
+  four CONTRACT_VARIANTS use identical Alpha signals; only strike offset and
+  expiry week differ.
+- premium = the shared-store LTP at the exact entry/exit Alpha mark. The same
+  strike and expiry are held through exit.
 - pnl_pts (spot move) is also recorded — that's the strategy's validated metric.
 - Charges via labs.engine.charges (round-trip, buy-to-open/sell-to-close).
 """
@@ -54,6 +54,14 @@ PAPER_LOTS = 1                       # tracker trades 1 lot (unit strategy view)
 QTY = LOT_SIZE * PAPER_LOTS
 ITM_DISTANCE = 200
 STRATEGY_VERSION = "alpha_v2.11_itm200"
+
+CONTRACT_VARIANTS = {
+    "near_atm":    {"label": "ATM — This week",    "expiry_mode": "nearest_weekly", "strike_offset": 0},
+    "near_itm200": {"label": "ITM 200 — This week", "expiry_mode": "nearest_weekly", "strike_offset": 200},
+    "next_atm":    {"label": "ATM — Next week",    "expiry_mode": "next_weekly",    "strike_offset": 0},
+    "next_itm200": {"label": "ITM 200 — Next week", "expiry_mode": "next_weekly",   "strike_offset": 200},
+}
+PRIMARY_VARIANT = "near_itm200"
 
 
 # ── schema (lazy; never touches existing labs.db tables) ─────────────────────
@@ -92,6 +100,43 @@ def _ensure_tables(conn) -> None:
             exit_reason  TEXT,
             PRIMARY KEY (trade_date, seq)
         );
+        CREATE TABLE IF NOT EXISTS paper_contract_daily (
+            trade_date       TEXT,
+            variant          TEXT,
+            expiry_mode      TEXT,
+            expiry_code      TEXT,
+            strike_offset    INTEGER,
+            status           TEXT,
+            n_trades         INTEGER,
+            gross_rs         REAL,
+            charges_rs       REAL,
+            net_rs           REAL,
+            error            TEXT,
+            strategy_version TEXT,
+            updated_at       TEXT,
+            PRIMARY KEY (trade_date, variant)
+        );
+        CREATE TABLE IF NOT EXISTS paper_contract_trades (
+            trade_date    TEXT,
+            seq           INTEGER,
+            variant       TEXT,
+            expiry_mode   TEXT,
+            expiry_code   TEXT,
+            side          TEXT,
+            strike        INTEGER,
+            entry_ts      TEXT,
+            exit_ts       TEXT,
+            entry_spot    REAL,
+            exit_spot     REAL,
+            entry_prem    REAL,
+            exit_prem     REAL,
+            gross_rs      REAL,
+            charges_rs    REAL,
+            net_rs        REAL,
+            entry_rule    TEXT,
+            exit_reason   TEXT,
+            PRIMARY KEY (trade_date, seq, variant)
+        );
         """
     )
     conn.commit()
@@ -114,21 +159,29 @@ def _session_over(trade_date: str) -> bool:
     return False
 
 
-def _premium_lookup(trade_date: str) -> dict:
-    """(exact_mark_iso, strike, 'ce'|'pe') -> nearest-expiry LTP.
+def _build_price_books(trade_date: str) -> dict:
+    """Read the options CSV once and return per-expiry price books.
 
-    Alpha is a point-in-time OI snapshot selected at 09:15, 09:20, ... . Its
-    option price must come from that same timestamp. Never relabel later rows
-    in the bucket as the signal mark or mix in a later expiry.
+    Returns::
+        {
+            "nearest_weekly": {"expiry_code": str, "prices": {(ts_iso, strike, otype): ltp}},
+            "next_weekly":    {"expiry_code": str, "prices": {...}},
+        }
+    Either value may be None when that expiry is absent in the data.
+
+    Alpha is a point-in-time OI snapshot at 09:15, 09:20, … . Option prices
+    must come from that same exact timestamp — never relabelled bucket rows,
+    never a different expiry.
     """
     path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
+    books: dict = {"nearest_weekly": None, "next_weekly": None}
     if not path.exists():
-        return {}
+        return books
     df = pd.read_csv(path)
     if "option_type" in df.columns:
         df["type"] = df["option_type"].astype(str).str.lower()
     if "ltp" not in df.columns or "type" not in df.columns:
-        return {}
+        return books
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])
     if df["timestamp"].dt.tz is None:
@@ -138,22 +191,22 @@ def _premium_lookup(trade_date: str) -> dict:
     df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
     df["ltp"] = pd.to_numeric(df["ltp"], errors="coerce")
     df = df.dropna(subset=["strike", "ltp"])
+    if "expiry" not in df.columns:
+        return books
+    df["expiry"] = df["expiry"].astype(str)
+    all_expiries = df["expiry"].dropna().unique()
 
-    if "expiry" in df.columns:
-        df["expiry"] = df["expiry"].astype(str)
-        nearest = select_expiry_code(
-            df["expiry"].dropna().unique(), trade_date, "nearest_weekly"
-        )
-        if nearest is None:
-            return {}
-        df = df[df["expiry"] == str(nearest)].copy()
-
-    # Match alpha_hybrid._prepare_snapshot_frame's exact-mark selection.
-    df = df[df["timestamp"].dt.minute % 5 == 0].copy()
-    out: dict = {}
-    for (mark, strike, typ), g in df.groupby(["timestamp", "strike", "type"]):
-        out[(mark.isoformat(), int(strike), str(typ))] = float(g["ltp"].iloc[-1])
-    return out
+    for mode in ("nearest_weekly", "next_weekly"):
+        code = select_expiry_code(all_expiries, trade_date, mode)
+        if code is None:
+            continue
+        sub = df[df["expiry"] == str(code)].copy()
+        sub = sub[sub["timestamp"].dt.minute % 5 == 0].copy()
+        prices: dict = {}
+        for (mark, strike, typ), g in sub.groupby(["timestamp", "strike", "type"]):
+            prices[(mark.isoformat(), int(strike), str(typ))] = float(g["ltp"].iloc[-1])
+        books[mode] = {"expiry_code": str(code), "prices": prices}
+    return books
 
 
 def _premium(lookup: dict, bar_ts_iso: str, strike: int, otype: str) -> float | None:
@@ -194,6 +247,7 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
         tier = "SKIP" if (override or {}).get("bucket") == "SKIP" or (override or {}).get("skip") else None
         _save_daily(conn, trade_date, status="no_trade", tier=tier,
                     gap_dir=(override or {}).get("direction"), trades=[])
+        _save_all_comparison_variants(conn, trade_date, {}, [], True)
         return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
 
     tier, direction = day["bucket"], day["direction"]
@@ -212,6 +266,7 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
         adf = pd.DataFrame()
     if adf is None or adf.empty:
         _save_daily(conn, trade_date, status="no_trade", tier=tier, gap_dir=direction, trades=[])
+        _save_all_comparison_variants(conn, trade_date, {}, [], True)
         return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
 
     # Completed-bar discipline for today's live run: drop the in-progress bucket.
@@ -220,17 +275,23 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
         adf = adf[adf["timestamp"] <= cutoff].reset_index(drop=True)
     if len(adf) < 2:
         _save_daily(conn, trade_date, status="no_trade", tier=tier, gap_dir=direction, trades=[])
+        _save_all_comparison_variants(conn, trade_date, {}, [], True)
         return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
 
     _, sim_trades = champion_sim.simulate(
         adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
         weekday, regime, day["lower"], day["upper"])
 
-    lookup = _premium_lookup(trade_date)
-    trades = [_price_trade(lookup, t) for t in sim_trades]
+    # Build both expiry price books with a single CSV read.
+    books = _build_price_books(trade_date)
+    session_done = _session_over(trade_date)
+
+    # ── Primary (near_itm200): strict — raises on any missing quote ───────────
+    primary_prices = (books.get("nearest_weekly") or {}).get("prices", {})
+    trades = [_price_trade(primary_prices, t, ITM_DISTANCE) for t in sim_trades]
 
     status = "traded"
-    if trades and trades[-1]["exit_reason"] == "EOD" and not _session_over(trade_date):
+    if trades and trades[-1]["exit_reason"] == "EOD" and not session_done:
         # intraday: the final open position isn't squared off — mark to market
         # (net = "if closed now") and surface it as HOLDING, not a fake eod.
         trades[-1]["exit_reason"] = "holding"
@@ -239,24 +300,29 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
         trades[-1]["exit_reason"] = "eod"
 
     _save_daily(conn, trade_date, status=status, tier=tier, gap_dir=direction, trades=trades)
+
+    # ── Comparison variants: soft — missing quotes mark only that variant ──────
+    _save_all_comparison_variants(conn, trade_date, books, sim_trades, session_done)
+
     net = round(sum(t["net_rs"] for t in trades), 2)
     return {"trade_date": trade_date, "status": status, "net_rs": net, "n_trades": len(trades)}
 
 
-def _price_trade(lookup: dict, t: dict) -> dict:
-    """Translate a champion_sim trade into a priced paper trade: option premium
-    off the nearest-expiry shared-store ITM-200 LTP at each exact Alpha mark
-    plus round-trip charges. Missing quotes are rejected rather than replaced
-    with a synthetic premium. pnl_pts is the strategy's validated spot-move
-    metric (t['pnl'])."""
+def _price_trade(prices: dict, t: dict, strike_offset: int = ITM_DISTANCE) -> dict:
+    """Translate one champion_sim trade into a priced paper trade.
+
+    Uses ``prices`` — a ``{(ts_iso, strike, otype): ltp}`` dict from one expiry
+    book — and prices the option at ``strike_offset`` points ITM (offset 0 = ATM,
+    200 = ITM 200). Raises ValueError if an exact entry or exit quote is missing.
+    """
     side = "CALL" if t["pos"] == "call" else "PUT"
     atm = _r50(t["entry_spot"])
-    strike = atm - ITM_DISTANCE if side == "CALL" else atm + ITM_DISTANCE
+    strike = atm - strike_offset if side == "CALL" else atm + strike_offset
     otype = "ce" if side == "CALL" else "pe"
     ets = pd.Timestamp(t["entry_ts"]).isoformat()
     xts = pd.Timestamp(t["exit_ts"]).isoformat()
-    ep = _premium(lookup, ets, strike, otype)
-    xp = _premium(lookup, xts, strike, otype)
+    ep = _premium(prices, ets, strike, otype)
+    xp = _premium(prices, xts, strike, otype)
     if ep is None or xp is None:
         missing = []
         if ep is None:
@@ -264,7 +330,7 @@ def _price_trade(lookup: dict, t: dict) -> dict:
         if xp is None:
             missing.append(f"exit {xts}")
         raise ValueError(
-            f"Missing exact nearest-expiry LTP for {otype.upper()} {strike}: "
+            f"Missing exact LTP for {otype.upper()} {strike}: "
             + ", ".join(missing)
         )
     gross_rs = (float(xp) - float(ep)) * QTY
@@ -306,6 +372,102 @@ def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades) -> None:
         "strategy_version=excluded.strategy_version, updated_at=excluded.updated_at",
         (trade_date, status, tier, gap_dir, len(trades), pnl_pts, gross, charges, net,
          STRATEGY_VERSION, now))
+    conn.commit()
+
+
+def _insert_comparison_daily(conn, trade_date, variant, expiry_mode, expiry_code,
+                             strike_offset, status, n_trades, gross_rs, charges_rs,
+                             net_rs, error, now) -> None:
+    conn.execute(
+        "INSERT INTO paper_contract_daily "
+        "(trade_date, variant, expiry_mode, expiry_code, strike_offset, status, n_trades, "
+        "gross_rs, charges_rs, net_rs, error, strategy_version, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(trade_date, variant) DO UPDATE SET "
+        "expiry_mode=excluded.expiry_mode, expiry_code=excluded.expiry_code, "
+        "strike_offset=excluded.strike_offset, status=excluded.status, "
+        "n_trades=excluded.n_trades, gross_rs=excluded.gross_rs, "
+        "charges_rs=excluded.charges_rs, net_rs=excluded.net_rs, "
+        "error=excluded.error, strategy_version=excluded.strategy_version, "
+        "updated_at=excluded.updated_at",
+        (trade_date, variant, expiry_mode, expiry_code, strike_offset, status, n_trades,
+         gross_rs, charges_rs, net_rs, error, STRATEGY_VERSION, now))
+
+
+def _save_all_comparison_variants(
+    conn, trade_date: str, books: dict, sim_trades: list, session_done: bool
+) -> None:
+    """Price all four CONTRACT_VARIANTS and persist to comparison tables.
+
+    Soft failure: a missing expiry or missing quote marks only that variant
+    as ``unavailable`` (net_rs=NULL); the other variants are unaffected.
+    Idempotent: deletes existing rows for trade_date before re-inserting.
+    """
+    now = datetime.now(IST).isoformat()
+    conn.execute("DELETE FROM paper_contract_trades WHERE trade_date = ?", (trade_date,))
+    conn.execute("DELETE FROM paper_contract_daily  WHERE trade_date = ?", (trade_date,))
+
+    for vkey, vdef in CONTRACT_VARIANTS.items():
+        mode = vdef["expiry_mode"]
+        offset = vdef["strike_offset"]
+        book = books.get(mode)
+        expiry_code = book["expiry_code"] if book else None
+
+        if not sim_trades:
+            _insert_comparison_daily(conn, trade_date, vkey, mode, expiry_code, offset,
+                                     "no_trade", 0, 0.0, 0.0, 0.0, None, now)
+            continue
+
+        if book is None:
+            _insert_comparison_daily(conn, trade_date, vkey, mode, None, offset,
+                                     "unavailable", 0, None, None, None,
+                                     "expiry not available in shared-store data", now)
+            continue
+
+        prices = book["prices"]
+        variant_trades: list | None = []
+        error_msg: str | None = None
+        for t in sim_trades:
+            try:
+                variant_trades.append(_price_trade(prices, t, offset))
+            except ValueError as exc:
+                error_msg = str(exc)
+                variant_trades = None
+                break
+
+        if variant_trades is None:
+            _insert_comparison_daily(conn, trade_date, vkey, mode, expiry_code, offset,
+                                     "unavailable", 0, None, None, None, error_msg, now)
+            continue
+
+        # Apply EOD/holding label consistently with the primary.
+        vstatus = "priced"
+        if variant_trades and variant_trades[-1]["exit_reason"] == "EOD":
+            if not session_done:
+                variant_trades[-1]["exit_reason"] = "holding"
+                vstatus = "open"
+            else:
+                variant_trades[-1]["exit_reason"] = "eod"
+
+        for seq, pt in enumerate(variant_trades, 1):
+            conn.execute(
+                "INSERT INTO paper_contract_trades "
+                "(trade_date, seq, variant, expiry_mode, expiry_code, side, strike, "
+                "entry_ts, exit_ts, entry_spot, exit_spot, entry_prem, exit_prem, "
+                "gross_rs, charges_rs, net_rs, entry_rule, exit_reason) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (trade_date, seq, vkey, mode, expiry_code,
+                 pt["side"], pt["strike"], pt["entry_ts"], pt["exit_ts"],
+                 pt["entry_spot"], pt["exit_spot"], pt["entry_prem"], pt["exit_prem"],
+                 pt["gross_rs"], pt["charges_rs"], pt["net_rs"],
+                 pt["entry_rule"], pt["exit_reason"]))
+
+        gross = round(sum(pt["gross_rs"] for pt in variant_trades), 2)
+        charges = round(sum(pt["charges_rs"] for pt in variant_trades), 2)
+        net = round(gross - charges, 2)
+        _insert_comparison_daily(conn, trade_date, vkey, mode, expiry_code, offset,
+                                 vstatus, len(variant_trades), gross, charges, net, None, now)
+
     conn.commit()
 
 

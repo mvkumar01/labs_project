@@ -17,6 +17,10 @@
     .sub{color:#8a93a6;font-size:13px;margin:4px 0 12px}
     .note{color:#8a93a6;font-size:12px;margin-top:18px;line-height:1.5}
     canvas{max-width:100%;background:#1b2230;border:1px solid #2b3445;border-radius:10px;margin-top:8px}
+    .section-title{margin:28px 0 4px;font-size:15px;font-weight:600}
+    .cmp-note{color:#8a93a6;font-size:12px;margin:6px 0 10px;line-height:1.5}
+    .unavail{color:#8a93a6}
+    .card .sub-k{font-size:11px;color:#8a93a6;margin-top:6px}
   </style>
 </head>
 <body>
@@ -42,6 +46,8 @@
     {% elif not rows %}
       <p class="empty">No paper sessions recorded yet. Runs daily after market close.</p>
     {% else %}
+
+    <p class="section-title">Primary — ITM 200, This week</p>
     <div class="cards">
       <div class="card"><div class="k">Net P&amp;L (after charges)</div>
         <div class="v {{ 'green' if stats.net_total>0 else ('red' if stats.net_total<0 else '') }}">₹{{ "{:,.0f}".format(stats.net_total) }}</div></div>
@@ -75,6 +81,65 @@
     </table>
     {% endif %}
 
+    {# ── Contract P&L comparison ───────────────────────────────────────────── #}
+    <p class="section-title" style="margin-top:32px">Contract P&amp;L comparison</p>
+    <p class="cmp-note">
+      All four variants replay the <b>identical Alpha signals and entry/exit timestamps</b>.
+      Only the option contract differs (strike offset and expiry week).
+      — marks days where the expiry or an exact quote was unavailable; those days do <b>not</b> contribute to the total.
+      Spot-point P&amp;L (strategy metric) is shown separately in the daily history table above.
+    </p>
+
+    {% if not comparison_variant_totals %}
+      <p class="muted" style="font-size:13px">Comparison not backfilled yet — runs automatically on next EOD cycle.</p>
+    {% else %}
+    <div class="cards">
+      {% for vkey, vtot in comparison_variant_totals.items() %}
+      <div class="card">
+        <div class="k">{{ vtot.label }}</div>
+        <div class="v {{ 'green' if vtot.net_total>0 else ('red' if vtot.net_total<0 else '') }}">
+          ₹{{ "{:,.0f}".format(vtot.net_total) }}
+        </div>
+        <div class="sub-k">
+          {{ vtot.priced_days }} priced
+          {% if vtot.unavailable_days %} · <span class="amber">{{ vtot.unavailable_days }} unavail</span>{% endif %}
+          {% if vtot.latest_expiry %} · exp {{ vtot.latest_expiry }}{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <h2 style="margin-top:16px;font-size:14px">Daily contract comparison</h2>
+    <table class="perf">
+      <thead>
+        <tr>
+          <th>Date</th>
+          {% for vkey, vdef in contract_variants.items() %}
+          <th>{{ vdef.label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+        {% set d = r.trade_date %}
+        <tr>
+          <td>{{ d }}</td>
+          {% for vkey in contract_variants %}
+            {% set val = comparison_by_date.get(d, {}).get(vkey) %}
+            {% if val is none %}
+              <td class="unavail">—</td>
+            {% else %}
+              <td class="{{ 'green' if val>0 else ('red' if val<0 else 'muted') }}">
+                ₹{{ "{:,.0f}".format(val) }}
+              </td>
+            {% endif %}
+          {% endfor %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     <h2 style="margin-top:24px">Daily history</h2>
     <table class="perf">
       <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Trades</th><th>Pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
@@ -93,10 +158,11 @@
 
     <p class="note">
       Strategy = live Alpha champion v2.11 (single book; no Locked overlay; no R2), replayed on the
-      same 5-min OI snapshots + locked hybrid range the real bot uses. 1 lot ({{ 65 }} qty). Options
-      modelled with the nearest-expiry 200-point ITM contract (CALL: ATM-200 CE;
-      PUT: ATM+200 PE) using LTP at the exact Alpha mark; net P&amp;L deducts
-      brokerage + STT + exchange + GST + SEBI + stamp.
+      same 5-min OI snapshots + locked hybrid range the real bot uses. 1 lot ({{ 65 }} qty). Primary option:
+      nearest-expiry 200-point ITM (CALL: ATM−200 CE; PUT: ATM+200 PE) at exact Alpha mark LTP.
+      Comparison uses identical signals with four contracts: ATM/ITM-200 × This-week/Next-week expiry.
+      Net P&amp;L deducts brokerage + STT + exchange + GST + SEBI + stamp.
+      Spot P&amp;L (pts) is the research-validated strategy metric; option P&amp;L is a modelling approximation.
       Paper only — never places real orders.
     </p>
     {% endif %}

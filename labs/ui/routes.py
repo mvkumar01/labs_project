@@ -227,7 +227,10 @@ def live_strategy():
     """Daily PAPER performance of the live Alpha champion (v2.11). Read-only,
     no login — populated EOD by pa_paper_tracker.py. Net PnL includes charges."""
     from storage.db import get_conn
+    from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
     rows, trades, stats = [], [], {}
+    comparison_variant_totals = {}
+    comparison_by_date = {}
     try:
         conn = get_conn()
         cur = conn.execute(
@@ -265,6 +268,59 @@ def live_strategy():
             tcols = [c[0] for c in cur2.description]
             trades = [dict(zip(tcols, r)) for r in cur2.fetchall()]
             stats["latest_date"] = latest
+
+        # ── Comparison variants (graceful: missing table = show placeholder) ──
+        try:
+            date_filter = rows[0]["trade_date"] if rows else "0000-00-00"
+            date_cutoff = rows[-1]["trade_date"] if rows else "9999-99-99"
+            cmp_cur = conn.execute(
+                "SELECT trade_date, variant, expiry_mode, expiry_code, strike_offset, "
+                "status, n_trades, gross_rs, charges_rs, net_rs, error "
+                "FROM paper_contract_daily "
+                "WHERE trade_date >= ? AND trade_date <= ? "
+                "ORDER BY trade_date DESC",
+                (date_cutoff, date_filter))
+            ccols = [c[0] for c in cmp_cur.description]
+            cmp_rows = [dict(zip(ccols, r)) for r in cmp_cur.fetchall()]
+
+            # Per-variant running totals
+            for vkey in CONTRACT_VARIANTS:
+                vrows = [r for r in cmp_rows if r["variant"] == vkey]
+                priced = [r for r in vrows if r["status"] in ("priced", "open")]
+                unavail = [r for r in vrows if r["status"] == "unavailable"]
+                net_vals = [float(r["net_rs"]) for r in priced if r["net_rs"] is not None]
+                charges_vals = [float(r["charges_rs"]) for r in priced if r["charges_rs"] is not None]
+                latest_code = next(
+                    (r["expiry_code"] for r in sorted(vrows, key=lambda x: x["trade_date"], reverse=True)
+                     if r.get("expiry_code")), None)
+                comparison_variant_totals[vkey] = {
+                    "label": CONTRACT_VARIANTS[vkey]["label"],
+                    "net_total": round(sum(net_vals), 2),
+                    "charges_total": round(sum(charges_vals), 2),
+                    "priced_days": len(priced),
+                    "unavailable_days": len(unavail),
+                    "latest_expiry": latest_code,
+                }
+
+            # Pivot by date for the daily comparison table
+            for r in cmp_rows:
+                d = r["trade_date"]
+                if d not in comparison_by_date:
+                    comparison_by_date[d] = {}
+                comparison_by_date[d][r["variant"]] = (
+                    float(r["net_rs"]) if r["net_rs"] is not None else None
+                )
+        except Exception:
+            # Comparison tables don't exist yet (pre-backfill rollout)
+            comparison_variant_totals = {}
+            comparison_by_date = {}
+
     except Exception as exc:  # never 500 the page if the table is empty/new
         stats = {"error": str(exc)}
-    return render_template("live_strategy.html", rows=rows, trades=trades, stats=stats)
+    return render_template(
+        "live_strategy.html",
+        rows=rows, trades=trades, stats=stats,
+        contract_variants=CONTRACT_VARIANTS,
+        comparison_variant_totals=comparison_variant_totals,
+        comparison_by_date=comparison_by_date,
+    )
