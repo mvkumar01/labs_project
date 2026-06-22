@@ -25,19 +25,30 @@ def _in_session(now: datetime) -> bool:
 
 
 def main() -> None:
-    from labs.engine.paper_strategy_tracker import run_day
+    from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
+    from labs.engine.sensex_alpha_tracker import run_day as run_sensex_day
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
-    last_log = None
+    last_log = {"nifty": None, "sensex_alpha": None}
     while True:
         now = datetime.now(IST)
         if _in_session(now):
-            try:
-                res = run_day(now.date().isoformat())
-                if res != last_log:
-                    print(f"[paper-loop] {now.strftime('%H:%M')} {res}", flush=True)
-                    last_log = res
-            except Exception as exc:  # never let one cycle kill the always-on task
-                print(f"[paper-loop] error: {type(exc).__name__}: {exc}", flush=True)
+            for name, runner in (
+                ("nifty", run_nifty_day),
+                ("sensex_alpha", run_sensex_day),
+            ):
+                try:
+                    res = runner(now.date().isoformat())
+                    if res != last_log[name]:
+                        print(
+                            f"[paper-loop:{name}] {now.strftime('%H:%M')} {res}",
+                            flush=True,
+                        )
+                        last_log[name] = res
+                except Exception as exc:  # one tracker must never block the other
+                    print(
+                        f"[paper-loop:{name}] error: {type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
             _time.sleep(POLL_MARKET)
         else:
             _time.sleep(POLL_IDLE)

@@ -1,0 +1,8 @@
+{
+  "half_width": 1200,
+  "entry_threshold": 30,
+  "target_abs": 100,
+  "eod_exit": "15:25",
+  "expiry_mode": "nearest_weekly",
+  "lot_size": 20
+}

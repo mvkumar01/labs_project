@@ -21,6 +21,11 @@
     .cmp-note{color:#8a93a6;font-size:12px;margin:6px 0 10px;line-height:1.5}
     .unavail{color:#8a93a6}
     .card .sub-k{font-size:11px;color:#8a93a6;margin-top:6px}
+    .live-tabs{display:flex;gap:8px;margin:0 0 20px;border-bottom:1px solid #2b3445}
+    .live-tabs a{padding:9px 14px;color:#8a93a6;text-decoration:none;border-bottom:2px solid transparent}
+    .live-tabs a.active{color:#f3f4f6;border-bottom-color:#16a34a}
+    .formula{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#111827;
+      border:1px solid #2b3445;border-radius:8px;padding:10px 12px;font-size:13px;margin:10px 0}
   </style>
 </head>
 <body>
@@ -37,6 +42,92 @@
   </header>
 
   <main>
+    <div class="live-tabs">
+      <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
+      <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
+    </div>
+
+    {% if active_live_tab == 'sensex_alpha' %}
+    <h1>Sensex_alpha — own Alpha (paper)</h1>
+    <p class="sub">Independent SENSEX OI-imbalance book. Inverted direction, one position at a time,
+      ATM nearest-expiry option execution at <b>ask in / bid out</b>. LTP is never used as an execution fallback.</p>
+    <div class="formula">Alpha = ((ΣΔPE − ΣΔCE) × 100) / (|ΣΔPE| + |ΣΔCE|), bounded [−100, +100]</div>
+
+    {% if sensex_stats.get('error') %}
+      <p class="empty">Sensex_alpha unavailable ({{ sensex_stats.error }}).</p>
+    {% elif not sensex_rows %}
+      <p class="empty">No Sensex_alpha paper sessions recorded yet. The live paper loop starts it on the next valid market session.</p>
+    {% else %}
+      {% set sx = sensex_stats.latest %}
+      <div class="cards">
+        <div class="card"><div class="k">Latest Alpha</div>
+          <div class="v {{ 'green' if sx.latest_alpha>0 else ('red' if sx.latest_alpha<0 else '') }}">{{ "%+.2f"|format(sx.latest_alpha) }}</div>
+          <div class="sub-k">{{ sx.latest_mark[11:16] if sx.latest_mark else '—' }} · spot {{ "{:,.0f}".format(sx.latest_spot) }}</div></div>
+        <div class="card"><div class="k">Position</div><div class="v">{{ sx.position_side or 'FLAT' }}</div>
+          <div class="sub-k">{{ sx.status }} · exp {{ sx.expiry_code }}</div></div>
+        <div class="card"><div class="k">Locked range</div><div class="v" style="font-size:18px">{{ "{:,.0f}".format(sx.range_lower) }}–{{ "{:,.0f}".format(sx.range_upper) }}</div>
+          <div class="sub-k">prev close {{ "{:,.0f}".format(sx.prev_close) }} · baseline {{ sx.baseline_date }}</div></div>
+        <div class="card"><div class="k">Spot P&amp;L</div>
+          <div class="v {{ 'green' if sensex_stats.spot_total>0 else ('red' if sensex_stats.spot_total<0 else '') }}">{{ "%+.2f"|format(sensex_stats.spot_total) }} pts</div></div>
+        <div class="card"><div class="k">Option P&amp;L (bid/ask)</div>
+          <div class="v {{ 'green' if sensex_stats.option_total>0 else ('red' if sensex_stats.option_total<0 else '') }}">₹{{ "{:,.0f}".format(sensex_stats.option_total) }}</div>
+          <div class="sub-k">{{ sensex_stats.priced_trades }} priced · {{ sensex_stats.unavailable_trades }} unavailable</div></div>
+      </div>
+
+      {% if sensex_trades %}
+      <h2 style="margin-top:24px">Latest session — {{ sx.trade_date }}</h2>
+      <table class="perf">
+        <thead><tr><th>#</th><th>Side</th><th>ATM</th><th>Entry / Exit</th><th>Alpha in/out</th>
+          <th>Spot in/out</th><th>Spot pts</th><th>Ask in / Bid out</th><th>Option ₹</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in sensex_trades %}
+          <tr>
+            <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }}</td>
+            <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] }}</td>
+            <td>{{ "%+.2f"|format(t.entry_alpha) }} → {{ "%+.2f"|format(t.exit_alpha) }}</td>
+            <td>{{ "{:,.0f}".format(t.entry_spot) }} → {{ "{:,.0f}".format(t.exit_spot) }}</td>
+            <td class="{{ 'green' if t.spot_pnl_pts>0 else ('red' if t.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(t.spot_pnl_pts) }}</td>
+            {% if t.quote_status == 'priced' %}
+              <td>{{ "%.2f"|format(t.entry_ask) }} → {{ "%.2f"|format(t.exit_bid) }}</td>
+              <td class="{{ 'green' if t.option_gross_rs>0 else ('red' if t.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(t.option_gross_rs) }}</td>
+            {% else %}
+              <td class="unavail">— ({{ t.quote_status }})</td><td class="unavail">—</td>
+            {% endif %}
+            <td class="{{ 'amber' if t.status == 'open' else 'muted' }}">{{ 'HOLDING' if t.status == 'open' else t.exit_reason }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Alpha</th><th>Position</th><th>Trades</th>
+          <th>Spot pts</th><th>Option ₹</th><th>Quotes</th><th>Range</th></tr></thead>
+        <tbody>
+        {% for r in sensex_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td><td>{{ r.status }}</td><td>{{ "%+.2f"|format(r.latest_alpha) }}</td>
+            <td>{{ r.position_side or 'FLAT' }}</td><td>{{ r.n_trades }}</td>
+            <td class="{{ 'green' if r.spot_pnl_pts>0 else ('red' if r.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(r.spot_pnl_pts) }}</td>
+            <td class="{{ 'green' if r.option_gross_rs>0 else ('red' if r.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(r.option_gross_rs) }}</td>
+            <td>{{ r.option_priced_trades }}/{{ r.n_trades }}</td>
+            <td>{{ "{:,.0f}".format(r.range_lower) }}–{{ "{:,.0f}".format(r.range_upper) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <p class="note">
+        Rules: exact five-minute marks from 09:15 IST; prior-day settled codeB SENSEX baseline;
+        previous close ±1,200 configurable points; +30 upward cross → BUY PUT; −30 downward cross → BUY CALL;
+        exit at |Alpha|=100, reversal through zero, or hard 15:25 square-off. One position only.
+        Spot P&amp;L is directional index movement. Option P&amp;L is gross one-lot executable-quote P&amp;L
+        (entry ask, exit bid); missing quotes remain explicitly unavailable and never fall back to LTP.
+      </p>
+    {% endif %}
+
+    {% else %}
     <h1>Live — Alpha v2.11 (paper)</h1>
     <p class="sub">Persistent paper run of the live champion (Run F + RECO W1/W3/C1),
        1 lot, priced off shared-store option LTP. <b>Net P&amp;L includes charges.</b></p>
@@ -165,6 +256,7 @@
       Spot P&amp;L (pts) is the research-validated strategy metric; option P&amp;L is a modelling approximation.
       Paper only — never places real orders.
     </p>
+    {% endif %}
     {% endif %}
   </main>
 </div>
