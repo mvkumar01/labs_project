@@ -115,7 +115,17 @@ def archive_shared_market(trade_date: str) -> int:
     for csv_path in sorted(day_dir.glob("*_options_1min.csv")):
         df = pd.read_csv(csv_path, parse_dates=["timestamp"])
         out_path = archive_day / csv_path.name.replace(".csv", ".parquet.gz")
-        df.to_parquet(out_path, compression="gzip", index=False)
+        tmp_path = out_path.with_name(out_path.name + ".tmp")
+        df.to_parquet(tmp_path, compression="gzip", index=False)
+        # Never delete the only copy until the archive can be read back and its
+        # row count agrees with the source CSV.
+        verified = pd.read_parquet(tmp_path, columns=["timestamp"])
+        if len(verified) != len(df):
+            raise RuntimeError(
+                f"Archive row-count mismatch for {csv_path}: "
+                f"CSV={len(df)} parquet={len(verified)}"
+            )
+        tmp_path.replace(out_path)
         csv_path.unlink()
         count += 1
 
@@ -147,7 +157,16 @@ def purge_old_shared_market(keep_days: int = KEEP_DAYS) -> int:
             continue
         if dir_date < cutoff:
             for f in day_dir.glob("*.csv"):
-                f.unlink()
+                archive_file = (
+                    SHARED_ARCHIVE_DIR / day_dir.name / f.name.replace(".csv", ".parquet.gz")
+                )
+                if archive_file.is_file() and archive_file.stat().st_size > 0:
+                    f.unlink()
+                else:
+                    print(
+                        f"[eod] KEEPING {f}: verified archive is missing; "
+                        "refusing destructive purge."
+                    )
             try:
                 day_dir.rmdir()
             except OSError:

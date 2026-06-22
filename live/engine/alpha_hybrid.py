@@ -13,8 +13,11 @@ from typing import Any
 
 import pandas as pd
 
-from config.labs_config import MARKET_CLOSE, MARKET_OPEN, SHARED_LIVE_DIR
+from config.labs_config import (
+    MARKET_CLOSE, MARKET_OPEN, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR,
+)
 from market_data.expiry import expiry_sort_date, select_expiry_code
+from market_data.shared_store import load_options_frame, resolve_options_source
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SYMBOL = "NIFTY"
@@ -61,11 +64,12 @@ def _previous_trading_days(trade_date: str, limit: int = 10) -> list[str]:
 
 
 def _load_live_data(trade_date: str) -> pd.DataFrame:
-    path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Live file not found: {path}")
-
-    df = pd.read_csv(path)
+    df = load_options_frame(
+        SYMBOL,
+        trade_date,
+        live_root=SHARED_LIVE_DIR,
+        archive_root=SHARED_ARCHIVE_DIR,
+    )
     if "option_type" in df.columns:
         df["type"] = df["option_type"].astype(str).str.lower()
     required = {"timestamp", "spot", "strike", "type", "oi"}
@@ -221,7 +225,15 @@ def hybrid_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]
     uses that range with abs-denom alpha (full C1). Absent tag -> unchanged.
     """
     trade_date = trade_date or datetime.now(IST).date().isoformat()
-    csv_path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
+    try:
+        source_path = resolve_options_source(
+            SYMBOL,
+            trade_date,
+            live_root=SHARED_LIVE_DIR,
+            archive_root=SHARED_ARCHIVE_DIR,
+        )
+    except FileNotFoundError:
+        source_path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
 
     def _mtime(p: Path) -> int:
         try:
@@ -229,7 +241,7 @@ def hybrid_alpha_bars(trade_date: str | None = None) -> tuple[dict | None, list]
         except OSError:
             return 0
 
-    key = (trade_date, _mtime(csv_path), _mtime(HYBRID_STATE_FILE),
+    key = (trade_date, _mtime(source_path), _mtime(HYBRID_STATE_FILE),
            datetime.now(IST).strftime("%H:%M"))
     cached = _BARS_CACHE.get("entry")
     if cached and cached[0] == key:

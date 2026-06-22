@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from config.labs_config import SHARED_LIVE_DIR
+from config.labs_config import SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
 from live.engine import champion_sim
 from live.engine.gemini_range import build_dynamic_range_series
 from live.engine.alpha_hybrid import (
     ALPHA_DATA_DIR, _load_baseline, _load_live_data, _prepare_snapshot_frame,
     _previous_trading_days)
+from market_data.shared_store import load_options_frame
 
 SYMBOL = "NIFTY"
 VIX_TRAIL_CUTOFF = 17.0   # vix_open < cutoff (or missing) -> TRAIL regime
@@ -88,13 +89,20 @@ def ohlc_by_minute(trade_date: str) -> dict:
                 float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
     except Exception:
         pass
-    path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
-    if path.exists():
-        sdf = pd.read_csv(path, usecols=["timestamp", "spot"])
+    try:
+        sdf = load_options_frame(
+            SYMBOL,
+            trade_date,
+            live_root=SHARED_LIVE_DIR,
+            archive_root=SHARED_ARCHIVE_DIR,
+            columns=["timestamp", "spot"],
+        )
         for ts_s, sp in sdf.groupby("timestamp")["spot"].first().items():
             hm = str(ts_s)[11:16]
             if hm and hm not in out:
                 out[hm] = (float(sp), float(sp), float(sp), float(sp))
+    except (FileNotFoundError, ValueError):
+        pass
     return out
 
 
@@ -109,14 +117,19 @@ def prev_close(trade_date: str) -> float | None:
     except Exception:
         pass
     for pday in _previous_trading_days(trade_date):
-        p = SHARED_LIVE_DIR / pday / f"{SYMBOL}_options_1min.csv"
-        if p.exists():
-            try:
-                s = pd.read_csv(p, usecols=["timestamp", "spot"]).groupby("timestamp")["spot"].first()
-                if len(s):
-                    return float(s.iloc[-1])
-            except Exception:
-                continue
+        try:
+            prior = load_options_frame(
+                SYMBOL,
+                pday,
+                live_root=SHARED_LIVE_DIR,
+                archive_root=SHARED_ARCHIVE_DIR,
+                columns=["timestamp", "spot"],
+            )
+            s = prior.groupby("timestamp")["spot"].first()
+            if len(s):
+                return float(s.iloc[-1])
+        except Exception:
+            continue
     return None
 
 

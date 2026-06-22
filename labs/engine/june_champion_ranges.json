@@ -115,5 +115,14 @@
     "vix": 13.2,
     "pc400_v210_biggap": false,
     "skip": false
+  },
+  "2026-06-19": {
+    "lower": 23800,
+    "upper": 24600,
+    "bucket": "PC400",
+    "direction": "DOWN",
+    "vix": 13.24,
+    "pc400_v210_biggap": false,
+    "skip": false
   }
 }

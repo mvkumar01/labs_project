@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from config.labs_config import DATA_DIR, SHARED_LIVE_DIR
+from config.labs_config import DATA_DIR, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
+from market_data.shared_store import load_options_frame
 
 
 def load_spot_1min(underlying: str, trade_date: str) -> pd.DataFrame:
@@ -85,11 +86,16 @@ def load_options_1min(underlying: str, trade_date: str) -> pd.DataFrame:
                        expiry, ltp, bid, ask, oi, volume, spot
     Returns empty DataFrame if the file doesn't exist.
     """
-    path = SHARED_LIVE_DIR / trade_date / f"{underlying}_options_1min.csv"
-    if not path.exists():
+    try:
+        df = load_options_frame(
+            underlying,
+            trade_date,
+            live_root=SHARED_LIVE_DIR,
+            archive_root=SHARED_ARCHIVE_DIR,
+        )
+    except FileNotFoundError:
         return pd.DataFrame()
-
-    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     return df.sort_values("timestamp").reset_index(drop=True)
 
 

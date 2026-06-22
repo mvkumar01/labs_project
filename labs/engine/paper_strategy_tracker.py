@@ -35,8 +35,8 @@ Modeling notes (v1, documented for honesty):
 from __future__ import annotations
 
 import math
+import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pandas as pd
 
@@ -44,8 +44,9 @@ from storage.db import get_conn
 from labs.engine.charges import round_trip_charges
 from live.engine import champion_inputs, champion_sim
 from live.engine.alpha_hybrid import _read_locked_hybrid_state
-from config.labs_config import SHARED_LIVE_DIR, UNDERLYINGS
+from config.labs_config import SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR, UNDERLYINGS
 from market_data.expiry import select_expiry_code
+from market_data.shared_store import load_options_frame
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SYMBOL = "NIFTY"
@@ -62,6 +63,14 @@ CONTRACT_VARIANTS = {
     "next_itm200": {"label": "ITM 200 — Next week", "expiry_mode": "next_weekly",   "strike_offset": 200},
 }
 PRIMARY_VARIANT = "near_itm200"
+
+
+class ReplayInputError(RuntimeError):
+    """Historical replay inputs are missing or incomplete.
+
+    This is distinct from a valid strategy day with zero trades. Callers must
+    retain previously published rows when this error is raised.
+    """
 
 
 # ── schema (lazy; never touches existing labs.db tables) ─────────────────────
@@ -173,11 +182,13 @@ def _build_price_books(trade_date: str) -> dict:
     must come from that same exact timestamp — never relabelled bucket rows,
     never a different expiry.
     """
-    path = SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"
     books: dict = {"nearest_weekly": None, "next_weekly": None}
-    if not path.exists():
-        return books
-    df = pd.read_csv(path)
+    df = load_options_frame(
+        SYMBOL,
+        trade_date,
+        live_root=SHARED_LIVE_DIR,
+        archive_root=SHARED_ARCHIVE_DIR,
+    )
     if "option_type" in df.columns:
         df["type"] = df["option_type"].astype(str).str.lower()
     if "ltp" not in df.columns or "type" not in df.columns:
@@ -232,22 +243,45 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
             "vix": state.get("vix_at_open"), "biggap": bool(state.get("pc400_v210_biggap"))}
 
 
-def run_day(trade_date: str | None = None, override: dict | None = None) -> dict:
+def run_day(
+    trade_date: str | None = None,
+    override: dict | None = None,
+    *,
+    persist: bool = True,
+    require_all_variants: bool = False,
+    connection: sqlite3.Connection | None = None,
+    commit: bool = True,
+) -> dict:
     """Replay one day on paper through the faithful research champion engine
     (live.engine.champion_sim — Rule 1/2/3 + v7.6/v7.7/v7.8/v7.9-D2/v7.11 + trail
     + wall rejection). `override` (backfill) supplies the champion range when the
     live hybrid_range_state isn't available: {lower, upper, bucket, direction,
-    vix, pc400_v210_biggap, skip}."""
+    vix, pc400_v210_biggap, skip}.
+
+    ``persist=False`` performs the full replay and pricing validation without
+    changing existing result rows. Missing replay data raises
+    ``ReplayInputError``; it is never converted into a no-trade result.
+    """
     trade_date = trade_date or datetime.now(IST).date().isoformat()
-    conn = get_conn()
-    _ensure_tables(conn)
+    conn = connection or get_conn()
+    if connection is None:
+        _ensure_tables(conn)
 
     day = _resolve_day(trade_date, override)
     if day is None:
-        tier = "SKIP" if (override or {}).get("bucket") == "SKIP" or (override or {}).get("skip") else None
-        _save_daily(conn, trade_date, status="no_trade", tier=tier,
-                    gap_dir=(override or {}).get("direction"), trades=[])
-        _save_all_comparison_variants(conn, trade_date, {}, [], True)
+        explicitly_skipped = override is not None and (
+            override.get("bucket") == "SKIP" or override.get("skip")
+        )
+        if not explicitly_skipped:
+            raise ReplayInputError(
+                f"No locked range state is available for {trade_date}; existing rows retained"
+            )
+        if persist:
+            _save_daily(conn, trade_date, status="no_trade", tier="SKIP",
+                        gap_dir=override.get("direction"), trades=[], commit=commit)
+            _save_all_comparison_variants(
+                conn, trade_date, {}, [], True, commit=commit
+            )
         return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
 
     tier, direction = day["bucket"], day["direction"]
@@ -262,21 +296,25 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs, range_source=range_source)
-    except Exception:
-        adf = pd.DataFrame()
+    except Exception as exc:
+        raise ReplayInputError(
+            f"Unable to build replay inputs for {trade_date}: "
+            f"{type(exc).__name__}: {exc}; existing rows retained"
+        ) from exc
     if adf is None or adf.empty:
-        _save_daily(conn, trade_date, status="no_trade", tier=tier, gap_dir=direction, trades=[])
-        _save_all_comparison_variants(conn, trade_date, {}, [], True)
-        return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
+        raise ReplayInputError(
+            f"Replay input frame is empty for {trade_date}; existing rows retained"
+        )
 
     # Completed-bar discipline for today's live run: drop the in-progress bucket.
     if trade_date == datetime.now(IST).date().isoformat():
         cutoff = pd.Timestamp(datetime.now(IST)) - pd.Timedelta(minutes=5)
         adf = adf[adf["timestamp"] <= cutoff].reset_index(drop=True)
     if len(adf) < 2:
-        _save_daily(conn, trade_date, status="no_trade", tier=tier, gap_dir=direction, trades=[])
-        _save_all_comparison_variants(conn, trade_date, {}, [], True)
-        return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
+        raise ReplayInputError(
+            f"Replay input frame has only {len(adf)} completed bars for {trade_date}; "
+            "existing rows retained"
+        )
 
     _, sim_trades = champion_sim.simulate(
         adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
@@ -285,6 +323,16 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
     # Build both expiry price books with a single CSV read.
     books = _build_price_books(trade_date)
     session_done = _session_over(trade_date)
+
+    if require_all_variants:
+        missing_modes = [
+            mode for mode in ("nearest_weekly", "next_weekly") if books.get(mode) is None
+        ]
+        if missing_modes:
+            raise ReplayInputError(
+                f"Missing expiry price books for {trade_date}: {', '.join(missing_modes)}; "
+                "existing rows retained"
+            )
 
     # ── Primary (near_itm200): strict — raises on any missing quote ───────────
     primary_prices = (books.get("nearest_weekly") or {}).get("prices", {})
@@ -299,10 +347,36 @@ def run_day(trade_date: str | None = None, override: dict | None = None) -> dict
     elif trades and trades[-1]["exit_reason"] == "EOD":
         trades[-1]["exit_reason"] = "eod"
 
-    _save_daily(conn, trade_date, status=status, tier=tier, gap_dir=direction, trades=trades)
+    if require_all_variants:
+        # Exercise the canonical comparison persistence/pricing path in memory
+        # before any production row can change.
+        check = sqlite3.connect(":memory:")
+        check.row_factory = sqlite3.Row
+        _ensure_tables(check)
+        _save_all_comparison_variants(check, trade_date, books, sim_trades, session_done)
+        unavailable = check.execute(
+            "SELECT variant, error FROM paper_contract_daily "
+            "WHERE trade_date=? AND status='unavailable' ORDER BY variant",
+            (trade_date,),
+        ).fetchall()
+        check.close()
+        if unavailable:
+            detail = "; ".join(f"{row['variant']}: {row['error']}" for row in unavailable)
+            raise ReplayInputError(
+                f"Comparison pricing incomplete for {trade_date}: {detail}; "
+                "existing rows retained"
+            )
 
-    # ── Comparison variants: soft — missing quotes mark only that variant ──────
-    _save_all_comparison_variants(conn, trade_date, books, sim_trades, session_done)
+    if persist:
+        _save_daily(
+            conn, trade_date, status=status, tier=tier, gap_dir=direction,
+            trades=trades, commit=commit,
+        )
+
+        # Comparison variants use identical simulated trades and timestamps.
+        _save_all_comparison_variants(
+            conn, trade_date, books, sim_trades, session_done, commit=commit
+        )
 
     net = round(sum(t["net_rs"] for t in trades), 2)
     return {"trade_date": trade_date, "status": status, "net_rs": net, "n_trades": len(trades)}
@@ -345,7 +419,7 @@ def _price_trade(prices: dict, t: dict, strike_offset: int = ITM_DISTANCE) -> di
     )
 
 
-def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades) -> None:
+def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades, commit=True) -> None:
     pnl_pts = round(sum(t["pnl_pts"] for t in trades), 1)
     gross = round(sum(t["gross_rs"] for t in trades), 2)
     charges = round(sum(t["charges_rs"] for t in trades), 2)
@@ -372,7 +446,8 @@ def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades) -> None:
         "strategy_version=excluded.strategy_version, updated_at=excluded.updated_at",
         (trade_date, status, tier, gap_dir, len(trades), pnl_pts, gross, charges, net,
          STRATEGY_VERSION, now))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def _insert_comparison_daily(conn, trade_date, variant, expiry_mode, expiry_code,
@@ -395,7 +470,8 @@ def _insert_comparison_daily(conn, trade_date, variant, expiry_mode, expiry_code
 
 
 def _save_all_comparison_variants(
-    conn, trade_date: str, books: dict, sim_trades: list, session_done: bool
+    conn, trade_date: str, books: dict, sim_trades: list, session_done: bool,
+    *, commit: bool = True,
 ) -> None:
     """Price all four CONTRACT_VARIANTS and persist to comparison tables.
 
@@ -468,7 +544,8 @@ def _save_all_comparison_variants(
         _insert_comparison_daily(conn, trade_date, vkey, mode, expiry_code, offset,
                                  vstatus, len(variant_trades), gross, charges, net, None, now)
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 if __name__ == "__main__":
