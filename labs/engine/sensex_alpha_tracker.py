@@ -23,7 +23,7 @@ import pandas as pd
 from config.labs_config import (
     BASE_DIR, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR, UNDERLYINGS,
 )
-from market_data.expiry import expiry_sort_date, select_expiry_code
+from market_data.expiry import expiry_sort_date, is_monthly_expiry, select_expiry_code
 from market_data.shared_store import load_options_frame
 from storage.db import get_conn
 
@@ -159,7 +159,15 @@ def _load_baseline(trade_date: str, expiry_code: str) -> tuple[pd.DataFrame, str
                 pd.Timestamp(value).date()
                 for value in frame["expiry"].dropna().astype(str).unique()
             }
-            if baseline_expiries and baseline_expiries != {expected_expiry}:
+            if is_monthly_expiry(expiry_code):
+                expiry_matches = all(
+                    (value.year, value.month)
+                    == (expected_expiry.year, expected_expiry.month)
+                    for value in baseline_expiries
+                )
+            else:
+                expiry_matches = baseline_expiries == {expected_expiry}
+            if baseline_expiries and not expiry_matches:
                 raise SensexReplayInputError(
                     f"Expiry rollover mismatch for {trade_date}: live={expiry_code} "
                     f"({expected_expiry}), baseline={sorted(str(x) for x in baseline_expiries)}"

@@ -67,6 +67,42 @@ def test_abs_alpha_formula_is_bounded_and_zero_safe() -> None:
     assert tracker.compute_abs_alpha(100, -100) == 100
 
 
+def test_monthly_expiry_matches_settled_date_within_same_month(
+    monkeypatch, tmp_path
+) -> None:
+    baseline = pd.DataFrame({
+        "symbol": ["SENSEX", "SENSEX"],
+        "strike": [80000, 80000],
+        "type": ["ce", "pe"],
+        "oi": [100, 200],
+        "expiry": ["2026-06-25", "2026-06-25"],
+    })
+    baseline.to_csv(tmp_path / "prev_day_oi_SENSEX_2026-06-18.csv", index=False)
+    monkeypatch.setattr(tracker, "PREV_DAY_DIR", tmp_path)
+
+    loaded, baseline_date = tracker._load_baseline("2026-06-19", "26JUN")
+
+    assert baseline_date == "2026-06-18"
+    assert len(loaded) == 2
+
+
+def test_monthly_expiry_rejects_baseline_from_wrong_month(
+    monkeypatch, tmp_path
+) -> None:
+    baseline = pd.DataFrame({
+        "symbol": ["SENSEX", "SENSEX"],
+        "strike": [80000, 80000],
+        "type": ["ce", "pe"],
+        "oi": [100, 200],
+        "expiry": ["2026-07-02", "2026-07-02"],
+    })
+    baseline.to_csv(tmp_path / "prev_day_oi_SENSEX_2026-06-18.csv", index=False)
+    monkeypatch.setattr(tracker, "PREV_DAY_DIR", tmp_path)
+
+    with pytest.raises(tracker.SensexReplayInputError, match="rollover mismatch"):
+        tracker._load_baseline("2026-06-19", "26JUN")
+
+
 def test_hard_eod_exit_at_1525() -> None:
     bars = pd.DataFrame({
         "timestamp": pd.to_datetime(
