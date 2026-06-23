@@ -27,13 +27,19 @@ only slightly better than ITM 200 in this window and is not a robust upgrade.
 
 ## SENSEX execution of NIFTY v2.11 signals
 
-Scope: same NIFTY v2.11 signal timestamps, executed as one nearest-expiry ATM
-SENSEX option lot. CALL signal buys SENSEX CALL; PUT signal buys SENSEX PUT.
-Entry requires exact ask and exit requires exact bid. No LTP fallback.
+Scope: same NIFTY v2.11 signal timestamps from the PythonAnywhere canonical
+Labs replay, executed as one nearest-expiry ATM SENSEX option lot. CALL signal
+buys SENSEX CALL; PUT signal buys SENSEX PUT. Entry requires exact ask and exit
+requires exact bid. No LTP fallback.
 
-Backfill expectation for the new `sensex_v211_*` paper tables:
+Backfill expectation for the new `sensex_v211_*` paper tables on PA:
 
 | Days | Trades | Gross option Rs | Unavailable trades |
 |---:|---:|---:|---:|
-| 14 | 16 | -725.00 | 0 |
+| 14 | 16 | -6,730.00 | 0 |
 
+Note: an earlier local cross-replay produced `-725.00`, but the PA deployment
+guard rejected it. The mismatch came from stale local signal timestamps on
+2026-06-15. PA's canonical v2.11 replay for that date enters at 10:55 and exits
+at 12:40; the SENSEX 76800 CE exact ask/bid execution is -3,157.00 for that
+session.
