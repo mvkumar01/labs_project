@@ -243,6 +243,70 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
             "vix": state.get("vix_at_open"), "biggap": bool(state.get("pc400_v210_biggap"))}
 
 
+def replay_champion_signals(
+    trade_date: str, override: dict | None = None,
+) -> dict:
+    """Build v2.11 trades once, before any option-contract pricing.
+
+    Cross-index paper books use the returned side and exact entry/exit marks,
+    ensuring their signal layer is identical to the NIFTY champion.
+    """
+    day = _resolve_day(trade_date, override)
+    if day is None:
+        explicitly_skipped = override is not None and (
+            override.get("bucket") == "SKIP" or override.get("skip")
+        )
+        if not explicitly_skipped:
+            raise ReplayInputError(
+                f"No locked range state is available for {trade_date}; existing rows retained"
+            )
+        return {
+            "tier": "SKIP",
+            "direction": override.get("direction"),
+            "sim_trades": [],
+            "session_done": _session_over(trade_date),
+        }
+
+    tier, direction = day["bucket"], day["direction"]
+    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
+    sgap, weekday, use_trail, regime = champion_inputs.day_context(
+        trade_date, ohlc, direction, day["vix"])
+    range_source, use_abs = champion_inputs.alpha_source(
+        tier, direction, day["vix"], sgap, day["biggap"])
+    try:
+        _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
+            trade_date, day["lower"], day["upper"], use_abs,
+            range_source=range_source,
+        )
+    except Exception as exc:
+        raise ReplayInputError(
+            f"Unable to build replay inputs for {trade_date}: "
+            f"{type(exc).__name__}: {exc}; existing rows retained"
+        ) from exc
+    if adf is None or adf.empty:
+        raise ReplayInputError(
+            f"Replay input frame is empty for {trade_date}; existing rows retained"
+        )
+    if trade_date == datetime.now(IST).date().isoformat():
+        cutoff = pd.Timestamp(datetime.now(IST)) - pd.Timedelta(minutes=5)
+        adf = adf[adf["timestamp"] <= cutoff].reset_index(drop=True)
+    if len(adf) < 2:
+        raise ReplayInputError(
+            f"Replay input frame has only {len(adf)} completed bars for {trade_date}; "
+            "existing rows retained"
+        )
+
+    _, sim_trades = champion_sim.simulate(
+        adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
+        weekday, regime, day["lower"], day["upper"])
+    return {
+        "tier": tier,
+        "direction": direction,
+        "sim_trades": sim_trades,
+        "session_done": _session_over(trade_date),
+    }
+
+
 def run_day(
     trade_date: str | None = None,
     override: dict | None = None,

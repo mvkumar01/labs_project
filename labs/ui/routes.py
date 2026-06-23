@@ -229,12 +229,13 @@ def live_strategy():
     from storage.db import get_conn
     from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
     active_live_tab = request.args.get("tab", "nifty")
-    if active_live_tab not in {"nifty", "sensex_alpha"}:
+    if active_live_tab not in {"nifty", "sensex_alpha", "sensex_v211"}:
         active_live_tab = "nifty"
     rows, trades, stats = [], [], {}
     comparison_variant_totals = {}
     comparison_by_date = {}
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
+    sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     try:
         conn = get_conn()
         cur = conn.execute(
@@ -367,6 +368,54 @@ def live_strategy():
             if active_live_tab == "sensex_alpha" and "no such table" not in str(exc):
                 sensex_stats = {"error": str(exc)}
 
+        # Same v2.11 NIFTY signals, separately executed in SENSEX ATM options.
+        try:
+            sv_cur = conn.execute(
+                "SELECT trade_date,status,tier,gap_dir,expiry_code,n_trades,"
+                "option_gross_rs,option_priced_trades,option_unavailable_trades "
+                "FROM sensex_v211_daily ORDER BY trade_date DESC LIMIT 120"
+            )
+            sv_cols = [column[0] for column in sv_cur.description]
+            sensex_v211_rows = [dict(zip(sv_cols, row)) for row in sv_cur.fetchall()]
+            if sensex_v211_rows:
+                latest_sv = sensex_v211_rows[0]
+                sensex_v211_stats = {
+                    "days": len(sensex_v211_rows),
+                    "trades": sum(
+                        int(row["n_trades"] or 0) for row in sensex_v211_rows
+                    ),
+                    "option_total": round(
+                        sum(
+                            float(row["option_gross_rs"] or 0)
+                            for row in sensex_v211_rows
+                        ),
+                        2,
+                    ),
+                    "priced_trades": sum(
+                        int(row["option_priced_trades"] or 0)
+                        for row in sensex_v211_rows
+                    ),
+                    "unavailable_trades": sum(
+                        int(row["option_unavailable_trades"] or 0)
+                        for row in sensex_v211_rows
+                    ),
+                    "latest": latest_sv,
+                }
+                sv_trade_cur = conn.execute(
+                    "SELECT seq,status,side,strike,tradingsymbol,expiry_code,entry_ts,"
+                    "exit_ts,entry_sensex,exit_sensex,entry_bid,entry_ask,exit_bid,"
+                    "exit_ask,option_pnl_pts,option_gross_rs,quote_status,entry_rule,"
+                    "exit_reason FROM sensex_v211_trades WHERE trade_date=? ORDER BY seq",
+                    (latest_sv["trade_date"],),
+                )
+                sv_trade_cols = [column[0] for column in sv_trade_cur.description]
+                sensex_v211_trades = [
+                    dict(zip(sv_trade_cols, row)) for row in sv_trade_cur.fetchall()
+                ]
+        except Exception as exc:
+            if active_live_tab == "sensex_v211" and "no such table" not in str(exc):
+                sensex_v211_stats = {"error": str(exc)}
+
     except Exception as exc:  # never 500 the page if the table is empty/new
         stats = {"error": str(exc)}
     return render_template(
@@ -379,4 +428,7 @@ def live_strategy():
         sensex_rows=sensex_rows,
         sensex_trades=sensex_trades,
         sensex_stats=sensex_stats,
+        sensex_v211_rows=sensex_v211_rows,
+        sensex_v211_trades=sensex_v211_trades,
+        sensex_v211_stats=sensex_v211_stats,
     )

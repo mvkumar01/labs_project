@@ -27,14 +27,16 @@ def _in_session(now: datetime) -> bool:
 def main() -> None:
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
     from labs.engine.sensex_alpha_tracker import run_day as run_sensex_day
+    from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
-    last_log = {"nifty": None, "sensex_alpha": None}
+    last_log = {"nifty": None, "sensex_alpha": None, "sensex_v211": None}
     while True:
         now = datetime.now(IST)
         if _in_session(now):
             for name, runner in (
                 ("nifty", run_nifty_day),
                 ("sensex_alpha", run_sensex_day),
+                ("sensex_v211", run_sensex_v211_day),
             ):
                 try:
                     res = runner(now.date().isoformat())

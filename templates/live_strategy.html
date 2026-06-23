@@ -45,6 +45,7 @@
     <div class="live-tabs">
       <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
       <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
+      <a href="/labs/live?tab=sensex_v211" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
     </div>
 
     {% if active_live_tab == 'sensex_alpha' %}
@@ -124,6 +125,80 @@
         exit at |Alpha|=100, reversal through zero, or hard 15:25 square-off. One position only.
         Spot P&amp;L is directional index movement. Option P&amp;L is gross one-lot executable-quote P&amp;L
         (entry ask, exit bid); missing quotes remain explicitly unavailable and never fall back to LTP.
+      </p>
+    {% endif %}
+
+    {% elif active_live_tab == 'sensex_v211' %}
+    <h1>Sensex_v2.11 — NIFTY signals, SENSEX options (paper)</h1>
+    <p class="sub">The Alpha v2.11 signal side and exact timestamps are unchanged. Execution switches to
+      one nearest-expiry ATM SENSEX option lot at <b>ask in / bid out</b>. LTP is never used as a fallback.</p>
+
+    {% if sensex_v211_stats.get('error') %}
+      <p class="empty">Sensex_v2.11 unavailable ({{ sensex_v211_stats.error }}).</p>
+    {% elif not sensex_v211_rows %}
+      <p class="empty">No Sensex_v2.11 paper sessions recorded yet. The live paper loop starts it on the next valid market session.</p>
+    {% else %}
+      {% set sv = sensex_v211_stats.latest %}
+      <div class="cards">
+        <div class="card"><div class="k">Gross option P&amp;L</div>
+          <div class="v {{ 'green' if sensex_v211_stats.option_total>0 else ('red' if sensex_v211_stats.option_total<0 else '') }}">₹{{ "{:,.0f}".format(sensex_v211_stats.option_total) }}</div>
+          <div class="sub-k">one SENSEX lot · gross executable quotes</div></div>
+        <div class="card"><div class="k">Sessions / trades</div>
+          <div class="v">{{ sensex_v211_stats.days }} / {{ sensex_v211_stats.trades }}</div>
+          <div class="sub-k">latest {{ sv.trade_date if sv else '—' }}</div></div>
+        <div class="card"><div class="k">Quote coverage</div>
+          <div class="v">{{ sensex_v211_stats.priced_trades }}/{{ sensex_v211_stats.trades }}</div>
+          <div class="sub-k">{{ sensex_v211_stats.unavailable_trades }} unavailable · no LTP fallback</div></div>
+        <div class="card"><div class="k">Latest session</div>
+          <div class="v" style="font-size:18px">{{ sv.status if sv else '—' }}</div>
+          <div class="sub-k">{% if sv %}{{ sv.tier or '—' }} · {{ sv.gap_dir or '—' }} · exp {{ sv.expiry_code or '—' }}{% else %}—{% endif %}</div></div>
+      </div>
+
+      {% if sensex_v211_trades %}
+      <h2 style="margin-top:24px">Latest session — {{ sv.trade_date }}</h2>
+      <table class="perf">
+        <thead><tr><th>#</th><th>Side</th><th>SENSEX ATM</th><th>Entry / Exit</th><th>SENSEX in/out</th>
+          <th>Ask in / Bid out</th><th>Option ₹</th><th>Signal / Exit</th></tr></thead>
+        <tbody>
+        {% for t in sensex_v211_trades %}
+          <tr>
+            <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }}</td>
+            <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] }}</td>
+            <td>{{ "{:,.0f}".format(t.entry_sensex) }} → {{ "{:,.0f}".format(t.exit_sensex) }}</td>
+            {% if t.quote_status == 'priced' %}
+              <td>{{ "%.2f"|format(t.entry_ask) }} → {{ "%.2f"|format(t.exit_bid) }}</td>
+              <td class="{{ 'green' if t.option_gross_rs>0 else ('red' if t.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(t.option_gross_rs) }}</td>
+            {% else %}
+              <td class="unavail">— ({{ t.quote_status }})</td><td class="unavail">—</td>
+            {% endif %}
+            <td>{{ t.side }} / <span class="{{ 'amber' if t.exit_reason == 'holding' else 'muted' }}">{{ 'HOLDING' if t.exit_reason == 'holding' else t.exit_reason }}</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th><th>Trades</th><th>Quotes</th><th>Gross option ₹</th></tr></thead>
+        <tbody>
+        {% for r in sensex_v211_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
+            <td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
+            <td>{{ r.n_trades }}</td><td>{{ r.option_priced_trades }}/{{ r.n_trades }}</td>
+            <td class="{{ 'green' if r.option_gross_rs>0 else ('red' if r.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(r.option_gross_rs or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <p class="note">
+        Rules: signal generation is unchanged Alpha v2.11 NIFTY champion logic. For every NIFTY signal trade,
+        this paper book buys the nearest-expiry ATM SENSEX option matching the NIFTY signal side
+        (CALL signal → SENSEX CALL, PUT signal → SENSEX PUT), one lot only. Entry requires the exact
+        SENSEX option ask at the signal mark and exit requires the exact bid at the exit mark. Missing quotes
+        remain explicitly unavailable; LTP is never substituted.
       </p>
     {% endif %}
 
