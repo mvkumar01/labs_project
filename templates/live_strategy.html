@@ -45,12 +45,15 @@
     <div class="live-tabs">
       <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
       <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
+      <a href="/labs/live?tab=sensex_alpha_inverted" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
       <a href="/labs/live?tab=sensex_v211" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
+      <a href="/labs/live?tab=sensex_v211_inverted" class="{{ 'active' if active_live_tab == 'sensex_v211_inverted' else '' }}">Alpha v2.11 inverted</a>
     </div>
 
-    {% if active_live_tab == 'sensex_alpha' %}
-    <h1>Sensex_alpha — own Alpha (paper)</h1>
-    <p class="sub">Independent SENSEX OI-imbalance book. Inverted direction, one position at a time,
+    {% if active_live_tab in ['sensex_alpha', 'sensex_alpha_inverted'] %}
+    {% set sx_inverted = active_live_tab == 'sensex_alpha_inverted' %}
+    <h1>Sensex_alpha{{ ' inverted' if sx_inverted else '' }} — own Alpha (paper)</h1>
+    <p class="sub">Independent SENSEX OI-imbalance book. {{ 'Option side swapped CALL↔PUT; ' if sx_inverted else 'Inverted direction, ' }}one position at a time,
       ATM nearest-expiry option execution at <b>ask in / bid out</b>. LTP is never used as an execution fallback.</p>
     <div class="formula">Alpha = ((ΣΔPE − ΣΔCE) × 100) / (|ΣΔPE| + |ΣΔCE|), bounded [−100, +100]</div>
 
@@ -123,14 +126,16 @@
         Rules: exact five-minute marks from 09:15 IST; prior-day settled codeB SENSEX baseline;
         previous close ±1,200 configurable points; +30 upward cross → BUY PUT; −30 downward cross → BUY CALL;
         exit at |Alpha|=100, reversal through zero, or hard 15:25 square-off. One position only.
+        {% if sx_inverted %}Execution-only inversion swaps every resulting CALL to PUT and PUT to CALL without changing timestamps or exits.{% endif %}
         Spot P&amp;L is directional index movement. Option P&amp;L is gross one-lot executable-quote P&amp;L
         (entry ask, exit bid); missing quotes remain explicitly unavailable and never fall back to LTP.
       </p>
     {% endif %}
 
-    {% elif active_live_tab == 'sensex_v211' %}
-    <h1>Sensex_v2.11 — NIFTY signals, SENSEX options (paper)</h1>
-    <p class="sub">The Alpha v2.11 signal side and exact timestamps are unchanged. Execution switches to
+    {% elif active_live_tab in ['sensex_v211', 'sensex_v211_inverted'] %}
+    {% set sv_inverted = active_live_tab == 'sensex_v211_inverted' %}
+    <h1>Alpha v2.11{{ ' inverted' if sv_inverted else '' }} — NIFTY signals, SENSEX options (paper)</h1>
+    <p class="sub">The Alpha v2.11 signal timing and exits are unchanged. Execution {{ 'swaps CALL↔PUT in' if sv_inverted else 'switches to' }}
       one nearest-expiry ATM SENSEX option lot at <b>ask in / bid out</b>. LTP is never used as a fallback.</p>
 
     {% if sensex_v211_stats.get('error') %}
@@ -195,8 +200,8 @@
 
       <p class="note">
         Rules: signal generation is unchanged Alpha v2.11 NIFTY champion logic. For every NIFTY signal trade,
-        this paper book buys the nearest-expiry ATM SENSEX option matching the NIFTY signal side
-        (CALL signal → SENSEX CALL, PUT signal → SENSEX PUT), one lot only. Entry requires the exact
+        this paper book buys the nearest-expiry ATM SENSEX option {{ 'opposite to' if sv_inverted else 'matching' }} the NIFTY signal side
+        ({% if sv_inverted %}CALL signal → SENSEX PUT, PUT signal → SENSEX CALL{% else %}CALL signal → SENSEX CALL, PUT signal → SENSEX PUT{% endif %}), one lot only. Entry requires the exact
         SENSEX option ask at the signal mark and exit requires the exact bid at the exit mark. Missing quotes
         remain explicitly unavailable; LTP is never substituted.
       </p>

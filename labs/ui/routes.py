@@ -229,7 +229,10 @@ def live_strategy():
     from storage.db import get_conn
     from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
     active_live_tab = request.args.get("tab", "nifty")
-    if active_live_tab not in {"nifty", "sensex_alpha", "sensex_v211"}:
+    if active_live_tab not in {
+        "nifty", "sensex_alpha", "sensex_alpha_inverted",
+        "sensex_v211", "sensex_v211_inverted",
+    }:
         active_live_tab = "nifty"
     rows, trades, stats = [], [], {}
     comparison_variant_totals = {}
@@ -324,11 +327,20 @@ def live_strategy():
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
         try:
+            sx_inverted = active_live_tab == "sensex_alpha_inverted"
+            sx_daily_table = (
+                "sensex_alpha_inverted_daily" if sx_inverted
+                else "sensex_alpha_daily"
+            )
+            sx_trades_table = (
+                "sensex_alpha_inverted_trades" if sx_inverted
+                else "sensex_alpha_trades"
+            )
             sx_cur = conn.execute(
                 "SELECT trade_date,status,prev_close,range_lower,range_upper,latest_mark,"
                 "latest_spot,latest_alpha,position_side,n_trades,spot_pnl_pts,"
                 "option_gross_rs,option_priced_trades,option_unavailable_trades,"
-                "expiry_code,baseline_date FROM sensex_alpha_daily "
+                f"expiry_code,baseline_date FROM {sx_daily_table} "
                 "ORDER BY trade_date DESC LIMIT 120"
             )
             sx_cols = [column[0] for column in sx_cur.description]
@@ -356,7 +368,8 @@ def live_strategy():
                     "SELECT seq,status,side,strike,tradingsymbol,expiry_code,entry_ts,"
                     "exit_ts,entry_alpha,exit_alpha,entry_spot,exit_spot,spot_pnl_pts,"
                     "entry_bid,entry_ask,exit_bid,exit_ask,option_pnl_pts,option_gross_rs,"
-                    "quote_status,entry_reason,exit_reason FROM sensex_alpha_trades "
+                    "quote_status,entry_reason,exit_reason "
+                    f"FROM {sx_trades_table} "
                     "WHERE trade_date=? ORDER BY seq",
                     (latest_sx["trade_date"],),
                 )
@@ -365,15 +378,26 @@ def live_strategy():
                     dict(zip(sx_trade_cols, row)) for row in sx_trade_cur.fetchall()
                 ]
         except Exception as exc:
-            if active_live_tab == "sensex_alpha" and "no such table" not in str(exc):
+            if active_live_tab in {
+                "sensex_alpha", "sensex_alpha_inverted"
+            } and "no such table" not in str(exc):
                 sensex_stats = {"error": str(exc)}
 
         # Same v2.11 NIFTY signals, separately executed in SENSEX ATM options.
         try:
+            sv_inverted = active_live_tab == "sensex_v211_inverted"
+            sv_daily_table = (
+                "sensex_v211_inverted_daily" if sv_inverted
+                else "sensex_v211_daily"
+            )
+            sv_trades_table = (
+                "sensex_v211_inverted_trades" if sv_inverted
+                else "sensex_v211_trades"
+            )
             sv_cur = conn.execute(
                 "SELECT trade_date,status,tier,gap_dir,expiry_code,n_trades,"
                 "option_gross_rs,option_priced_trades,option_unavailable_trades "
-                "FROM sensex_v211_daily ORDER BY trade_date DESC LIMIT 120"
+                f"FROM {sv_daily_table} ORDER BY trade_date DESC LIMIT 120"
             )
             sv_cols = [column[0] for column in sv_cur.description]
             sensex_v211_rows = [dict(zip(sv_cols, row)) for row in sv_cur.fetchall()]
@@ -405,7 +429,8 @@ def live_strategy():
                     "SELECT seq,status,side,strike,tradingsymbol,expiry_code,entry_ts,"
                     "exit_ts,entry_sensex,exit_sensex,entry_bid,entry_ask,exit_bid,"
                     "exit_ask,option_pnl_pts,option_gross_rs,quote_status,entry_rule,"
-                    "exit_reason FROM sensex_v211_trades WHERE trade_date=? ORDER BY seq",
+                    f"exit_reason FROM {sv_trades_table} "
+                    "WHERE trade_date=? ORDER BY seq",
                     (latest_sv["trade_date"],),
                 )
                 sv_trade_cols = [column[0] for column in sv_trade_cur.description]
@@ -413,7 +438,9 @@ def live_strategy():
                     dict(zip(sv_trade_cols, row)) for row in sv_trade_cur.fetchall()
                 ]
         except Exception as exc:
-            if active_live_tab == "sensex_v211" and "no such table" not in str(exc):
+            if active_live_tab in {
+                "sensex_v211", "sensex_v211_inverted"
+            } and "no such table" not in str(exc):
                 sensex_v211_stats = {"error": str(exc)}
 
     except Exception as exc:  # never 500 the page if the table is empty/new
