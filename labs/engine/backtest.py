@@ -953,7 +953,25 @@ def _best_source(sources: list[DataSource], underlying: str, trade_date: str, da
     if not matches:
         return None
     priority = {"shared_market_data/live": 0, "data/live": 1, "shared_market_data/archive": 2, "data/archive": 3}
-    return sorted(matches, key=lambda s: priority.get(s.kind, 99))[0]
+
+    def archive_format_priority(source: DataSource) -> int:
+        name = source.path.name.lower()
+        if name.endswith(".parquet.zst"):
+            return 0
+        if name.endswith(".parquet.gz"):
+            return 1
+        if name.endswith(".parquet"):
+            return 2
+        return 3
+
+    return sorted(
+        matches,
+        key=lambda source: (
+            priority.get(source.kind, 99),
+            archive_format_priority(source),
+            source.label,
+        ),
+    )[0]
 
 
 def _extract_date(text: str) -> str | None:

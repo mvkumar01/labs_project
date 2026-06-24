@@ -243,7 +243,7 @@ Options data is written to a directory **outside both projects** so both Labs an
     │       └── SENSEX_options_1min.csv
     └── archive/
         └── YYYY-MM-DD/
-            └── *.parquet.gz   (written by eod_maintenance.py at 15:40 IST)
+            └── *.parquet.zst  (ZSTD level 3; legacy .parquet.gz fallback)
 ```
 
 **Canonical schema** (`shared_market_data/live/.../`):
