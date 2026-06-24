@@ -14,32 +14,42 @@ import pandas as pd
 from config.labs_config import SHARED_ARCHIVE_DIR
 
 
+def write_zstd_level3(frame: pd.DataFrame, path: Path) -> None:
+    """Write every Parquet column with Fastparquet ZSTD level 3."""
+    compression = {
+        column: {"type": "zstd", "args": {"level": 3}}
+        for column in frame.columns
+    }
+    frame.to_parquet(
+        path,
+        engine="fastparquet",
+        compression=compression,
+        index=False,
+    )
+
+
 def migrate_file(source: Path, *, delete_source: bool = False) -> tuple[int, int]:
-    destination = source.with_name(source.name.removesuffix(".parquet.gz") + ".parquet.zst")
+    destination = (
+        source
+        if source.name.endswith(".parquet.zst")
+        else source.with_name(
+            source.name.removesuffix(".parquet.gz") + ".parquet.zst"
+        )
+    )
     source_size = source.stat().st_size
 
     frame = pd.read_parquet(source)
-    if destination.exists():
-        verified = pd.read_parquet(destination)
-    else:
-        temporary = destination.with_name(destination.name + ".tmp")
-        frame.to_parquet(
-            temporary,
-            compression={"type": "zstd", "args": {"level": 3}},
-            index=False,
-        )
-        verified = pd.read_parquet(temporary)
-        if len(verified) != len(frame) or list(verified.columns) != list(frame.columns):
-            temporary.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"Verification failed for {source}: "
-                f"source={frame.shape}, destination={verified.shape}"
-            )
-        temporary.replace(destination)
-
+    temporary = destination.with_name(destination.name + ".tmp")
+    write_zstd_level3(frame, temporary)
+    verified = pd.read_parquet(temporary)
     if len(verified) != len(frame) or list(verified.columns) != list(frame.columns):
-        raise RuntimeError(f"Existing ZSTD archive does not match {source}")
-    if delete_source:
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Verification failed for {source}: "
+            f"source={frame.shape}, destination={verified.shape}"
+        )
+    temporary.replace(destination)
+    if delete_source and source != destination:
         source.unlink()
     return source_size, destination.stat().st_size
 
@@ -48,14 +58,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=SHARED_ARCHIVE_DIR)
     parser.add_argument("--delete-source", action="store_true")
+    parser.add_argument("--recompress-zstd", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     sources = sorted(args.root.glob("**/*_options_1min.parquet.gz"))
+    if args.recompress_zstd:
+        sources.extend(sorted(args.root.glob("**/*_options_1min.parquet.zst")))
     if args.dry_run:
         for source in sources:
             print(source)
-        print(f"{len(sources)} legacy archive(s) found")
+        print(f"{len(sources)} archive(s) selected")
         return
 
     before = after = 0

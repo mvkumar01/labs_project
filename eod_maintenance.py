@@ -116,9 +116,14 @@ def archive_shared_market(trade_date: str) -> int:
         df = pd.read_csv(csv_path, parse_dates=["timestamp"])
         out_path = archive_day / csv_path.name.replace(".csv", ".parquet.zst")
         tmp_path = out_path.with_name(out_path.name + ".tmp")
+        compression = {
+            column: {"type": "zstd", "args": {"level": 3}}
+            for column in df.columns
+        }
         df.to_parquet(
             tmp_path,
-            compression={"type": "zstd", "args": {"level": 3}},
+            engine="fastparquet",
+            compression=compression,
             index=False,
         )
         # Never delete the only copy until the archive can be read back and its

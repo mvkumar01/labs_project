@@ -29,6 +29,13 @@ def _frame(ltp: float) -> pd.DataFrame:
     )
 
 
+def _zstd_level3(frame: pd.DataFrame) -> dict:
+    return {
+        column: {"type": "zstd", "args": {"level": 3}}
+        for column in frame.columns
+    }
+
+
 def test_live_csv_has_priority_over_archive(tmp_path: Path) -> None:
     live = tmp_path / "live"
     archive = tmp_path / "archive"
@@ -52,7 +59,8 @@ def test_archived_parquet_is_transparent_fallback(tmp_path: Path) -> None:
     expected = _frame(200)
     expected.to_parquet(
         archive / DATE / f"{NAME}.parquet.zst",
-        compression={"type": "zstd", "args": {"level": 3}},
+        engine="fastparquet",
+        compression=_zstd_level3(expected),
         index=False,
     )
 
@@ -75,9 +83,11 @@ def test_zstd_archive_has_priority_over_legacy_gzip(tmp_path: Path) -> None:
     _frame(200).to_parquet(
         archive / DATE / f"{NAME}.parquet.gz", compression="gzip", index=False
     )
-    _frame(300).to_parquet(
+    zstd_frame = _frame(300)
+    zstd_frame.to_parquet(
         archive / DATE / f"{NAME}.parquet.zst",
-        compression={"type": "zstd", "args": {"level": 3}},
+        engine="fastparquet",
+        compression=_zstd_level3(zstd_frame),
         index=False,
     )
 
