@@ -76,6 +76,16 @@
         <div class="card"><div class="k">Option P&amp;L (bid/ask)</div>
           <div class="v {{ 'green' if sensex_stats.option_total>0 else ('red' if sensex_stats.option_total<0 else '') }}">₹{{ "{:,.0f}".format(sensex_stats.option_total) }}</div>
           <div class="sub-k">{{ sensex_stats.priced_trades }} priced · {{ sensex_stats.unavailable_trades }} unavailable</div></div>
+        <div class="card"><div class="k">Win days</div>
+          <div class="v">{{ sensex_stats.win_pct }}%</div>
+          <div class="sub-k">{{ sensex_stats.win_days }} completed positive days</div></div>
+        <div class="card"><div class="k">Liquidity lock</div>
+          <div class="v" style="font-size:18px">{{ (sx.selected_expiry_type or 'legacy')|upper }} · {{ sx.expiry_code }}</div>
+          <div class="sub-k">
+            {% if sx.liquidity_mark %}{{ sx.liquidity_mark[11:16] }} · {% endif %}
+            weekly OI {{ "{:,.0f}".format(sx.weekly_in_band_oi or 0) }} ·
+            monthly OI {{ "{:,.0f}".format(sx.monthly_in_band_oi or 0) }}
+          </div></div>
       </div>
 
       {% if sensex_trades %}
@@ -124,9 +134,13 @@
 
       <p class="note">
         Rules: exact five-minute marks from 09:15 IST; prior-day settled codeB SENSEX baseline;
-        previous close ±1,200 configurable points; +30 upward cross → BUY PUT; −30 downward cross → BUY CALL;
+        previous close ±1,200 configurable points;
+        {% if sx_inverted %}+30 upward cross → BUY CALL; −30 downward cross → BUY PUT;
+        {% else %}+30 upward cross → BUY PUT; −30 downward cross → BUY CALL;{% endif %}
         exit at |Alpha|=100, reversal through zero, or hard 15:25 square-off. One position only.
-        {% if sx_inverted %}Execution-only inversion swaps every resulting CALL to PUT and PUT to CALL without changing timestamps or exits.{% endif %}
+        Alpha and execution are locked to whichever has greater opening in-range OI:
+        nearest weekly or monthly. The selected expiry uses its matching settled-OI baseline.
+        {% if sx_inverted %}The inversion changes only CALL/PUT execution; signal timestamps and exits remain unchanged.{% endif %}
         Spot P&amp;L is directional index movement. Option P&amp;L is gross one-lot executable-quote P&amp;L
         (entry ask, exit bid); missing quotes remain explicitly unavailable and never fall back to LTP.
       </p>

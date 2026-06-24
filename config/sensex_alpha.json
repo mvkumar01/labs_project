@@ -3,6 +3,6 @@
   "entry_threshold": 30,
   "target_abs": 100,
   "eod_exit": "15:25",
-  "expiry_mode": "nearest_weekly",
+  "expiry_mode": "most_liquid",
   "lot_size": 20
 }

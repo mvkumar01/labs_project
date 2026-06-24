@@ -2,11 +2,12 @@
 
 This engine is intentionally independent of the NIFTY champion. It computes
 SENSEX Alpha from exact five-minute OI snapshots, settled prior-day SENSEX OI,
-and a configurable previous-close strike window. Its observed direction is
-inverted: +30 cross buys a PUT; -30 cross buys a CALL.
+and a configurable previous-close strike window. Alpha and option execution use
+the same session-locked, highest-in-band-OI expiry (nearest weekly vs monthly).
+Its observed direction is inverted: +30 cross buys a PUT; -30 cross buys a CALL.
 
 Option execution is a conservative paper model: buy at the exact-mark ask and
-sell the same ATM/nearest-expiry contract at the exact-mark bid. LTP is never
+sell the same ATM/selected-expiry contract at the exact-mark bid. LTP is never
 used as an execution fallback. Spot P&L is retained even when either executable
 quote is unavailable.
 """
@@ -29,7 +30,7 @@ from storage.db import get_conn
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SYMBOL = "SENSEX"
-STRATEGY_VERSION = "sensex_own_alpha_abs_v1"
+STRATEGY_VERSION = "sensex_own_alpha_abs_liquid_expiry_v2"
 CONFIG_PATH = BASE_DIR / "config" / "sensex_alpha.json"
 
 
@@ -56,7 +57,7 @@ def load_config() -> dict:
         "entry_threshold": 30.0,
         "target_abs": 100.0,
         "eod_exit": "15:25",
-        "expiry_mode": "nearest_weekly",
+        "expiry_mode": "most_liquid",
         "lot_size": int(UNDERLYINGS[SYMBOL]["lot_size"]),
     }
     if CONFIG_PATH.is_file():
@@ -69,8 +70,10 @@ def load_config() -> dict:
         raise ValueError("SENSEX Alpha widths and thresholds must be positive")
     if defaults["target_abs"] > 100 or defaults["target_abs"] <= 0:
         raise ValueError("SENSEX Alpha target_abs must be in (0, 100]")
-    if defaults["expiry_mode"] != "nearest_weekly":
-        raise ValueError("SENSEX Alpha currently requires nearest_weekly expiry")
+    if defaults["expiry_mode"] not in {"most_liquid", "nearest_weekly"}:
+        raise ValueError(
+            "SENSEX Alpha expiry_mode must be most_liquid or nearest_weekly"
+        )
     datetime.strptime(defaults["eod_exit"], "%H:%M")
     return defaults
 
@@ -95,6 +98,13 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             option_unavailable_trades INTEGER NOT NULL,
             expiry_code             TEXT,
             baseline_date           TEXT,
+            liquidity_mode          TEXT,
+            liquidity_mark          TEXT,
+            selected_expiry_type    TEXT,
+            weekly_expiry_code      TEXT,
+            monthly_expiry_code     TEXT,
+            weekly_in_band_oi       REAL,
+            monthly_in_band_oi      REAL,
             strategy_version        TEXT NOT NULL,
             updated_at              TEXT NOT NULL
         );
@@ -126,6 +136,23 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    existing = {
+        row[1] for row in conn.execute("PRAGMA table_info(sensex_alpha_daily)")
+    }
+    additions = {
+        "liquidity_mode": "TEXT",
+        "liquidity_mark": "TEXT",
+        "selected_expiry_type": "TEXT",
+        "weekly_expiry_code": "TEXT",
+        "monthly_expiry_code": "TEXT",
+        "weekly_in_band_oi": "REAL",
+        "monthly_in_band_oi": "REAL",
+    }
+    for column, sql_type in additions.items():
+        if column not in existing:
+            conn.execute(
+                f"ALTER TABLE sensex_alpha_daily ADD COLUMN {column} {sql_type}"
+            )
     conn.commit()
 
 
@@ -141,49 +168,163 @@ def _previous_weekdays(trade_date: str, limit: int = 15) -> list[str]:
 
 def _load_baseline(trade_date: str, expiry_code: str) -> tuple[pd.DataFrame, str]:
     expected_expiry = expiry_sort_date(expiry_code)
+    mismatches: list[str] = []
     for baseline_date in _previous_weekdays(trade_date):
-        path = PREV_DAY_DIR / f"prev_day_oi_{SYMBOL}_{baseline_date}.csv"
-        if not path.is_file():
-            continue
-        frame = pd.read_csv(path)
-        required = {"strike", "type", "oi"}
-        missing = required.difference(frame.columns)
-        if missing:
-            raise SensexReplayInputError(
-                f"Baseline {path} missing columns: {sorted(missing)}"
-            )
-        if "symbol" in frame.columns:
-            frame = frame[frame["symbol"].astype(str).str.upper() == SYMBOL]
-        if "expiry" in frame.columns and expected_expiry is not None:
-            baseline_expiries = {
-                pd.Timestamp(value).date()
-                for value in frame["expiry"].dropna().astype(str).unique()
-            }
-            if is_monthly_expiry(expiry_code):
-                expiry_matches = all(
-                    (value.year, value.month)
-                    == (expected_expiry.year, expected_expiry.month)
-                    for value in baseline_expiries
-                )
-            else:
-                expiry_matches = baseline_expiries == {expected_expiry}
-            if baseline_expiries and not expiry_matches:
+        names = []
+        if is_monthly_expiry(expiry_code):
+            names.append(f"prev_day_oi_{SYMBOL}_MONTHLY_{baseline_date}.csv")
+        names.append(f"prev_day_oi_{SYMBOL}_{baseline_date}.csv")
+        for name in names:
+            path = PREV_DAY_DIR / name
+            if not path.is_file():
+                continue
+            frame = pd.read_csv(path)
+            required = {"strike", "type", "oi"}
+            missing = required.difference(frame.columns)
+            if missing:
                 raise SensexReplayInputError(
-                    f"Expiry rollover mismatch for {trade_date}: live={expiry_code} "
-                    f"({expected_expiry}), baseline={sorted(str(x) for x in baseline_expiries)}"
+                    f"Baseline {path} missing columns: {sorted(missing)}"
                 )
-        frame["type"] = frame["type"].astype(str).str.lower()
-        frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
-        frame["oi"] = pd.to_numeric(frame["oi"], errors="coerce")
-        frame = frame.dropna(subset=["strike", "oi"])
-        frame = frame[frame["type"].isin(["ce", "pe"])]
-        grouped = frame.groupby(["strike", "type"], as_index=False)["oi"].sum()
-        if grouped.empty:
-            raise SensexReplayInputError(f"Baseline contains no usable SENSEX rows: {path}")
-        return grouped, baseline_date
+            if "symbol" in frame.columns:
+                frame = frame[frame["symbol"].astype(str).str.upper() == SYMBOL]
+            if "expiry" in frame.columns and expected_expiry is not None:
+                baseline_expiries = {
+                    pd.Timestamp(value).date()
+                    for value in frame["expiry"].dropna().astype(str).unique()
+                }
+                if is_monthly_expiry(expiry_code):
+                    expiry_matches = bool(baseline_expiries) and all(
+                        (value.year, value.month)
+                        == (expected_expiry.year, expected_expiry.month)
+                        for value in baseline_expiries
+                    )
+                else:
+                    expiry_matches = baseline_expiries == {expected_expiry}
+                if baseline_expiries and not expiry_matches:
+                    mismatches.append(
+                        f"{path.name}={sorted(str(x) for x in baseline_expiries)}"
+                    )
+                    continue
+            frame["type"] = frame["type"].astype(str).str.lower()
+            frame["strike"] = pd.to_numeric(frame["strike"], errors="coerce")
+            frame["oi"] = pd.to_numeric(frame["oi"], errors="coerce")
+            frame = frame.dropna(subset=["strike", "oi"])
+            frame = frame[frame["type"].isin(["ce", "pe"])]
+            grouped = frame.groupby(["strike", "type"], as_index=False)["oi"].sum()
+            if grouped.empty:
+                raise SensexReplayInputError(
+                    f"Baseline contains no usable SENSEX rows: {path}"
+                )
+            return grouped, baseline_date
+    if mismatches:
+        raise SensexReplayInputError(
+            f"Expiry rollover mismatch for {trade_date}: live={expiry_code} "
+            f"({expected_expiry}); checked {'; '.join(mismatches)}"
+        )
     raise SensexReplayInputError(
-        f"No settled SENSEX baseline before {trade_date} under {PREV_DAY_DIR}"
+        f"No settled SENSEX baseline for expiry {expiry_code} before "
+        f"{trade_date} under {PREV_DAY_DIR}"
     )
+
+
+def _nearest_non_monthly(expiries, trade_date: str) -> str | None:
+    session = pd.Timestamp(trade_date).date()
+    decoded = []
+    for raw in expiries:
+        code = str(raw).strip().upper()
+        if not code or is_monthly_expiry(code):
+            continue
+        expiry_date = expiry_sort_date(code)
+        if expiry_date is not None and expiry_date >= session:
+            decoded.append((expiry_date, code))
+    return min(decoded)[1] if decoded else None
+
+
+def select_liquid_expiry(
+    frame: pd.DataFrame,
+    trade_date: str,
+    lower: float,
+    upper: float,
+    mode: str = "most_liquid",
+) -> dict:
+    """Lock the session expiry using earliest common-mark in-band total OI."""
+    expiries = frame["expiry"].dropna().astype(str).str.upper().unique()
+    weekly = _nearest_non_monthly(expiries, trade_date)
+    monthly = select_expiry_code(expiries, trade_date, "monthly")
+    if mode == "nearest_weekly":
+        selected = weekly or monthly
+        if selected is None:
+            raise SensexReplayInputError(f"No usable SENSEX expiry for {trade_date}")
+        return {
+            "expiry_code": selected,
+            "liquidity_mode": "legacy_nearest_weekly",
+            "liquidity_mark": None,
+            "selected_expiry_type": (
+                "monthly" if is_monthly_expiry(selected) else "weekly"
+            ),
+            "weekly_expiry_code": weekly,
+            "monthly_expiry_code": monthly,
+            "weekly_in_band_oi": None,
+            "monthly_in_band_oi": None,
+        }
+
+    candidates = [code for code in (weekly, monthly) if code]
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        raise SensexReplayInputError(f"No weekly/monthly SENSEX expiry for {trade_date}")
+
+    opening = frame[
+        (frame["expiry"].isin(candidates))
+        & (frame["strike"] >= lower)
+        & (frame["strike"] <= upper)
+        & (frame["timestamp"].dt.hour * 60 + frame["timestamp"].dt.minute >= 9 * 60 + 15)
+        & (frame["timestamp"].dt.minute % 5 == 0)
+        & (frame["timestamp"].dt.second == 0)
+    ].copy()
+    if opening.empty:
+        raise SensexReplayInputError(
+            f"No opening liquidity snapshot for SENSEX {trade_date}"
+        )
+    snapshots = (
+        opening.sort_values("timestamp")
+        .groupby(["timestamp", "expiry", "strike", "type"], as_index=False)
+        .last()
+    )
+    totals = snapshots.groupby(["timestamp", "expiry"])["oi"].sum().unstack()
+    common = totals.dropna(subset=candidates)
+    if not common.empty:
+        mark = common.index[0]
+        values = {code: float(common.loc[mark, code]) for code in candidates}
+        liquidity_mode = "opening_in_band_oi"
+    else:
+        mark = totals.index[0]
+        row = totals.loc[mark]
+        values = {
+            code: float(row.get(code, 0) or 0)
+            for code in candidates
+            if pd.notna(row.get(code))
+        }
+        if not values:
+            raise SensexReplayInputError(
+                f"No comparable expiry OI at opening for SENSEX {trade_date}"
+            )
+        liquidity_mode = "opening_in_band_oi_single_available"
+    selected = max(
+        values,
+        key=lambda code: (values[code], code == weekly),
+    )
+    return {
+        "expiry_code": selected,
+        "liquidity_mode": liquidity_mode,
+        "liquidity_mark": pd.Timestamp(mark).isoformat(),
+        "selected_expiry_type": (
+            "monthly" if selected == monthly else "weekly"
+        ),
+        "weekly_expiry_code": weekly,
+        "monthly_expiry_code": monthly,
+        "weekly_in_band_oi": values.get(weekly) if weekly else None,
+        "monthly_in_band_oi": values.get(monthly) if monthly else None,
+    }
 
 
 def _load_session(underlying: str, trade_date: str, columns=None) -> pd.DataFrame:
@@ -241,19 +382,20 @@ def build_alpha_bars(trade_date: str, config: dict | None = None) -> tuple[dict,
     for column in ("spot", "strike", "oi", "bid", "ask"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame.dropna(subset=["spot", "strike", "oi"])
-    frame["expiry"] = frame["expiry"].astype(str)
+    frame["expiry"] = frame["expiry"].astype(str).str.upper()
 
-    expiry_code = select_expiry_code(frame["expiry"].unique(), trade_date, cfg["expiry_mode"])
-    if expiry_code is None:
-        raise SensexReplayInputError(f"No nearest SENSEX expiry for {trade_date}")
+    prev_close, prev_close_date = _previous_close(trade_date)
+    lower = prev_close - cfg["half_width"]
+    upper = prev_close + cfg["half_width"]
+    liquidity = select_liquid_expiry(
+        frame, trade_date, lower, upper, cfg["expiry_mode"]
+    )
+    expiry_code = liquidity["expiry_code"]
     frame = frame[frame["expiry"] == str(expiry_code)].copy()
     if frame.empty:
         raise SensexReplayInputError(f"Selected SENSEX expiry {expiry_code} has no rows")
 
     baseline, baseline_date = _load_baseline(trade_date, str(expiry_code))
-    prev_close, prev_close_date = _previous_close(trade_date)
-    lower = prev_close - cfg["half_width"]
-    upper = prev_close + cfg["half_width"]
 
     exact = frame[
         (frame["timestamp"].dt.hour * 60 + frame["timestamp"].dt.minute >= 9 * 60 + 15)
@@ -318,6 +460,7 @@ def build_alpha_bars(trade_date: str, config: dict | None = None) -> tuple[dict,
         "range_upper": upper,
         "expiry_code": str(expiry_code),
         "baseline_date": baseline_date,
+        **liquidity,
     }
     return context, bars, quotes
 
@@ -501,7 +644,10 @@ def _save(conn, trade_date: str, context: dict, bars: pd.DataFrame,
         "(trade_date,status,prev_close,range_lower,range_upper,latest_mark,latest_spot,"
         "latest_alpha,position_side,n_trades,spot_pnl_pts,option_gross_rs,"
         "option_priced_trades,option_unavailable_trades,expiry_code,baseline_date,"
-        "strategy_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "liquidity_mode,liquidity_mark,selected_expiry_type,weekly_expiry_code,"
+        "monthly_expiry_code,weekly_in_band_oi,monthly_in_band_oi,"
+        "strategy_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+        "?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,prev_close=excluded.prev_close,"
         "range_lower=excluded.range_lower,range_upper=excluded.range_upper,latest_mark=excluded.latest_mark,"
         "latest_spot=excluded.latest_spot,latest_alpha=excluded.latest_alpha,"
@@ -510,13 +656,24 @@ def _save(conn, trade_date: str, context: dict, bars: pd.DataFrame,
         "option_priced_trades=excluded.option_priced_trades,"
         "option_unavailable_trades=excluded.option_unavailable_trades,"
         "expiry_code=excluded.expiry_code,baseline_date=excluded.baseline_date,"
+        "liquidity_mode=excluded.liquidity_mode,"
+        "liquidity_mark=excluded.liquidity_mark,"
+        "selected_expiry_type=excluded.selected_expiry_type,"
+        "weekly_expiry_code=excluded.weekly_expiry_code,"
+        "monthly_expiry_code=excluded.monthly_expiry_code,"
+        "weekly_in_band_oi=excluded.weekly_in_band_oi,"
+        "monthly_in_band_oi=excluded.monthly_in_band_oi,"
         "strategy_version=excluded.strategy_version,updated_at=excluded.updated_at",
         (
             trade_date, status, context["prev_close"], context["range_lower"],
             context["range_upper"], pd.Timestamp(latest["timestamp"]).isoformat(),
             float(latest["spot"]), float(latest["alpha"]), position_side, len(trades),
             spot_total, option_total, len(priced), unavailable, context["expiry_code"],
-            context["baseline_date"], STRATEGY_VERSION, now,
+            context["baseline_date"], context.get("liquidity_mode"),
+            context.get("liquidity_mark"), context.get("selected_expiry_type"),
+            context.get("weekly_expiry_code"), context.get("monthly_expiry_code"),
+            context.get("weekly_in_band_oi"), context.get("monthly_in_band_oi"),
+            STRATEGY_VERSION, now,
         ),
     )
     if commit:
@@ -558,6 +715,10 @@ def run_day(trade_date: str | None = None, *, persist: bool = True,
         "option_gross_rs": round(sum(t["option_gross_rs"] for t in priced), 2),
         "option_priced_trades": len(priced),
         "option_unavailable_trades": len(trades) - len(priced),
+        "expiry_code": context["expiry_code"],
+        "selected_expiry_type": context.get("selected_expiry_type"),
+        "weekly_in_band_oi": context.get("weekly_in_band_oi"),
+        "monthly_in_band_oi": context.get("monthly_in_band_oi"),
     }
 
 

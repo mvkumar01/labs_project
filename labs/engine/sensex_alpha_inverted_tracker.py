@@ -12,7 +12,7 @@ from labs.engine import sensex_alpha_tracker as base
 from storage.db import get_conn
 
 
-STRATEGY_VERSION = "sensex_own_alpha_abs_option_inverted_v1"
+STRATEGY_VERSION = "sensex_own_alpha_abs_liquid_expiry_option_inverted_v2"
 
 
 def _ensure_tables(conn: sqlite3.Connection) -> None:
@@ -26,7 +26,10 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             spot_pnl_pts REAL NOT NULL, option_gross_rs REAL,
             option_priced_trades INTEGER NOT NULL,
             option_unavailable_trades INTEGER NOT NULL, expiry_code TEXT,
-            baseline_date TEXT, strategy_version TEXT NOT NULL,
+            baseline_date TEXT, liquidity_mode TEXT, liquidity_mark TEXT,
+            selected_expiry_type TEXT, weekly_expiry_code TEXT,
+            monthly_expiry_code TEXT, weekly_in_band_oi REAL,
+            monthly_in_band_oi REAL, strategy_version TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sensex_alpha_inverted_trades (
@@ -42,6 +45,27 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    existing = {
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(sensex_alpha_inverted_daily)"
+        )
+    }
+    additions = {
+        "liquidity_mode": "TEXT",
+        "liquidity_mark": "TEXT",
+        "selected_expiry_type": "TEXT",
+        "weekly_expiry_code": "TEXT",
+        "monthly_expiry_code": "TEXT",
+        "weekly_in_band_oi": "REAL",
+        "monthly_in_band_oi": "REAL",
+    }
+    for column, sql_type in additions.items():
+        if column not in existing:
+            conn.execute(
+                f"ALTER TABLE sensex_alpha_inverted_daily "
+                f"ADD COLUMN {column} {sql_type}"
+            )
     conn.commit()
 
 
@@ -93,7 +117,10 @@ def _save(conn, trade_date, context, bars, trades, config, *, commit: bool) -> N
         "(trade_date,status,prev_close,range_lower,range_upper,latest_mark,latest_spot,"
         "latest_alpha,position_side,n_trades,spot_pnl_pts,option_gross_rs,"
         "option_priced_trades,option_unavailable_trades,expiry_code,baseline_date,"
-        "strategy_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "liquidity_mode,liquidity_mark,selected_expiry_type,weekly_expiry_code,"
+        "monthly_expiry_code,weekly_in_band_oi,monthly_in_band_oi,"
+        "strategy_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+        "?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,"
         "prev_close=excluded.prev_close,range_lower=excluded.range_lower,"
         "range_upper=excluded.range_upper,latest_mark=excluded.latest_mark,"
@@ -103,6 +130,13 @@ def _save(conn, trade_date, context, bars, trades, config, *, commit: bool) -> N
         "option_priced_trades=excluded.option_priced_trades,"
         "option_unavailable_trades=excluded.option_unavailable_trades,"
         "expiry_code=excluded.expiry_code,baseline_date=excluded.baseline_date,"
+        "liquidity_mode=excluded.liquidity_mode,"
+        "liquidity_mark=excluded.liquidity_mark,"
+        "selected_expiry_type=excluded.selected_expiry_type,"
+        "weekly_expiry_code=excluded.weekly_expiry_code,"
+        "monthly_expiry_code=excluded.monthly_expiry_code,"
+        "weekly_in_band_oi=excluded.weekly_in_band_oi,"
+        "monthly_in_band_oi=excluded.monthly_in_band_oi,"
         "strategy_version=excluded.strategy_version,updated_at=excluded.updated_at",
         (
             trade_date, status, context["prev_close"], context["range_lower"],
@@ -111,7 +145,11 @@ def _save(conn, trade_date, context, bars, trades, config, *, commit: bool) -> N
             round(sum(float(t["spot_pnl_pts"]) for t in trades), 2),
             round(sum(float(t["option_gross_rs"]) for t in priced), 2),
             len(priced), len(trades) - len(priced), context["expiry_code"],
-            context["baseline_date"], STRATEGY_VERSION, now,
+            context["baseline_date"], context.get("liquidity_mode"),
+            context.get("liquidity_mark"), context.get("selected_expiry_type"),
+            context.get("weekly_expiry_code"), context.get("monthly_expiry_code"),
+            context.get("weekly_in_band_oi"), context.get("monthly_in_band_oi"),
+            STRATEGY_VERSION, now,
         ),
     )
     if commit:
@@ -159,6 +197,10 @@ def run_day(
         "option_gross_rs": round(sum(t["option_gross_rs"] for t in priced), 2),
         "option_priced_trades": len(priced),
         "option_unavailable_trades": len(trades) - len(priced),
+        "expiry_code": context["expiry_code"],
+        "selected_expiry_type": context.get("selected_expiry_type"),
+        "weekly_in_band_oi": context.get("weekly_in_band_oi"),
+        "monthly_in_band_oi": context.get("monthly_in_band_oi"),
     }
 
 

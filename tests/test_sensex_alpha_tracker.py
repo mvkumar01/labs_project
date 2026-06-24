@@ -86,6 +86,33 @@ def test_monthly_expiry_matches_settled_date_within_same_month(
     assert len(loaded) == 2
 
 
+def test_monthly_expiry_prefers_separate_monthly_baseline(
+    monkeypatch, tmp_path
+) -> None:
+    weekly = pd.DataFrame({
+        "symbol": ["SENSEX", "SENSEX"],
+        "strike": [80000, 80000],
+        "type": ["ce", "pe"],
+        "oi": [1, 2],
+        "expiry": ["2026-07-02", "2026-07-02"],
+    })
+    monthly = weekly.copy()
+    monthly["oi"] = [100, 200]
+    monthly["expiry"] = "2026-07-30"
+    weekly.to_csv(
+        tmp_path / "prev_day_oi_SENSEX_2026-06-26.csv", index=False
+    )
+    monthly.to_csv(
+        tmp_path / "prev_day_oi_SENSEX_MONTHLY_2026-06-26.csv", index=False
+    )
+    monkeypatch.setattr(tracker, "PREV_DAY_DIR", tmp_path)
+
+    loaded, baseline_date = tracker._load_baseline("2026-06-29", "26JUL")
+
+    assert baseline_date == "2026-06-26"
+    assert loaded["oi"].sum() == 300
+
+
 def test_monthly_expiry_rejects_baseline_from_wrong_month(
     monkeypatch, tmp_path
 ) -> None:
@@ -101,6 +128,53 @@ def test_monthly_expiry_rejects_baseline_from_wrong_month(
 
     with pytest.raises(tracker.SensexReplayInputError, match="rollover mismatch"):
         tracker._load_baseline("2026-06-19", "26JUN")
+
+
+def test_most_liquid_expiry_locks_higher_opening_in_band_oi() -> None:
+    rows = []
+    for expiry, oi in (("26702", 100), ("26JUL", 1000)):
+        for option_type in ("ce", "pe"):
+            rows.append({
+                "timestamp": pd.Timestamp(
+                    "2026-06-29 09:15", tz=tracker.IST
+                ),
+                "expiry": expiry,
+                "strike": 80000,
+                "type": option_type,
+                "oi": oi,
+            })
+    frame = pd.DataFrame(rows)
+
+    selected = tracker.select_liquid_expiry(
+        frame, "2026-06-29", 79000, 81000
+    )
+
+    assert selected["expiry_code"] == "26JUL"
+    assert selected["selected_expiry_type"] == "monthly"
+    assert selected["weekly_in_band_oi"] == 200
+    assert selected["monthly_in_band_oi"] == 2000
+    assert selected["liquidity_mark"][11:16] == "09:15"
+
+
+def test_most_liquid_expiry_uses_weekly_when_weekly_oi_is_higher() -> None:
+    rows = []
+    for expiry, oi in (("26702", 2000), ("26JUL", 100)):
+        for option_type in ("ce", "pe"):
+            rows.append({
+                "timestamp": pd.Timestamp(
+                    "2026-06-29 09:15", tz=tracker.IST
+                ),
+                "expiry": expiry,
+                "strike": 80000,
+                "type": option_type,
+                "oi": oi,
+            })
+    selected = tracker.select_liquid_expiry(
+        pd.DataFrame(rows), "2026-06-29", 79000, 81000
+    )
+
+    assert selected["expiry_code"] == "26702"
+    assert selected["selected_expiry_type"] == "weekly"
 
 
 def test_hard_eod_exit_at_1525() -> None:

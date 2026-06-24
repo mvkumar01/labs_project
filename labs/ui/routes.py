@@ -340,13 +340,22 @@ def live_strategy():
                 "SELECT trade_date,status,prev_close,range_lower,range_upper,latest_mark,"
                 "latest_spot,latest_alpha,position_side,n_trades,spot_pnl_pts,"
                 "option_gross_rs,option_priced_trades,option_unavailable_trades,"
-                f"expiry_code,baseline_date FROM {sx_daily_table} "
+                "expiry_code,baseline_date,liquidity_mode,liquidity_mark,"
+                "selected_expiry_type,weekly_expiry_code,monthly_expiry_code,"
+                f"weekly_in_band_oi,monthly_in_band_oi FROM {sx_daily_table} "
                 "ORDER BY trade_date DESC LIMIT 120"
             )
             sx_cols = [column[0] for column in sx_cur.description]
             sensex_rows = [dict(zip(sx_cols, row)) for row in sx_cur.fetchall()]
             if sensex_rows:
                 latest_sx = sensex_rows[0]
+                completed_option_days = [
+                    float(row["option_gross_rs"] or 0)
+                    for row in sensex_rows
+                    if row["status"] != "open"
+                    and float(row["option_gross_rs"] or 0) != 0
+                ]
+                win_days = sum(value > 0 for value in completed_option_days)
                 sensex_stats = {
                     "days": len(sensex_rows),
                     "trades": sum(int(row["n_trades"] or 0) for row in sensex_rows),
@@ -361,6 +370,10 @@ def live_strategy():
                     ),
                     "unavailable_trades": sum(
                         int(row["option_unavailable_trades"] or 0) for row in sensex_rows
+                    ),
+                    "win_days": win_days,
+                    "win_pct": round(
+                        100 * win_days / max(len(completed_option_days), 1)
                     ),
                     "latest": latest_sx,
                 }
