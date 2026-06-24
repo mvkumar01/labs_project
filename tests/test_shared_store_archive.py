@@ -50,7 +50,12 @@ def test_archived_parquet_is_transparent_fallback(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     (archive / DATE).mkdir(parents=True)
     expected = _frame(200)
-    expected.to_parquet(archive / DATE / f"{NAME}.parquet.gz", index=False)
+    expected.to_parquet(
+        archive / DATE / f"{NAME}.parquet.zst",
+        compression="zstd",
+        compression_level=3,
+        index=False,
+    )
 
     result = load_options_frame(
         "NIFTY", DATE, live_root=live, archive_root=archive
@@ -61,7 +66,28 @@ def test_archived_parquet_is_transparent_fallback(tmp_path: Path) -> None:
     assert result.attrs["source_kind"] == "archive_parquet"
     assert resolve_options_source(
         "NIFTY", DATE, live_root=live, archive_root=archive
-    ).name.endswith(".parquet.gz")
+    ).name.endswith(".parquet.zst")
+
+
+def test_zstd_archive_has_priority_over_legacy_gzip(tmp_path: Path) -> None:
+    live = tmp_path / "live"
+    archive = tmp_path / "archive"
+    (archive / DATE).mkdir(parents=True)
+    _frame(200).to_parquet(
+        archive / DATE / f"{NAME}.parquet.gz", compression="gzip", index=False
+    )
+    _frame(300).to_parquet(
+        archive / DATE / f"{NAME}.parquet.zst",
+        compression="zstd",
+        compression_level=3,
+        index=False,
+    )
+
+    result = load_options_frame(
+        "NIFTY", DATE, live_root=live, archive_root=archive
+    )
+
+    assert result.iloc[0]["ltp"] == 300
 
 
 def test_missing_session_fails_closed(tmp_path: Path) -> None:

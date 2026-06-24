@@ -31,6 +31,7 @@ def option_source_candidates(
     stem = f"{underlying}_options_1min"
     return (
         Path(live_root) / trade_date / f"{stem}.csv",
+        Path(archive_root) / trade_date / f"{stem}.parquet.zst",
         Path(archive_root) / trade_date / f"{stem}.parquet.gz",
         Path(archive_root) / trade_date / f"{stem}.parquet",
     )

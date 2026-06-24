@@ -95,12 +95,12 @@ def archive_today(trade_date: str) -> Path | None:
     return archive_path
 
 
-# ── Archive shared market CSVs → parquet.gz ──────────────────────────────────
+# ── Archive shared market CSVs → ZSTD Parquet ────────────────────────────────
 
 def archive_shared_market(trade_date: str) -> int:
     """
     Converts each {UNDERLYING}_options_1min.csv in SHARED_LIVE_DIR/<trade_date>/
-    to a gzip-compressed Parquet file in SHARED_ARCHIVE_DIR/<trade_date>/,
+    to a ZSTD level-3 Parquet file in SHARED_ARCHIVE_DIR/<trade_date>/,
     then removes the source CSV.  Returns number of files archived.
     """
     day_dir = SHARED_LIVE_DIR / trade_date
@@ -114,9 +114,14 @@ def archive_shared_market(trade_date: str) -> int:
     count = 0
     for csv_path in sorted(day_dir.glob("*_options_1min.csv")):
         df = pd.read_csv(csv_path, parse_dates=["timestamp"])
-        out_path = archive_day / csv_path.name.replace(".csv", ".parquet.gz")
+        out_path = archive_day / csv_path.name.replace(".csv", ".parquet.zst")
         tmp_path = out_path.with_name(out_path.name + ".tmp")
-        df.to_parquet(tmp_path, compression="gzip", index=False)
+        df.to_parquet(
+            tmp_path,
+            compression="zstd",
+            compression_level=3,
+            index=False,
+        )
         # Never delete the only copy until the archive can be read back and its
         # row count agrees with the source CSV.
         verified = pd.read_parquet(tmp_path, columns=["timestamp"])
@@ -157,10 +162,13 @@ def purge_old_shared_market(keep_days: int = KEEP_DAYS) -> int:
             continue
         if dir_date < cutoff:
             for f in day_dir.glob("*.csv"):
-                archive_file = (
-                    SHARED_ARCHIVE_DIR / day_dir.name / f.name.replace(".csv", ".parquet.gz")
-                )
-                if archive_file.is_file() and archive_file.stat().st_size > 0:
+                archive_stem = f.name.removesuffix(".csv")
+                archive_files = [
+                    SHARED_ARCHIVE_DIR / day_dir.name / f"{archive_stem}.parquet.zst",
+                    SHARED_ARCHIVE_DIR / day_dir.name / f"{archive_stem}.parquet.gz",
+                    SHARED_ARCHIVE_DIR / day_dir.name / f"{archive_stem}.parquet",
+                ]
+                if any(path.is_file() and path.stat().st_size > 0 for path in archive_files):
                     f.unlink()
                 else:
                     print(
