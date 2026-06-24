@@ -25,8 +25,7 @@ def migrate_file(source: Path, *, delete_source: bool = False) -> tuple[int, int
         temporary = destination.with_name(destination.name + ".tmp")
         frame.to_parquet(
             temporary,
-            compression="zstd",
-            compression_level=3,
+            compression={"type": "zstd", "args": {"level": 3}},
             index=False,
         )
         verified = pd.read_parquet(temporary)

@@ -52,8 +52,7 @@ def test_archived_parquet_is_transparent_fallback(tmp_path: Path) -> None:
     expected = _frame(200)
     expected.to_parquet(
         archive / DATE / f"{NAME}.parquet.zst",
-        compression="zstd",
-        compression_level=3,
+        compression={"type": "zstd", "args": {"level": 3}},
         index=False,
     )
 
@@ -78,8 +77,7 @@ def test_zstd_archive_has_priority_over_legacy_gzip(tmp_path: Path) -> None:
     )
     _frame(300).to_parquet(
         archive / DATE / f"{NAME}.parquet.zst",
-        compression="zstd",
-        compression_level=3,
+        compression={"type": "zstd", "args": {"level": 3}},
         index=False,
     )
 

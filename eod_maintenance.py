@@ -118,8 +118,7 @@ def archive_shared_market(trade_date: str) -> int:
         tmp_path = out_path.with_name(out_path.name + ".tmp")
         df.to_parquet(
             tmp_path,
-            compression="zstd",
-            compression_level=3,
+            compression={"type": "zstd", "args": {"level": 3}},
             index=False,
         )
         # Never delete the only copy until the archive can be read back and its
