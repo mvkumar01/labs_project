@@ -55,7 +55,7 @@
     <h1>Sensex_alpha{{ ' inverted' if sx_inverted else '' }} — own Alpha (paper)</h1>
     <p class="sub">Independent SENSEX OI-imbalance book. {{ 'Option side swapped CALL↔PUT; ' if sx_inverted else 'Inverted direction, ' }}one position at a time,
       ATM nearest-expiry option execution at <b>ask in / bid out</b>. LTP is never used as an execution fallback.</p>
-    <div class="formula">Alpha = ((ΣΔPE − ΣΔCE) × 100) / (|ΣΔPE| + |ΣΔCE|), bounded [−100, +100]</div>
+    <div class="formula">Sensex's own abs alpha reverted</div>
 
     {% if sensex_stats.get('error') %}
       <p class="empty">Sensex_alpha unavailable ({{ sensex_stats.error }}).</p>
