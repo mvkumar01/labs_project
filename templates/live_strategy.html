@@ -329,7 +329,7 @@
         <div class="v {{ 'green' if stats.net_total>0 else ('red' if stats.net_total<0 else '') }}">₹{{ "{:,.0f}".format(stats.net_total) }}</div></div>
       <div class="card"><div class="k">Days</div><div class="v">{{ stats.days }} <span class="muted" style="font-size:13px">({{ stats.traded_days }} traded)</span></div></div>
       <div class="card"><div class="k">Win days</div><div class="v">{{ stats.win_pct }}% <span class="muted" style="font-size:13px">({{ stats.win_days }})</span></div></div>
-      <div class="card"><div class="k">Best / Worst day</div><div class="v"><span class="green">+₹{{ "{:,.0f}".format(stats.best) }}</span> / <span class="red">₹{{ "{:,.0f}".format(stats.worst) }}</span></div></div>
+      <div class="card"><div class="k">Gross profit / loss</div><div class="v"><span class="green">+₹{{ "{:,.0f}".format(stats.gross_profit) }}</span> / <span class="red">₹{{ "{:,.0f}".format(stats.gross_loss) }}</span></div></div>
       <div class="card"><div class="k">Charges paid</div><div class="v muted">₹{{ "{:,.0f}".format(stats.charges_total) }}</div></div>
     </div>
 

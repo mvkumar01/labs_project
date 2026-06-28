@@ -260,6 +260,8 @@ def live_strategy():
                 "win_pct": round(100 * len(wins) / max(len([n for n in net if n != 0]), 1)),
                 "best": round(max(net), 2) if net else 0,
                 "worst": round(min(net), 2) if net else 0,
+                "gross_profit": round(sum(n for n in net if n > 0), 2),
+                "gross_loss": round(sum(n for n in net if n < 0), 2),
             }
             # cumulative (oldest -> newest) for the equity curve
             cum = 0.0
@@ -400,13 +402,16 @@ def live_strategy():
         # first deployment; the paper loop creates them on its first valid run.
         try:
             sx_inverted = active_live_tab == "sensex_alpha_inverted"
+            # Names interchanged per user request: each tab reads the OTHER
+            # table, so "Sensex_alpha" now shows the formerly-mislabeled inverted
+            # data and "Sensex_alpha inverted" shows the normal book.
             sx_daily_table = (
-                "sensex_alpha_inverted_daily" if sx_inverted
-                else "sensex_alpha_daily"
+                "sensex_alpha_daily" if sx_inverted
+                else "sensex_alpha_inverted_daily"
             )
             sx_trades_table = (
-                "sensex_alpha_inverted_trades" if sx_inverted
-                else "sensex_alpha_trades"
+                "sensex_alpha_trades" if sx_inverted
+                else "sensex_alpha_inverted_trades"
             )
             sx_cur = conn.execute(
                 "SELECT trade_date,status,prev_close,range_lower,range_upper,latest_mark,"
