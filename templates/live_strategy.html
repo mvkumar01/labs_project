@@ -51,6 +51,15 @@
       <a href="/labs/live?tab=sensex_v211_inverted" class="{{ 'active' if active_live_tab == 'sensex_v211_inverted' else '' }}">Alpha v2.11 inverted</a>
     </div>
 
+    <div class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
+      <strong>Date filter</strong>
+      <label>From <input type="date" id="df-from"></label>
+      <label>To <input type="date" id="df-to"></label>
+      <button type="button" id="df-apply">Apply</button>
+      <button type="button" id="df-reset">Reset</button>
+      <span id="df-count" class="muted"></span>
+    </div>
+
     {% if active_live_tab == 'alpha_v212' %}
     <h1>Alpha v2.12 — entry-spot recovery (paper)</h1>
     <p class="sub">Alpha v2.11 signals plus an original-entry-spot stop and same-side recovery.
@@ -445,6 +454,31 @@
     {% endif %}
   </main>
 </div>
+<script>
+  (function(){
+    function apply(){
+      var f=(document.getElementById('df-from')||{}).value||'';
+      var t=(document.getElementById('df-to')||{}).value||'';
+      var shown=0,total=0;
+      document.querySelectorAll('table.perf tbody tr').forEach(function(tr){
+        var c=tr.querySelector('td'); if(!c) return;
+        var d=(c.textContent||'').trim().slice(0,10);
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;   // only date-keyed (daily) rows
+        total++;
+        var ok=(!f||d>=f)&&(!t||d<=t);
+        tr.style.display=ok?'':'none'; if(ok) shown++;
+      });
+      var cnt=document.getElementById('df-count');
+      if(cnt) cnt.textContent=(f||t)?(shown+' / '+total+' days'):'';
+    }
+    var a=document.getElementById('df-apply'),r=document.getElementById('df-reset');
+    if(a) a.addEventListener('click',apply);
+    if(r) r.addEventListener('click',function(){
+      var f=document.getElementById('df-from'),t=document.getElementById('df-to');
+      if(f)f.value='';if(t)t.value='';apply();
+    });
+  })();
+</script>
 {% if stats.get('curve') %}
 <script>
   const curve = {{ stats.curve | tojson }};
