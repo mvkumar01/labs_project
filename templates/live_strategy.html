@@ -44,13 +44,104 @@
   <main>
     <div class="live-tabs">
       <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
+      <a href="/labs/live?tab=alpha_v212" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
       <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="/labs/live?tab=sensex_alpha_inverted" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
       <a href="/labs/live?tab=sensex_v211" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
       <a href="/labs/live?tab=sensex_v211_inverted" class="{{ 'active' if active_live_tab == 'sensex_v211_inverted' else '' }}">Alpha v2.11 inverted</a>
     </div>
 
-    {% if active_live_tab in ['sensex_alpha', 'sensex_alpha_inverted'] %}
+    {% if active_live_tab == 'alpha_v212' %}
+    <h1>Alpha v2.12 — entry-spot recovery (paper)</h1>
+    <p class="sub">Alpha v2.11 signals plus an original-entry-spot stop and same-side recovery.
+      One nearest-expiry NIFTY ITM-200 option lot, priced at <b>exact-minute ask in / bid out</b>.
+      Net P&amp;L includes charges.</p>
+
+    {% if v212_stats.get('error') %}
+      <p class="empty">Alpha v2.12 unavailable ({{ v212_stats.error }}).</p>
+    {% elif not v212_rows %}
+      <p class="empty">No Alpha v2.12 paper sessions recorded yet. The guarded June backfill populates this tab.</p>
+    {% else %}
+      {% set v = v212_stats.latest %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if v212_stats.net_total>0 else ('red' if v212_stats.net_total<0 else '') }}">₹{{ "{:,.2f}".format(v212_stats.net_total) }}</div>
+          <div class="sub-k">after ₹{{ "{:,.2f}".format(v212_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Gross executable P&amp;L</div>
+          <div class="v {{ 'green' if v212_stats.gross_total>0 else ('red' if v212_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(v212_stats.gross_total) }}</div>
+          <div class="sub-k">ask entry · bid exit · one 65-unit lot</div></div>
+        <div class="card"><div class="k">June coverage</div>
+          <div class="v">{{ v212_stats.first_date[8:10] }}–{{ v212_stats.last_date[8:10] }} Jun</div>
+          <div class="sub-k">{{ v212_stats.days }} recorded sessions · available archive</div></div>
+        <div class="card"><div class="k">Segments / quotes</div>
+          <div class="v">{{ v212_stats.priced_segments }}/{{ v212_stats.segments }}</div>
+          <div class="sub-k">{{ v212_stats.coverage_pct }}% priced · {{ v212_stats.unavailable_segments }} unavailable</div></div>
+        <div class="card"><div class="k">Win days</div>
+          <div class="v">{{ v212_stats.win_pct }}%</div>
+          <div class="sub-k">{{ v212_stats.win_days }}/{{ v212_stats.active_days }} completed active days</div></div>
+        <div class="card"><div class="k">Spot strategy P&amp;L</div>
+          <div class="v {{ 'green' if v212_stats.spot_total>0 else ('red' if v212_stats.spot_total<0 else '') }}">{{ "%+.2f"|format(v212_stats.spot_total) }} pts</div>
+          <div class="sub-k">before option pricing and costs</div></div>
+      </div>
+
+      {% if v212_trades %}
+      <h2 style="margin-top:24px">Latest available session — {{ v.trade_date }}</h2>
+      <table class="perf">
+        <thead><tr><th>#</th><th>Side</th><th>ITM-200</th><th>Entry / Exit</th>
+          <th>Spot in/out</th><th>Spot pts</th><th>Ask in / Bid out</th><th>Gross ₹</th>
+          <th>Charges</th><th>Net ₹</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in v212_trades %}
+          <tr>
+            <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }} {{ 'CE' if t.side == 'CALL' else 'PE' }}</td>
+            <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] }}</td>
+            <td>{{ "{:,.0f}".format(t.entry_spot) }} → {{ "{:,.0f}".format(t.exit_spot) }}</td>
+            <td class="{{ 'green' if t.spot_pnl_pts>0 else ('red' if t.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(t.spot_pnl_pts) }}</td>
+            {% if t.quote_status == 'priced' %}
+              <td>{{ "%.2f"|format(t.entry_ask) }} → {{ "%.2f"|format(t.exit_bid) }}</td>
+              <td class="{{ 'green' if t.gross_rs>0 else ('red' if t.gross_rs<0 else '') }}">₹{{ "{:,.2f}".format(t.gross_rs) }}</td>
+              <td class="muted">₹{{ "{:,.2f}".format(t.charges_rs) }}</td>
+              <td class="{{ 'green' if t.net_rs>0 else ('red' if t.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(t.net_rs) }}</td>
+            {% else %}
+              <td class="unavail">— ({{ t.quote_status }})</td><td class="unavail">—</td><td>—</td><td>—</td>
+            {% endif %}
+            <td class="{{ 'amber' if t.status == 'open' else 'muted' }}">{{ 'HOLDING' if t.status == 'open' else t.exit_reason }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <h2 style="margin-top:24px">June daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th>
+          <th>Segments</th><th>Quotes</th><th>Spot pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
+        <tbody>
+        {% for r in v212_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
+            <td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
+            <td>{{ r.n_segments }}</td><td>{{ r.priced_segments }}/{{ r.n_segments }}</td>
+            <td class="{{ 'green' if r.spot_pnl_pts>0 else ('red' if r.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(r.spot_pnl_pts or 0) }}</td>
+            <td>₹{{ "{:,.2f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if r.net_rs>0 else ('red' if r.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <p class="note">
+        v2.12 changes only risk handling: every original signal-entry spot is the stop. A touch exits at that
+        original spot, then arms same-side recovery at the same level; re-entry requires a one-minute touch and
+        a close back on the favourable side. Normal Alpha stop/target invalidation cancels a pending recovery.
+        All v2.11 range, signal, trail and target rules remain unchanged. The full research comparison was
+        +10,170.3 spot points versus v2.11's +7,948.8 (+2,221.4), MaxDD 150 versus 170, and 12/12 positive months.
+        This page's executable June sample is limited to the archive shown above and is not an out-of-sample claim.
+        Paper only — never places real orders.
+      </p>
+    {% endif %}
+
+    {% elif active_live_tab in ['sensex_alpha', 'sensex_alpha_inverted'] %}
     {% set sx_inverted = active_live_tab == 'sensex_alpha_inverted' %}
     <h1>Sensex_alpha{{ ' inverted' if sx_inverted else '' }} — own Alpha (paper)</h1>
     <p class="sub">Independent SENSEX OI-imbalance book. {{ 'Option side swapped CALL↔PUT; ' if sx_inverted else 'Inverted direction, ' }}one position at a time,

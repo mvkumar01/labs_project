@@ -230,7 +230,7 @@ def live_strategy():
     from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
     active_live_tab = request.args.get("tab", "nifty")
     if active_live_tab not in {
-        "nifty", "sensex_alpha", "sensex_alpha_inverted",
+        "nifty", "alpha_v212", "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted",
     }:
         active_live_tab = "nifty"
@@ -239,6 +239,7 @@ def live_strategy():
     comparison_by_date = {}
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
     sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
+    v212_rows, v212_trades, v212_stats = [], [], {}
     try:
         conn = get_conn()
         cur = conn.execute(
@@ -322,6 +323,77 @@ def live_strategy():
             # Comparison tables don't exist yet (pre-backfill rollout)
             comparison_variant_totals = {}
             comparison_by_date = {}
+
+        # Alpha v2.12 is deliberately isolated from the v2.11 ledger. The
+        # page shows only the promoted June evaluation window and executable
+        # ask-in / bid-out results.
+        try:
+            v212_cur = conn.execute(
+                "SELECT trade_date,status,tier,gap_dir,expiry_code,n_segments,"
+                "priced_segments,unavailable_segments,spot_pnl_pts,gross_rs,"
+                "charges_rs,net_rs,strategy_version,updated_at "
+                "FROM alpha_v212_daily WHERE trade_date >= '2026-06-01' "
+                "AND trade_date < '2026-07-01' ORDER BY trade_date DESC"
+            )
+            v212_cols = [column[0] for column in v212_cur.description]
+            v212_rows = [dict(zip(v212_cols, row)) for row in v212_cur.fetchall()]
+            if v212_rows:
+                active_days = [
+                    row for row in v212_rows
+                    if int(row["n_segments"] or 0) > 0 and row["status"] != "open"
+                ]
+                wins = [row for row in active_days if float(row["net_rs"] or 0) > 0]
+                total_segments = sum(int(row["n_segments"] or 0) for row in v212_rows)
+                priced_segments = sum(
+                    int(row["priced_segments"] or 0) for row in v212_rows
+                )
+                v212_stats = {
+                    "days": len(v212_rows),
+                    "active_days": len(active_days),
+                    "win_days": len(wins),
+                    "win_pct": round(100 * len(wins) / max(len(active_days), 1)),
+                    "segments": total_segments,
+                    "priced_segments": priced_segments,
+                    "unavailable_segments": sum(
+                        int(row["unavailable_segments"] or 0) for row in v212_rows
+                    ),
+                    "coverage_pct": round(
+                        100 * priced_segments / max(total_segments, 1), 1
+                    ),
+                    "spot_total": round(
+                        sum(float(row["spot_pnl_pts"] or 0) for row in v212_rows), 2
+                    ),
+                    "gross_total": round(
+                        sum(float(row["gross_rs"] or 0) for row in v212_rows), 2
+                    ),
+                    "charges_total": round(
+                        sum(float(row["charges_rs"] or 0) for row in v212_rows), 2
+                    ),
+                    "net_total": round(
+                        sum(float(row["net_rs"] or 0) for row in v212_rows), 2
+                    ),
+                    "first_date": v212_rows[-1]["trade_date"],
+                    "last_date": v212_rows[0]["trade_date"],
+                    "latest": v212_rows[0],
+                }
+                v212_trade_cur = conn.execute(
+                    "SELECT seq,status,side,strike,expiry_code,tradingsymbol,"
+                    "entry_ts,exit_ts,entry_spot,exit_spot,spot_pnl_pts,entry_bid,"
+                    "entry_ask,exit_bid,exit_ask,option_pnl_pts,gross_rs,charges_rs,"
+                    "net_rs,quote_status,entry_rule,exit_reason "
+                    "FROM alpha_v212_trades WHERE trade_date=? ORDER BY seq",
+                    (v212_rows[0]["trade_date"],),
+                )
+                v212_trade_cols = [
+                    column[0] for column in v212_trade_cur.description
+                ]
+                v212_trades = [
+                    dict(zip(v212_trade_cols, row))
+                    for row in v212_trade_cur.fetchall()
+                ]
+        except Exception as exc:
+            if active_live_tab == "alpha_v212" and "no such table" not in str(exc):
+                v212_stats = {"error": str(exc)}
 
         # SENSEX-own Alpha is a separate paper book and never changes the
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
@@ -471,4 +543,7 @@ def live_strategy():
         sensex_v211_rows=sensex_v211_rows,
         sensex_v211_trades=sensex_v211_trades,
         sensex_v211_stats=sensex_v211_stats,
+        v212_rows=v212_rows,
+        v212_trades=v212_trades,
+        v212_stats=v212_stats,
     )

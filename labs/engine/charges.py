@@ -40,5 +40,9 @@ def round_trip_charges(entry_premium: float, exit_premium: float, qty: int) -> d
         "sebi": round(sebi, 4),
         "stamp": round(stamp, 2),
         "gst": round(gst, 2),
+        # Preserve the unrounded value for ledgers whose research benchmark
+        # aggregates charges before applying paise rounding. Existing callers
+        # continue to use the rounded ``total`` field unchanged.
+        "raw_total": total,
         "total": round(total, 2),
     }

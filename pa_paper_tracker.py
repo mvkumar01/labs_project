@@ -11,6 +11,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 if __name__ == "__main__":
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
+    from labs.engine.alpha_v212_tracker import run_day as run_v212_day
     from labs.engine.sensex_alpha_tracker import run_day as run_sensex_day
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
@@ -18,6 +19,7 @@ if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     print({
         "nifty": run_nifty_day(arg),
+        "alpha_v212": run_v212_day(arg),
         "sensex_alpha": run_sensex_day(arg),
         "sensex_alpha_inverted": run_sensex_inverted_day(arg),
         "sensex_v211": run_sensex_v211_day(arg),

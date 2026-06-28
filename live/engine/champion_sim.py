@@ -166,6 +166,19 @@ class OHLC:
                 out.append((float(ohlc[1]), float(ohlc[2])))  # high, low
         return out
 
+    def get_1min_bar_closes(self, bar_ts):
+        """Return (timestamp, high, low, close) for barrier-cross modelling."""
+        base = pd.Timestamp(bar_ts)
+        out = []
+        for m in range(5):
+            ts = base + pd.Timedelta(minutes=m)
+            ohlc = self.by_minute.get(ts.strftime("%H:%M"))
+            if ohlc is not None:
+                out.append(
+                    (ts, float(ohlc[1]), float(ohlc[2]), float(ohlc[3]))
+                )
+        return out
+
 
 def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              tier, weekday, regime, range_lo, range_hi,
@@ -176,6 +189,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_v79_d2=True,
              enable_rule3_dn_put=True,
              enable_v711_drift_protective=True,
+             enable_entry_spot_recovery=False,
              close_eod=True, return_state=False):
     """Faithful port of v79_v281_isolation.sim() with the champion flag set.
 
@@ -243,6 +257,27 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     entry_rule = None
     pos_max_alpha = None
     T = crossover_th
+    recovery_waiting = False
+    recovery_pos = None
+    recovery_level = None
+    recovery_entry_rule = None
+    recovery_sl_override = None
+    recovery_origin_ts = None
+
+    def recovery_alpha_exit(side, alpha, sl_override):
+        """Whether Alpha invalidates a flat, pending same-side recovery."""
+        if tier == "PC50":
+            sl_th = sl_override if sl_override is not None else sl_th_default
+            return (
+                (alpha <= sl_th or alpha >= target)
+                if side == "call"
+                else (alpha >= -sl_th or alpha <= -target)
+            )
+        return (
+            (alpha <= 0 or alpha >= 100)
+            if side == "call"
+            else (alpha >= 0 or alpha <= -100)
+        )
 
     for i in range(1, len(adf)):
         p = adf.iloc[i - 1]
@@ -278,12 +313,143 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                     and drift_min_alpha <= V711_CONFIRMATION_ALPHA):
                 drift_confirmation = True
 
+        # Flat after an entry-spot stop: Alpha invalidation has priority.
+        # Re-entry requires a one-minute touch plus a favourable-side close.
+        if enable_entry_spot_recovery and recovery_waiting:
+            if recovery_alpha_exit(recovery_pos, ca, recovery_sl_override):
+                trades.append(dict(
+                    pnl=0.0, reason="RECOVERY_CANCEL_ALPHA", pos=recovery_pos,
+                    entry_ts=recovery_origin_ts, exit_ts=c["timestamp"],
+                    entry_alpha=None, exit_alpha=ca,
+                    entry_spot=recovery_level, exit_spot=recovery_level,
+                    entry_rule=recovery_entry_rule, tier=tier,
+                ))
+                recovery_waiting = False
+                recovery_pos = None
+                recovery_level = None
+                recovery_entry_rule = None
+                recovery_sl_override = None
+                recovery_origin_ts = None
+                continue
+
+            confirmed_ts = None
+            for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
+                if recovery_pos == "call" and bl <= recovery_level < bc:
+                    confirmed_ts = bts
+                    break
+                if recovery_pos == "put" and bc < recovery_level <= bh:
+                    confirmed_ts = bts
+                    break
+            if confirmed_ts is not None:
+                pos = recovery_pos
+                esp = float(recovery_level)
+                entry_ts = confirmed_ts
+                entry_alpha = ca
+                entry_rule = recovery_entry_rule
+                pos_sl_override = recovery_sl_override
+                pos_max_alpha = ca
+                recovery_waiting = False
+
+                if (tier == "PC400" and pos == "put" and not is_up
+                        and enable_v711_drift_protective):
+                    drift_min_alpha = ca
+                    drift_confirmation = ca <= V711_CONFIRMATION_ALPHA
+                    drift_armed = False
+                    drift_stop = None
+                if tier == "PC400":
+                    if is_up and pos == "put":
+                        pos_arm, pos_lock, pos_wall_active = TRAIL_ARM, TRAIL_LOCK, False
+                    elif pos == "call":
+                        if is_up and not day_use_trail:
+                            pos_arm, pos_lock, pos_wall_active = None, None, True
+                        else:
+                            pos_arm, pos_lock, pos_wall_active = TRAIL_ARM, TRAIL_LOCK, False
+                    else:
+                        pos_arm, pos_lock, pos_wall_active = None, None, False
+                else:
+                    pos_arm, pos_lock, pos_wall_active = None, None, False
+                peak_pnl = 0.0
+                trail_armed = False
+                recovery_pos = None
+                recovery_level = None
+                recovery_entry_rule = None
+                recovery_sl_override = None
+                recovery_origin_ts = None
+            # Pending recovery suppresses fresh Alpha entries; a recovered
+            # position begins normal exit evaluation on the next 5-minute bar.
+            continue
+
         # ── EXIT ─────────────────────────────────────────────────────────────
         if pos is not None:
             curr_spot = ohlc.get_spot(c["timestamp"]) or float(c["spot"])
             exited = False
             exit_sp = None
             reason = ""
+
+            # v2.12 overlay runs before every legacy spot/trail stop. A touched
+            # original entry level exits at zero spot points and arms recovery.
+            if enable_entry_spot_recovery:
+                stop_hits = 0
+                active_at_end = True
+                for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
+                    if active_at_end:
+                        hit = (
+                            (pos == "call" and bl <= esp)
+                            or (pos == "put" and bh >= esp)
+                        )
+                        if hit:
+                            stop_hits += 1
+                            trades.append(dict(
+                                pnl=0.0, reason="ENTRY_SPOT_SL", pos=pos,
+                                entry_ts=entry_ts, exit_ts=bts,
+                                entry_alpha=entry_alpha, exit_alpha=ca,
+                                entry_spot=esp, exit_spot=esp,
+                                entry_rule=entry_rule, tier=tier,
+                            ))
+                            active_at_end = False
+                            if ((pos == "call" and bc > esp)
+                                    or (pos == "put" and bc < esp)):
+                                active_at_end = True
+                                entry_ts = bts
+                                entry_alpha = ca
+                    else:
+                        crossed = (
+                            (pos == "call" and bl <= esp < bc)
+                            or (pos == "put" and bc < esp <= bh)
+                        )
+                        if crossed:
+                            active_at_end = True
+                            entry_ts = bts
+                            entry_alpha = ca
+
+                if stop_hits:
+                    peak_pnl = 0.0
+                    trail_armed = False
+                    appr_ts = None
+                    pos_arm = None
+                    pos_lock = None
+                    pos_wall_active = False
+                    pos_max_alpha = ca
+                    drift_min_alpha = ca if pos == "put" else None
+                    drift_confirmation = bool(
+                        pos == "put" and ca <= V711_CONFIRMATION_ALPHA
+                    )
+                    drift_armed = False
+                    drift_stop = None
+                    if active_at_end:
+                        continue
+
+                    recovery_waiting = True
+                    recovery_pos = pos
+                    recovery_level = float(esp)
+                    recovery_entry_rule = entry_rule
+                    recovery_sl_override = pos_sl_override
+                    recovery_origin_ts = entry_ts
+                    pos = None
+                    entry_ts = None
+                    entry_alpha = None
+                    pos_max_alpha = None
+                    continue
 
             if (enable_v711_drift_protective and pos == "put"
                     and tier == "PC400" and not is_up):
@@ -381,12 +547,14 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                         if pos == "call":
                             if bh - esp >= 70:
                                 exit_sp = esp + 70; exited = True; reason = "TP_SPOT"; break
-                            if esp - bl >= 30:
+                            if (not enable_entry_spot_recovery
+                                    and esp - bl >= 30):
                                 exit_sp = esp - 30; exited = True; reason = "SL_SPOT"; break
                         else:
                             if esp - bl >= 70:
                                 exit_sp = esp - 70; exited = True; reason = "TP_SPOT"; break
-                            if bh - esp >= 30:
+                            if (not enable_entry_spot_recovery
+                                    and bh - esp >= 30):
                                 exit_sp = esp + 30; exited = True; reason = "SL_SPOT"; break
                     if not exited:
                         if pos == "call":

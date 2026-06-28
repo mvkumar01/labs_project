@@ -26,6 +26,7 @@ def _in_session(now: datetime) -> bool:
 
 def main() -> None:
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
+    from labs.engine.alpha_v212_tracker import run_day as run_v212_day
     from labs.engine.sensex_alpha_tracker import run_day as run_sensex_day
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
@@ -33,6 +34,7 @@ def main() -> None:
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
         "nifty": None,
+        "alpha_v212": None,
         "sensex_alpha": None,
         "sensex_alpha_inverted": None,
         "sensex_v211": None,
@@ -43,6 +45,7 @@ def main() -> None:
         if _in_session(now):
             for name, runner in (
                 ("nifty", run_nifty_day),
+                ("alpha_v212", run_v212_day),
                 ("sensex_alpha", run_sensex_day),
                 ("sensex_alpha_inverted", run_sensex_inverted_day),
                 ("sensex_v211", run_sensex_v211_day),
