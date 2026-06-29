@@ -41,7 +41,8 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
 
 
 def champion_target(trade_date: str | None = None, now_ist: datetime | None = None,
-                    override: dict | None = None) -> dict | None:
+                    override: dict | None = None,
+                    enable_entry_spot_recovery: bool = False) -> dict | None:
     """Replay completed bars up to `now_ist` and return the target position.
 
     Returns:
@@ -86,6 +87,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     _, trades, open_state = champion_sim.simulate(
         adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
         weekday, regime, day["lower"], day["upper"],
+        enable_entry_spot_recovery=enable_entry_spot_recovery,
         close_eod=False, return_state=True)
 
     last_reason = trades[-1]["reason"] if trades else None

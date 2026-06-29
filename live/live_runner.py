@@ -1236,7 +1236,15 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # Replay all COMPLETED bars and reconcile to the bot's actual position.
         # entry_spot for an ENTER comes from the replay (the champion entry bar
         # spot), NOT the latest bar — keeps fills consistent with the engine.
-        target = champion_decider.champion_target(_today_ist_iso(), now_ist=_now_ist())
+        # Alpha v2.12 = champion + entry-spot recovery overlay (all tiers). Gated
+        # per-connection on strategy_version so production v2.11 connections (and
+        # the default champion) are byte-for-byte unchanged.
+        v212_recovery = (
+            svc.get_config(user_id, conn_id, "strategy_version") == "v2.12"
+        )
+        target = champion_decider.champion_target(
+            _today_ist_iso(), now_ist=_now_ist(),
+            enable_entry_spot_recovery=v212_recovery)
         sig = champion_decider.reconcile(target, current_side if current_open else None)
         champ_entry_spot = (target or {}).get("entry_spot")
         log.info("champion conn=%s ts=%s pos=%s target=%s sig=%s",
