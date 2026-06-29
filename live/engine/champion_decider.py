@@ -75,11 +75,14 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     if adf is None or adf.empty:
         return None
 
-    # Completed-bar discipline: the in-progress bucket (start + 5min > now) is
-    # excluded so we only ever act on closed bars — matches alpha_hybrid.
+    # Completed-bar discipline for ALPHA decisions: the in-progress bucket
+    # (start + 5min > now) is kept but flagged STOPS-ONLY via `entries_until_ts`,
+    # so spot-based stops + entry-spot recovery re-entry fire on its completed
+    # 1-min sub-bars while alpha entries/exits stay on closed bars. For a past
+    # day `cutoff` is None (whole day is completed) — identical to before.
+    cutoff = None
     if trade_date == now_ist.date().isoformat():
         cutoff = pd.Timestamp(now_ist) - pd.Timedelta(minutes=5)
-        adf = adf[adf["timestamp"] <= cutoff].reset_index(drop=True)
     if len(adf) < 2:
         return {"position": "FLAT", "bucket": tier, "direction": direction,
                 "last_closed_reason": None, "n_closed": 0}
@@ -88,7 +91,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
         adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
         weekday, regime, day["lower"], day["upper"],
         enable_entry_spot_recovery=enable_entry_spot_recovery,
-        close_eod=False, return_state=True)
+        close_eod=False, return_state=True, entries_until_ts=cutoff)
 
     last_reason = trades[-1]["reason"] if trades else None
     if open_state is None:

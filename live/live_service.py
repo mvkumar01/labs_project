@@ -611,6 +611,10 @@ def _default_trade_state(user_id: str, conn_id: str) -> dict:
         "entry_grace_until": None,
         "daily_trades_date": None,
         "daily_trades_by_tier": "{}",
+        "recovery_armed": 0,
+        "recovery_level": None,
+        "recovery_side": None,
+        "spot_stop_bar": None,
         "updated_at": None,
     }
 
@@ -651,8 +655,9 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                 "INSERT INTO live_trade_state "
                 "(conn_id, user_id, position, side, symbol, entry_spot, entry_time, "
                 " entry_price, qty, virtual, peak_pnl, entry_rule, max_alpha_seen, "
-                " entry_grace_until, daily_trades_date, daily_trades_by_tier, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " entry_grace_until, daily_trades_date, daily_trades_by_tier, "
+                " recovery_armed, recovery_level, recovery_side, spot_stop_bar, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(conn_id) DO UPDATE SET "
                 "position=excluded.position, side=excluded.side, symbol=excluded.symbol, "
                 "entry_spot=excluded.entry_spot, entry_time=excluded.entry_time, "
@@ -663,6 +668,10 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                 "entry_grace_until=excluded.entry_grace_until, "
                 "daily_trades_date=excluded.daily_trades_date, "
                 "daily_trades_by_tier=excluded.daily_trades_by_tier, "
+                "recovery_armed=excluded.recovery_armed, "
+                "recovery_level=excluded.recovery_level, "
+                "recovery_side=excluded.recovery_side, "
+                "spot_stop_bar=excluded.spot_stop_bar, "
                 "updated_at=excluded.updated_at",
                 (conn_id, user_id, state.get("position", "NONE"), state.get("side"),
                  state.get("symbol"), state.get("entry_spot"), state.get("entry_time"),
@@ -670,7 +679,9 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                  int(state.get("virtual", 0) or 0), state.get("peak_pnl", 0.0),
                  state.get("entry_rule"),
                  state.get("max_alpha_seen"), state.get("entry_grace_until"),
-                 state.get("daily_trades_date"), by_tier or "{}", _now_iso()),
+                 state.get("daily_trades_date"), by_tier or "{}",
+                 int(state.get("recovery_armed", 0) or 0), state.get("recovery_level"),
+                 state.get("recovery_side"), state.get("spot_stop_bar"), _now_iso()),
             )
     finally:
         if own:

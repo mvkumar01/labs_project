@@ -174,6 +174,10 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 entry_grace_until    TEXT,
                 daily_trades_date    TEXT,
                 daily_trades_by_tier TEXT,
+                recovery_armed       INTEGER DEFAULT 0,
+                recovery_level       REAL,
+                recovery_side        TEXT,
+                spot_stop_bar        TEXT,
                 updated_at           TEXT
             );
 
@@ -295,6 +299,21 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
             ("drift_confirmed", "INTEGER DEFAULT 0"),
             ("drift_armed", "INTEGER DEFAULT 0"),
             ("drift_stop", "REAL"),
+        ):
+            if col not in state_cols:
+                conn.execute(
+                    f"ALTER TABLE live_trade_state ADD COLUMN {col} {decl}")
+                conn.commit()
+
+        # v2.12 fast spot-stop recovery + intra-bar stop latch (2026-06-30).
+        # Persisted so a runner restart mid-recovery keeps the armed level, and
+        # the champion reconcile knows not to re-enter a just-stopped position.
+        state_cols = _cols("live_trade_state")
+        for col, decl in (
+            ("recovery_armed", "INTEGER DEFAULT 0"),
+            ("recovery_level", "REAL"),
+            ("recovery_side", "TEXT"),
+            ("spot_stop_bar", "TEXT"),
         ):
             if col not in state_cols:
                 conn.execute(

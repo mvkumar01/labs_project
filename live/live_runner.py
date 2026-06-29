@@ -462,6 +462,39 @@ def _pc400_trail_uses_spot(tier: str | None, side: str | None,
     )
 
 
+def evaluate_v212_fast_spot(state: dict, live_spot) -> dict:
+    """v2.12 per-poll (tick) spot decision from persisted state + live spot.
+
+    Pure (no broker, no DB) so it is unit-testable like the PC400 trail. Returns
+    {"action": "EXIT"|"ENTER"|"HOLD", "reason", ...}:
+      - OPEN + spot touched entry_spot      -> EXIT (entry-spot SL); caller arms
+        recovery at entry_spot.
+      - FLAT + recovery_armed + favorable    -> ENTER (recovery re-entry) at the
+        re-crossed recovery_level.
+    A missing/None spot is always HOLD — never a spurious stop.
+    """
+    spot = _as_float(live_spot)
+    if spot is None:
+        return {"action": "HOLD", "reason": "no_spot"}
+    if (state.get("position") or "NONE").upper() == "OPEN":
+        es = _as_float(state.get("entry_spot"))
+        side = (state.get("side") or "").upper()
+        if es is not None and (
+                (side == "CALL" and spot <= es) or (side == "PUT" and spot >= es)):
+            return {"action": "EXIT", "reason": "ENTRY_SPOT_SL",
+                    "recovery_level": es, "recovery_side": side}
+        return {"action": "HOLD", "reason": "open_no_touch"}
+    if int(state.get("recovery_armed") or 0) == 1:
+        lvl = _as_float(state.get("recovery_level"))
+        rside = (state.get("recovery_side") or "").upper()
+        if lvl is not None and rside in ("CALL", "PUT") and (
+                (rside == "CALL" and spot > lvl) or (rside == "PUT" and spot < lvl)):
+            return {"action": "ENTER", "side": rside, "recovery_level": lvl,
+                    "reason": "RECOVERY"}
+        return {"action": "HOLD", "reason": "recovery_waiting"}
+    return {"action": "HOLD", "reason": "flat"}
+
+
 def evaluate_pc400_spot_trail(state: dict, alpha_bar: dict | None,
                               spot) -> dict | None:
     """Evaluate the Bot A/v22 PC400 spot trail for an open live position.
@@ -1161,6 +1194,64 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # In champion mode the trail + v7.11 exits live INSIDE the replay, so the
     # standalone trail/drift blocks below are skipped to avoid double exits.
     use_champion = svc.get_config(user_id, conn_id, "decision_engine") == "champion_replay"
+    v212_recovery = svc.get_config(user_id, conn_id, "strategy_version") == "v2.12"
+
+    # ── v2.12 fast spot-stop layer (per-poll / tick) ─────────────────────────
+    # Alpha entries/exits stay on the 5-min champion replay (below); the spot
+    # entry-spot SL (0-pt) and its recovery RE-ENTRY run here on LIVE spot every
+    # poll so they react intra-bar, not at bar close. The champion replay runs
+    # WITHOUT recovery for this connection (see below), so this layer is the sole
+    # owner of the entry-spot SL + recovery; a `recovery_armed` latch keeps the
+    # replay from re-entering a just-stopped position. Inert if spot is missing
+    # (never a spurious stop) or while not v2.12.
+    if use_champion and v212_recovery:
+        fast = evaluate_v212_fast_spot(st, get_latest_spot())
+        bar_ts = alpha_bar.get("timestamp")
+        if fast["action"] == "EXIT" and current_open:
+            exit_price = adapter.get_ltp(current_symbol)
+            result = _route_order(
+                adapter, user_id, conn_id, action="EXIT", side=current_side,
+                symbol=current_symbol, qty=current_qty, price=exit_price,
+                dry_run=dry_run)
+            if _order_applied(result.status, dry_run=dry_run):
+                _record_exit_result(
+                    user_id, conn_id, st,
+                    exit_price=result.avg_fill_price or exit_price,
+                    qty=current_qty, reason=fast["reason"], dry_run=dry_run)
+                # Flat but ARM recovery (do not reset — keep the armed level).
+                st.update({"position": "NONE", "side": None, "symbol": None,
+                           "entry_price": None, "entry_time": None, "qty": None,
+                           "entry_spot": None, "entry_rule": None, "peak_pnl": 0.0,
+                           "recovery_armed": 1, "recovery_level": fast["recovery_level"],
+                           "recovery_side": fast["recovery_side"], "spot_stop_bar": bar_ts})
+                svc.save_trade_state(user_id, conn_id, st)
+                log.info("v2.12 entry-spot SL conn=%s side=%s es=%.2f -> recovery armed",
+                         conn_id, current_side, fast["recovery_level"])
+            return
+        if (fast["action"] == "ENTER" and not current_open and not blocked
+                and check_daily_loss(user_id, conn_id)):
+            rside = fast["side"]
+            lvl = fast["recovery_level"]
+            symbol = resolve_itm_option(adapter, rside, trade_date=_today_ist_iso())
+            qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+            price = adapter.get_ltp(symbol)
+            result = _route_order(
+                adapter, user_id, conn_id, action="ENTER", side=rside,
+                symbol=symbol, qty=qty, price=price, dry_run=dry_run,
+                entry_rule="RECOVERY")
+            if _order_applied(result.status, dry_run=dry_run):
+                state_symbol = (result.raw or {}).get("broker_symbol") or symbol
+                st.update({"position": "OPEN", "side": rside, "symbol": state_symbol,
+                           "entry_price": result.avg_fill_price or price,
+                           "entry_time": _now_iso(), "qty": qty,
+                           "virtual": 1 if dry_run else 0, "entry_rule": "RECOVERY",
+                           "entry_spot": lvl, "peak_pnl": 0.0,
+                           "recovery_armed": 0, "recovery_level": None,
+                           "recovery_side": None})
+                svc.save_trade_state(user_id, conn_id, st)
+                log.info("v2.12 recovery re-entry conn=%s side=%s level=%.2f",
+                         conn_id, rside, lvl)
+            return
 
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
     # Run it before alpha_seen de-duplication so repeated polls can arm/fire it.
@@ -1237,20 +1328,26 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # Replay all COMPLETED bars and reconcile to the bot's actual position.
         # entry_spot for an ENTER comes from the replay (the champion entry bar
         # spot), NOT the latest bar — keeps fills consistent with the engine.
-        # Alpha v2.12 = champion + entry-spot recovery overlay (all tiers). Gated
-        # per-connection on strategy_version so production v2.11 connections (and
-        # the default champion) are byte-for-byte unchanged.
-        v212_recovery = (
-            svc.get_config(user_id, conn_id, "strategy_version") == "v2.12"
-        )
+        # Alpha v2.12: the entry-spot SL + recovery run in the per-poll fast layer
+        # above (tick), NOT in the replay — so the replay runs WITHOUT recovery and
+        # only owns alpha entries/exits + trail. (Backfill/labs still use recovery
+        # in-replay; this False is the live tick split.)
         target = champion_decider.champion_target(
             _today_ist_iso(), now_ist=_now_ist(),
-            enable_entry_spot_recovery=v212_recovery)
+            enable_entry_spot_recovery=False)
         sig = champion_decider.reconcile(target, current_side if current_open else None)
         champ_entry_spot = (target or {}).get("entry_spot")
         log.info("champion conn=%s ts=%s pos=%s target=%s sig=%s",
                  conn_id, alpha_bar.get("timestamp"),
                  "OPEN" if current_open else "NONE", target, sig)
+        # Recovery latch: while flat + recovery_armed the fast layer owns re-entry.
+        # If the replay (no recovery) still wants the position OPEN, suppress the
+        # champion ENTER (fast layer will re-enter on a favorable spot re-cross).
+        # If the replay has gone FLAT, the alpha thesis ended -> clear recovery.
+        if v212_recovery and not current_open and int(st.get("recovery_armed") or 0) == 1:
+            if (target or {}).get("position") in (None, "FLAT"):
+                svc.reset_trade_state(user_id, conn_id)
+            return
     else:
         engine = _engine_for(conn_id, signal_engines)
         sig = evaluate_signal(

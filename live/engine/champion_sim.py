@@ -190,7 +190,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_rule3_dn_put=True,
              enable_v711_drift_protective=True,
              enable_entry_spot_recovery=False,
-             close_eod=True, return_state=False):
+             close_eod=True, return_state=False,
+             entries_until_ts=None):
     """Faithful port of v79_v281_isolation.sim() with the champion flag set.
 
     Returns (pnl_pts, trades) where each trade carries entry/exit timestamps,
@@ -203,6 +204,14 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     "replay-to-now" decider so the in-flight position is returned, not closed.
     `return_state` (default False): also return the open-position state dict
     (or None) as a third tuple element — the live decider's reconcile target.
+
+    `entries_until_ts` (default None): if set, any bar with timestamp >
+    entries_until_ts is a STOPS-ONLY partial bar — the in-progress 5-min bucket,
+    evaluated for spot-based stops (entry-spot SL, trail, drift, PC250 spot TP/SL)
+    and entry-spot recovery RE-ENTRY on its completed 1-min sub-bars, but NOT for
+    new alpha-crossover entries or alpha-based exits (which stay on the 5-min
+    grid). When None (every backtest / research / EOD caller) the partial-bar
+    guards are inert, so completed-day output is byte-for-byte unchanged.
     """
     if adf is None or len(adf) < 2:
         return (0.0, [], None) if return_state else (0.0, [])
@@ -286,6 +295,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         ca = float(c["alpha"])
         denom_alg = float(c["denom"])
         bar_minutes = _bar_minutes_from_midnight(c["timestamp"])
+        # STOPS-ONLY partial bar: the in-progress 5-min bucket (ts beyond the
+        # completed-bar cutoff). Spot stops + recovery re-entry fire on its 1-min
+        # sub-bars; alpha entries/exits are suppressed (they stay on the 5-min
+        # grid). Always False when entries_until_ts is None (all batch callers).
+        partial_bar = (entries_until_ts is not None
+                       and pd.Timestamp(c["timestamp"]) > pd.Timestamp(entries_until_ts))
         if abs(ca) > 200:
             continue
 
@@ -316,7 +331,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         # Flat after an entry-spot stop: Alpha invalidation has priority.
         # Re-entry requires a one-minute touch plus a favourable-side close.
         if enable_entry_spot_recovery and recovery_waiting:
-            if recovery_alpha_exit(recovery_pos, ca, recovery_sl_override):
+            if not partial_bar and recovery_alpha_exit(recovery_pos, ca, recovery_sl_override):
                 trades.append(dict(
                     pnl=0.0, reason="RECOVERY_CANCEL_ALPHA", pos=recovery_pos,
                     entry_ts=recovery_origin_ts, exit_ts=c["timestamp"],
@@ -528,20 +543,23 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             reason = "WALL_REJ"
                         appr_ts = None
 
-            # Tier-specific alpha exits
+            # Tier-specific alpha exits. Alpha-based exits stay on the 5-min grid
+            # (suppressed on a stops-only partial bar); spot exits (PC250 TP/SL)
+            # below still fire intra-bar.
             if not exited:
                 if tier == "PC50":
                     sl_th = pos_sl_override if pos_sl_override is not None else sl_th_default
-                    if pos == "call":
-                        if ca <= sl_th:
-                            exit_sp = curr_spot; exited = True; reason = "SL_ALPHA"
-                        elif ca >= target:
-                            exit_sp = curr_spot; exited = True; reason = "TGT_ALPHA"
-                    else:
-                        if ca >= -sl_th:
-                            exit_sp = curr_spot; exited = True; reason = "SL_ALPHA"
-                        elif ca <= -target:
-                            exit_sp = curr_spot; exited = True; reason = "TGT_ALPHA"
+                    if not partial_bar:
+                        if pos == "call":
+                            if ca <= sl_th:
+                                exit_sp = curr_spot; exited = True; reason = "SL_ALPHA"
+                            elif ca >= target:
+                                exit_sp = curr_spot; exited = True; reason = "TGT_ALPHA"
+                        else:
+                            if ca >= -sl_th:
+                                exit_sp = curr_spot; exited = True; reason = "SL_ALPHA"
+                            elif ca <= -target:
+                                exit_sp = curr_spot; exited = True; reason = "TGT_ALPHA"
                 elif tier == "PC250":
                     for (bh, bl) in ohlc.get_1min_bars(c["timestamp"]):
                         if pos == "call":
@@ -556,14 +574,14 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             if (not enable_entry_spot_recovery
                                     and bh - esp >= 30):
                                 exit_sp = esp + 30; exited = True; reason = "SL_SPOT"; break
-                    if not exited:
+                    if not exited and not partial_bar:
                         if pos == "call":
                             if ca <= 0 or ca >= 100:
                                 exit_sp = curr_spot; exited = True; reason = "ALPHA"
                         else:
                             if ca >= 0 or ca <= -100:
                                 exit_sp = curr_spot; exited = True; reason = "ALPHA"
-                else:  # PC400
+                elif not partial_bar:  # PC400
                     if pos == "call":
                         if ca <= 0:
                             exit_sp = curr_spot; exited = True; reason = "ALPHA_SL"
@@ -575,8 +593,9 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                         elif ca <= -100:
                             exit_sp = curr_spot; exited = True; reason = "ALPHA_TGT"
 
-            # v7.6 ALPHA_STALL: PC50 UP CALL only
-            if (enable_v76_alpha_stall and not exited and tier == "PC50"
+            # v7.6 ALPHA_STALL: PC50 UP CALL only (alpha-based -> 5-min grid)
+            if (enable_v76_alpha_stall and not exited and not partial_bar
+                    and tier == "PC50"
                     and pos == "call" and is_up
                     and pos_max_alpha is not None and entry_ts is not None):
                 trade_minutes = (pd.Timestamp(c["timestamp"]) - pd.Timestamp(entry_ts)).total_seconds() / 60
@@ -614,7 +633,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                 continue
 
         # ── ENTRY ────────────────────────────────────────────────────────────
-        if pos is None:
+        # Alpha-crossover entries (Rule 1/2/3, D2) are 5-min-grid only — never on
+        # a stops-only partial bar. (Entry-spot recovery RE-ENTRY is handled above
+        # in the recovery block and DOES fire intra-bar.)
+        if pos is None and not partial_bar:
             sp = ohlc.get_spot(c["timestamp"]) or float(c["spot"])
             entered = False
             new_pos = None

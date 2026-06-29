@@ -265,9 +265,13 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
         ) from exc
     if adf is None or adf.empty:
         raise AlphaV212InputError(f"v2.12 input frame is empty for {trade_date}")
+    # Current-day: keep the in-progress bucket as a STOPS-ONLY partial bar
+    # (entry-spot SL + recovery re-entry fire on its 1-min sub-bars; alpha
+    # entries/exits stay on completed bars) so labs v2.12 reacts intra-bar like
+    # the live bot. Past days -> cutoff None -> byte-identical to before.
+    cutoff = None
     if trade_date == datetime.now(IST).date().isoformat():
         cutoff = pd.Timestamp(datetime.now(IST)) - pd.Timedelta(minutes=5)
-        adf = adf[adf["timestamp"] <= cutoff].reset_index(drop=True)
     if len(adf) < 2:
         raise AlphaV212InputError(
             f"v2.12 input frame has only {len(adf)} completed bars for {trade_date}"
@@ -286,6 +290,7 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
         day["lower"],
         day["upper"],
         enable_entry_spot_recovery=True,
+        entries_until_ts=cutoff,
     )
     # Recovery cancellations carry no economic position or option fill.
     economic = [
