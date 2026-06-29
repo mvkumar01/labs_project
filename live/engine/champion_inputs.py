@@ -13,9 +13,12 @@ no order placement, no labs imports.
 """
 from __future__ import annotations
 
+import tarfile
+
 import pandas as pd
 
-from config.labs_config import SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
+from config.labs_config import (
+    ARCHIVE_DIR, DATA_DIR, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR)
 from live.engine import champion_sim
 from live.engine.gemini_range import build_dynamic_range_series
 from live.engine.alpha_hybrid import (
@@ -63,30 +66,68 @@ def alpha_source(tier, direction, vix, sgap, biggap) -> tuple[str, bool]:
     return "regime", False                      # PC50 DN, PC250 DN -> regime + std
 
 
+def _labs_spot_ohlc(trade_date: str) -> "pd.DataFrame | None":
+    """1-min index spot OHLC from the labs collector store — the single source.
+
+    Recent sessions (≤KEEP_DAYS) live as ``data/live/<date>_<SYM>_spot_1min.csv``;
+    eod_maintenance tars them into ``data/archive/<date>.tar.gz`` thereafter. The
+    live CSV exists intraday, so TODAY resolves to real 1-min high/low (not flat
+    spot) — which is what makes intra-bar triggers (trail / TP-SL / v2.12 entry-
+    spot recovery) behave the same live as in backfill."""
+    name = f"{trade_date}_{SYMBOL}_spot_1min.csv"
+    live = DATA_DIR / name
+    if live.is_file():
+        try:
+            return pd.read_csv(live)
+        except (OSError, ValueError):
+            return None
+    tar_path = ARCHIVE_DIR / f"{trade_date}.tar.gz"
+    if tar_path.is_file():
+        try:
+            with tarfile.open(tar_path, "r:gz") as tar:
+                member = tar.extractfile(name)
+                if member is not None:
+                    return pd.read_csv(member)
+        except (tarfile.TarError, KeyError, OSError, ValueError):
+            return None
+    return None
+
+
 def ohlc_by_minute(trade_date: str) -> dict:
-    """{'HH:MM': (open,high,low,close)} mirroring the RESEARCH data path:
-    alphaIMB nifty_1min_ohlc.csv 1-min high/low where present, else shared-store
-    1-min spot (open=high=low=close=spot) for any minute the OHLC file lacks.
+    """{'HH:MM': (open,high,low,close)} for the trade_date.
 
-    /labs/live is a research-backtest replica (operator choice 2026-06-19), so it
-    uses the same 1-min high/low the research champion used for trail / v7.11 /
-    TP-SL intra-bar triggers. Past days resolve to high/low (matches research);
-    today resolves to spot (the OHLC file is EOD, so today isn't in it yet) —
-    which is also exactly what the live bot sees intraday.
+    SOURCE PRIORITY (labs is the single source of truth for OHLC, 2026-06-29):
+      1. labs collector spot OHLC — ``data/live`` (incl. today, live) then the
+         day's ``data/archive/<date>.tar.gz``. Real 1-min high/low.
+      2. legacy alphaIMB ``nifty_1min_ohlc.csv`` — fills any minute labs lacks
+         (pre-archive history before 2026-05-21).
+      3. shared-store 1-min spot (open=high=low=close=spot) — last-resort gap
+         fill for minutes neither source covers.
 
-    DETERMINISM: a backfilled past day's result depends on nifty_1min_ohlc.csv
-    covering that date. PA's alphaIMB copy MUST be current through the backfill
-    range, else those days silently fall back to spot and diverge (the 2026-06-19
-    06-08 local-vs-PA mismatch). Keep alphaIMB/data/analytics/nifty_1min_ohlc.csv
-    in sync on PA before backfilling."""
+    Because the labs live CSV exists intraday, TODAY now resolves to real high/low
+    rather than flat spot, so intra-bar triggers fire identically live and in
+    backfill (previously today fell back to flat spot and suppressed v2.12
+    re-entries / trail / TP-SL)."""
     out: dict = {}
+    labs = _labs_spot_ohlc(trade_date)
+    if labs is not None and not labs.empty:
+        ts = pd.to_datetime(labs["timestamp"], errors="coerce")
+        if getattr(ts.dt, "tz", None) is not None:
+            ts = ts.dt.tz_localize(None)
+        labs = labs.assign(ts=ts).dropna(subset=["ts"])
+        labs = labs[labs["ts"].dt.strftime("%Y-%m-%d") == trade_date]
+        for _, r in labs.iterrows():
+            out[r["ts"].strftime("%H:%M")] = (
+                float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
     try:
         oc = pd.read_csv(ALPHA_DATA_DIR / "analytics" / "nifty_1min_ohlc.csv")
         oc["ts"] = pd.to_datetime(oc["timestamp"]).dt.tz_localize(None)
         oc = oc[oc["ts"].dt.strftime("%Y-%m-%d") == trade_date]
         for _, r in oc.iterrows():
-            out[r["ts"].strftime("%H:%M")] = (
-                float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
+            hm = r["ts"].strftime("%H:%M")
+            if hm not in out:
+                out[hm] = (
+                    float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
     except Exception:
         pass
     try:
