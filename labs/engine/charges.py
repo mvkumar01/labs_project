@@ -46,3 +46,42 @@ def round_trip_charges(entry_premium: float, exit_premium: float, qty: int) -> d
         "raw_total": total,
         "total": round(total, 2),
     }
+
+
+# ── SENSEX (BSE) options round-trip charges ──────────────────────────────────
+# BSE F&O schedule differs from NSE: STT 0.15% on sell, txn 0.0325% turnover,
+# lot size 20. Supplied by the operator (2026-06-29).
+SENSEX_LOT_SIZE = 20
+SENSEX_STT_SELL = 0.0015         # 0.15% of premium, SELL side only
+SENSEX_EXCH_TXN = 0.000325       # BSE option txn 0.0325% of premium turnover
+
+
+def sensex_round_trip_charges(entry_premium: float, exit_premium: float, qty: int) -> dict:
+    """SENSEX (BSE) long-option round-trip charges. qty = lots * 20.
+
+    Mirrors round_trip_charges but with the BSE rate schedule (higher STT and a
+    different exchange txn rate). Brokerage/SEBI/stamp/GST are the same.
+    """
+    try:
+        buy_value = float(entry_premium) * int(qty)
+        sell_value = float(exit_premium) * int(qty)
+    except (TypeError, ValueError):
+        return {"total": 0.0, "raw_total": 0.0}
+    turnover = buy_value + sell_value
+    brokerage = BROKERAGE_PER_LEG * 2
+    stt = SENSEX_STT_SELL * sell_value
+    txn = SENSEX_EXCH_TXN * turnover
+    sebi = SEBI * turnover
+    stamp = STAMP_BUY * buy_value
+    gst = GST * (brokerage + txn + sebi)
+    total = brokerage + stt + txn + sebi + stamp + gst
+    return {
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "exch_txn": round(txn, 2),
+        "sebi": round(sebi, 4),
+        "stamp": round(stamp, 2),
+        "gst": round(gst, 2),
+        "raw_total": total,
+        "total": round(total, 2),
+    }
