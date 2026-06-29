@@ -872,6 +872,7 @@ def set_day_halted(user_id: str, conn_id: str, halted: int = 1,
 def record_trade(user_id: str, conn_id: str, *, side: str, symbol: str,
                  entry_price: float, exit_price: float, qty: int, pnl: float,
                  entry_time: str, exit_time: str, reason: str, dry_run: int,
+                 strategy: str = None,
                  conn: sqlite3.Connection = None) -> str:
     own = conn is None
     if own:
@@ -887,12 +888,12 @@ def record_trade(user_id: str, conn_id: str, *, side: str, symbol: str,
                 "INSERT INTO live_trades "
                 "(trade_id, user_id, conn_id, side, symbol, entry_price, exit_price, "
                 " qty, pnl, gross_pnl, charges_total, charges_json, net_pnl, "
-                " entry_time, exit_time, reason, dry_run) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " entry_time, exit_time, reason, strategy, dry_run) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (trade_id, user_id, conn_id, side, symbol, entry_price, exit_price,
                  qty, net_pnl, gross_pnl, charges_total,
                  json.dumps(computed["charges"], sort_keys=True), net_pnl,
-                 entry_time, exit_time, reason, int(dry_run)),
+                 entry_time, exit_time, reason, strategy, int(dry_run)),
             )
         return trade_id
     finally:
@@ -937,11 +938,25 @@ def trade_history(user_id: str, conn_id: str, trade_date: str = None,
         rows = conn.execute(
             f"SELECT trade_id, side, symbol, entry_price, exit_price, qty, "
             f"COALESCE(net_pnl, pnl) AS pnl, gross_pnl, charges_total, net_pnl, "
-            f"charges_json, entry_time, exit_time, reason, dry_run "
+            f"charges_json, entry_time, exit_time, reason, strategy, dry_run "
             f"FROM live_trades "
             f"WHERE user_id = ? AND conn_id = ? AND {date_expr} BETWEEN ? AND ? "
             f"ORDER BY COALESCE(exit_time, entry_time, '') DESC LIMIT ?",
             (*params, limit),
+        ).fetchall()
+        # Per-strategy PnL breakdown (live + dry split) so the UI can filter /
+        # group realized PnL by which strategy produced each trade.
+        by_strategy = conn.execute(
+            f"SELECT COALESCE(strategy, '(unset)') AS strategy, "
+            f"COALESCE(SUM(CASE WHEN dry_run = 0 THEN COALESCE(net_pnl, pnl) END), 0) AS live_pnl, "
+            f"SUM(CASE WHEN dry_run = 0 THEN 1 ELSE 0 END) AS live_count, "
+            f"COALESCE(SUM(CASE WHEN dry_run = 1 THEN COALESCE(net_pnl, pnl) END), 0) AS dry_pnl, "
+            f"SUM(CASE WHEN dry_run = 1 THEN 1 ELSE 0 END) AS dry_count "
+            f"FROM live_trades "
+            f"WHERE user_id = ? AND conn_id = ? AND {date_expr} BETWEEN ? AND ? "
+            f"GROUP BY COALESCE(strategy, '(unset)') "
+            f"ORDER BY 1",
+            params,
         ).fetchall()
         live_pnl = float(summary["live_pnl"] if summary else 0.0)
         dry_pnl = float(summary["dry_pnl"] if summary else 0.0)
@@ -957,6 +972,7 @@ def trade_history(user_id: str, conn_id: str, trade_date: str = None,
             "dry_pnl": dry_pnl,
             "dry_count": int(summary["dry_count"] or 0) if summary else 0,
             "trades": [dict(r) for r in rows],
+            "by_strategy": [dict(r) for r in by_strategy],
         }
     finally:
         if own:

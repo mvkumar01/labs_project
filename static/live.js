@@ -150,7 +150,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!trades || !trades.length) {
-      tb.innerHTML = '<tr><td colspan="11" style="color:#64748b">No completed trades for this date.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="12" style="color:#64748b">No completed trades for this date.</td></tr>';
       return;
     }
     trades.forEach(function (t) {
@@ -166,6 +166,7 @@
       addCell(tr, t.charges_total === null || t.charges_total === undefined ? "--" : fmtMoney(t.charges_total));
       addCell(tr, fmtRs(t.pnl), Number(t.pnl || 0) >= 0 ? "pos" : "neg");
       addCell(tr, t.reason || "");
+      addCell(tr, t.strategy || "");
 
       var td = document.createElement("td");
       td.innerHTML = t.dry_run

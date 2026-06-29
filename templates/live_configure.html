@@ -53,6 +53,16 @@
         </div>
 
         <div class="field">
+          <label for="strategy">Decision strategy</label>
+          <select id="strategy" name="strategy">
+            {% for key, label in strategy_presets.items() %}
+            <option value="{{ key }}" {{ 'selected' if strategy == key else '' }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">v2.12 adds the entry-spot 0-pt stop + recovery re-entry on top of the champion replay. Every trade is tagged with the selected strategy so PnL can be filtered by it.</div>
+        </div>
+
+        <div class="field">
           <label for="daily_loss_cap">Daily loss cap (₹)</label>
           <input type="number" id="daily_loss_cap" name="daily_loss_cap" min="0" step="100"
                  value="{{ daily_loss_cap|round(0)|int }}">

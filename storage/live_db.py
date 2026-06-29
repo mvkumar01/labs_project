@@ -152,6 +152,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 entry_time  TEXT,
                 exit_time   TEXT,
                 reason      TEXT,
+                strategy    TEXT,
                 dry_run     INTEGER NOT NULL DEFAULT 1
             );
 
@@ -235,6 +236,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
             ("charges_total", "REAL"),
             ("charges_json", "TEXT"),
             ("net_pnl", "REAL"),
+            ("strategy", "TEXT"),       # which strategy produced the trade
         ):
             if col not in trade_cols:
                 conn.execute(f"ALTER TABLE live_trades ADD COLUMN {col} {decl}")

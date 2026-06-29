@@ -240,6 +240,7 @@ def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_pric
         entry_time=position.get("entry_time"),
         exit_time=now_iso,
         reason=reason,
+        strategy=svc.get_config(user_id, conn_id, "strategy_version"),
         dry_run=1 if dry_run else 0,
     )
     # PnL buckets are segregated: a dry-run exit must never move the LIVE

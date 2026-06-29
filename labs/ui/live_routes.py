@@ -492,6 +492,32 @@ def zerodha_callback():
     return redirect(url_for("live.configure"))
 
 
+# Selectable strategy presets -> (decision_engine, strategy_version). Available
+# to every user from the configure screen. The runner gates on these two configs
+# (decision_engine == "champion_replay" enables the champion replay; combined
+# with strategy_version == "v2.12" it enables the entry-spot recovery overlay).
+STRATEGY_PRESETS = {
+    "legacy_v211":   ("signal_engine",   "hybrid_alpha_v28"),
+    "champion_v211": ("champion_replay", "v2.11"),
+    "champion_v212": ("champion_replay", "v2.12"),
+}
+STRATEGY_LABELS = {
+    "legacy_v211":   "Alpha v2.11 — legacy signal engine",
+    "champion_v211": "Alpha v2.11 — champion replay",
+    "champion_v212": "Alpha v2.12 — champion + entry-spot recovery",
+}
+
+
+def _current_strategy_preset(user_id: str, conn_id: str) -> str:
+    de = svc.get_config(user_id, conn_id, "decision_engine")
+    sv = svc.get_config(user_id, conn_id, "strategy_version")
+    if de == "champion_replay" and sv == "v2.12":
+        return "champion_v212"
+    if de == "champion_replay":
+        return "champion_v211"
+    return "legacy_v211"
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURE — lots + bot variant + daily-loss (this user's conn)
 # ══════════════════════════════════════════════════════════════════════════
@@ -532,6 +558,15 @@ def configure():
                        "order_manager" if em == "order_manager" else "single")
         svc.set_config(user_id, conn_id, "om_r2_enabled",
                        1 if request.form.get("om_r2_enabled") in ("1", "on", "true") else 0)
+
+        # Strategy preset -> decision_engine + strategy_version. Only applied when
+        # a known preset is submitted, so an unrelated POST never clobbers it.
+        strat = (request.form.get("strategy") or "").strip()
+        if strat in STRATEGY_PRESETS:
+            decision_engine, strat_version = STRATEGY_PRESETS[strat]
+            svc.set_config(user_id, conn_id, "decision_engine", decision_engine)
+            svc.set_config(user_id, conn_id, "strategy_version", strat_version)
+
         return redirect(url_for("live.dashboard"))
 
     return render_template(
@@ -548,6 +583,8 @@ def configure():
         book_role=svc.get_book_role(user_id, conn_id),
         exec_mode=svc.get_exec_mode(user_id, conn_id),
         om_r2_enabled=svc.get_config_int(user_id, conn_id, "om_r2_enabled") == 1,
+        strategy=_current_strategy_preset(user_id, conn_id),
+        strategy_presets=STRATEGY_LABELS,
     )
 
 
@@ -724,5 +761,7 @@ def status():
         "dry_pnl": trades["dry_pnl"],
         "dry_count": trades["dry_count"],
         "trades": trades["trades"],
+        "by_strategy": trades["by_strategy"],
+        "strategy": _current_strategy_preset(user_id, conn_id),
         "open_mtm": open_mtm,
     })
