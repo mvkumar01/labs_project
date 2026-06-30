@@ -7,6 +7,7 @@ orders.
 """
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from datetime import datetime
@@ -20,6 +21,7 @@ from labs.engine.paper_strategy_tracker import (
     ITM_DISTANCE,
     ReplayInputError,
     _resolve_day,
+    _resolve_replay_context,
     _r50,
     _session_over,
 )
@@ -56,6 +58,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             charges_rs REAL NOT NULL,
             net_rs REAL NOT NULL,
             strategy_version TEXT NOT NULL,
+            context_json TEXT,
             updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS alpha_v212_trades (
@@ -86,6 +89,13 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(alpha_v212_daily)")
+    }
+    if "context_json" not in columns:
+        conn.execute(
+            "ALTER TABLE alpha_v212_daily ADD COLUMN context_json TEXT"
+        )
     conn.commit()
 
 
@@ -242,13 +252,9 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
             "session_done": _session_over(trade_date),
         }
 
-    tier, direction = day["bucket"], day["direction"]
-    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
-    sgap, weekday, use_trail, regime = champion_inputs.day_context(
-        trade_date, ohlc, direction, day["vix"]
-    )
-    range_source, use_abs = champion_inputs.alpha_source(
-        tier, direction, day["vix"], sgap, day["biggap"]
+    tier = day["bucket"]
+    ohlc, context, range_source, use_abs, provenance = (
+        _resolve_replay_context(trade_date, day)
     )
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
@@ -282,11 +288,11 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
         pe_map,
         ohlc,
         trade_date,
-        use_trail,
-        sgap,
+        context.use_trail,
+        context.sgap,
         tier,
-        weekday,
-        regime,
+        context.weekday,
+        context.regime,
         day["lower"],
         day["upper"],
         enable_entry_spot_recovery=True,
@@ -300,9 +306,10 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
     ]
     return {
         "tier": tier,
-        "direction": direction,
+        "direction": context.direction,
         "segments": economic,
         "session_done": _session_over(trade_date),
+        "context": provenance,
     }
 
 
@@ -366,14 +373,16 @@ def _save(
         "INSERT INTO alpha_v212_daily "
         "(trade_date,status,tier,gap_dir,expiry_code,n_segments,priced_segments,"
         "unavailable_segments,spot_pnl_pts,gross_rs,charges_rs,net_rs,"
-        "strategy_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "strategy_version,context_json,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,"
         "tier=excluded.tier,gap_dir=excluded.gap_dir,expiry_code=excluded.expiry_code,"
         "n_segments=excluded.n_segments,priced_segments=excluded.priced_segments,"
         "unavailable_segments=excluded.unavailable_segments,"
         "spot_pnl_pts=excluded.spot_pnl_pts,gross_rs=excluded.gross_rs,"
         "charges_rs=excluded.charges_rs,net_rs=excluded.net_rs,"
-        "strategy_version=excluded.strategy_version,updated_at=excluded.updated_at",
+        "strategy_version=excluded.strategy_version,"
+        "context_json=excluded.context_json,updated_at=excluded.updated_at",
         (
             trade_date,
             status,
@@ -388,6 +397,8 @@ def _save(
             charges,
             net,
             STRATEGY_VERSION,
+            json.dumps(replay.get("context"), sort_keys=True)
+            if replay.get("context") else None,
             now,
         ),
     )

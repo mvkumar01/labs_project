@@ -14,6 +14,7 @@ no order placement, no labs imports.
 from __future__ import annotations
 
 import tarfile
+from dataclasses import asdict, dataclass
 
 import pandas as pd
 
@@ -28,6 +29,8 @@ from market_data.shared_store import load_options_frame
 
 SYMBOL = "NIFTY"
 VIX_TRAIL_CUTOFF = 17.0   # vix_open < cutoff (or missing) -> TRAIL regime
+MIN_VALID_VIX = 5.0
+MAX_VALID_VIX = 100.0
 
 # v2.8 R13 PC400 carve-out thresholds (match v79_v281_isolation.select_alpha_source).
 PC400_VIX_BAND_LO = 16.0
@@ -147,16 +150,36 @@ def ohlc_by_minute(trade_date: str) -> dict:
     return out
 
 
-def prev_close(trade_date: str) -> float | None:
-    """Prev-day NIFTY close: vix_history.nifty_close (prior row) if present,
-    else the previous trading day's last shared-store 1-min spot."""
-    try:
-        v = pd.read_csv(ALPHA_DATA_DIR / "analytics" / "vix_history.csv", dtype={"date": str})
-        prev = v[v["date"] < trade_date].sort_values("date")
-        if not prev.empty and pd.notna(prev.iloc[-1].get("nifty_close")):
-            return float(prev.iloc[-1]["nifty_close"])
-    except Exception:
-        pass
+class ContextInputError(RuntimeError):
+    """The session context is missing, stale, contradictory, or implausible."""
+
+
+@dataclass(frozen=True)
+class ResolvedDayContext:
+    sgap: float
+    weekday: str
+    use_trail: bool
+    regime: str
+    previous_session_date: str
+    prev_close: float
+    prev_close_source: str
+    open_spot: float
+    direction: str
+    vix_open: float | None
+    vix_source: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def previous_session_close(trade_date: str) -> tuple[str, float, str]:
+    """Return the immediately preceding captured NIFTY session close.
+
+    The shared market store determines both the prior session date and close.
+    ``vix_history.csv`` is deliberately not a fallback: PA keeps a sparse
+    rolling VIX file, so treating its last older row as yesterday caused June
+    replays to use an April close and silently switch Alpha routing.
+    """
     for pday in _previous_trading_days(trade_date):
         try:
             prior = load_options_frame(
@@ -166,12 +189,73 @@ def prev_close(trade_date: str) -> float | None:
                 archive_root=SHARED_ARCHIVE_DIR,
                 columns=["timestamp", "spot"],
             )
-            s = prior.groupby("timestamp")["spot"].first()
-            if len(s):
-                return float(s.iloc[-1])
+            prior = prior.copy()
+            prior["timestamp"] = pd.to_datetime(
+                prior["timestamp"], errors="coerce"
+            )
+            prior["spot"] = pd.to_numeric(prior["spot"], errors="coerce")
+            prior = prior.dropna(subset=["timestamp", "spot"])
+            spots = prior.groupby("timestamp")["spot"].first().sort_index()
+            # Frozen single-print files are not valid market sessions.
+            if len(spots) >= 2 and spots.nunique() >= 2:
+                source = str(prior.attrs.get("source_path") or "shared_store")
+                return pday, float(spots.iloc[-1]), source
         except Exception:
             continue
-    return None
+    raise ContextInputError(
+        f"No preceding non-frozen shared-market session before {trade_date}"
+    )
+
+
+def prev_close(trade_date: str) -> float:
+    """Compatibility wrapper returning the exact previous-session close."""
+    return previous_session_close(trade_date)[1]
+
+
+def _valid_vix(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not pd.notna(number) or not MIN_VALID_VIX <= number <= MAX_VALID_VIX:
+        return None
+    return number
+
+
+def resolve_vix_open(
+    trade_date: str,
+    supplied_vix=None,
+    *,
+    supplied_source: str = "supplied",
+) -> tuple[float | None, str]:
+    """Resolve VIX without ever borrowing a different date's row."""
+    if supplied_vix is not None:
+        valid = _valid_vix(supplied_vix)
+        if valid is None:
+            raise ContextInputError(
+                f"Implausible VIX for {trade_date}: {supplied_vix!r}"
+            )
+        return valid, supplied_source
+
+    vix_path = ALPHA_DATA_DIR / "analytics" / "vix_history.csv"
+    if vix_path.exists():
+        try:
+            frame = pd.read_csv(vix_path, dtype={"date": str})
+            exact = frame[frame["date"] == trade_date]
+            if not exact.empty:
+                valid = _valid_vix(exact.iloc[-1].get("vix_open"))
+                if valid is None:
+                    raise ContextInputError(
+                        f"Invalid exact-date VIX row for {trade_date}"
+                    )
+                return valid, f"vix_history:{trade_date}"
+        except ContextInputError:
+            raise
+        except Exception as exc:
+            raise ContextInputError(
+                f"Unable to read exact-date VIX for {trade_date}: {exc}"
+            ) from exc
+    return None, "missing_exact_date"
 
 
 def _gemini_adf(snap: pd.DataFrame, use_abs: bool) -> pd.DataFrame:
@@ -241,17 +325,63 @@ def build_sim_inputs(trade_date: str, lo: float, hi: float, use_abs: bool,
     return snap, adf, ce_map, pe_map
 
 
-def day_context(trade_date: str, ohlc: "champion_sim.OHLC", direction, vix):
-    """Resolve (sgap, weekday, use_trail, regime) for the cell."""
-    pc = prev_close(trade_date)
+def resolve_day_context(
+    trade_date: str,
+    ohlc: "champion_sim.OHLC",
+    direction,
+    vix,
+    *,
+    vix_source: str = "supplied",
+) -> ResolvedDayContext:
+    """Resolve and validate immutable session context for a replay."""
+    previous_date, pc, pc_source = previous_session_close(trade_date)
     day_open = ohlc.day_open()
-    if day_open is not None and pc is not None:
-        sgap = day_open - pc
-    else:
-        sgap = -1.0 if (direction or "").upper() in ("DOWN", "DN") else 1.0
-    weekday = pd.Timestamp(trade_date).strftime("%a")  # Mon..Fri
     try:
-        use_trail = vix is None or float(vix) != float(vix) or float(vix) < VIX_TRAIL_CUTOFF
-    except (TypeError, ValueError):
-        use_trail = True
-    return sgap, weekday, use_trail, ("TRAIL" if use_trail else "WALL")
+        day_open = float(day_open)
+    except (TypeError, ValueError) as exc:
+        raise ContextInputError(
+            f"Verified/opening NIFTY spot unavailable for {trade_date}"
+        ) from exc
+    if not pd.notna(day_open) or day_open <= 0:
+        raise ContextInputError(
+            f"Invalid opening NIFTY spot for {trade_date}: {day_open!r}"
+        )
+    sgap = day_open - pc
+    resolved_direction = "UP" if sgap >= 0 else "DOWN"
+    supplied_direction = str(direction or "").upper().replace("DN", "DOWN")
+    if supplied_direction and supplied_direction != resolved_direction:
+        raise ContextInputError(
+            f"Gap direction mismatch for {trade_date}: locked={supplied_direction}, "
+            f"computed={resolved_direction} from open={day_open:.2f} - "
+            f"prev_close={pc:.2f} ({previous_date})"
+        )
+    resolved_vix, resolved_vix_source = resolve_vix_open(
+        trade_date, vix, supplied_source=vix_source
+    )
+    weekday = pd.Timestamp(trade_date).strftime("%a")  # Mon..Fri
+    use_trail = resolved_vix is None or resolved_vix < VIX_TRAIL_CUTOFF
+    regime = "TRAIL" if use_trail else "WALL"
+    return ResolvedDayContext(
+        sgap=sgap,
+        weekday=weekday,
+        use_trail=use_trail,
+        regime=regime,
+        previous_session_date=previous_date,
+        prev_close=pc,
+        prev_close_source=pc_source,
+        open_spot=day_open,
+        direction=resolved_direction,
+        vix_open=resolved_vix,
+        vix_source=resolved_vix_source,
+    )
+
+
+def day_context(trade_date: str, ohlc: "champion_sim.OHLC", direction, vix):
+    """Compatibility tuple for callers that do not need provenance."""
+    context = resolve_day_context(trade_date, ohlc, direction, vix)
+    return (
+        context.sgap,
+        context.weekday,
+        context.use_trail,
+        context.regime,
+    )

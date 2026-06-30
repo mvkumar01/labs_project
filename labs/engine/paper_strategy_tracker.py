@@ -34,6 +34,7 @@ Modeling notes (v1, documented for honesty):
 """
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -88,6 +89,7 @@ def _ensure_tables(conn) -> None:
             charges_rs   REAL,
             net_rs       REAL,
             strategy_version TEXT,
+            context_json TEXT,
             updated_at   TEXT
         );
         CREATE TABLE IF NOT EXISTS paper_strategy_trades (
@@ -148,6 +150,13 @@ def _ensure_tables(conn) -> None:
         );
         """
     )
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(paper_strategy_daily)")
+    }
+    if "context_json" not in columns:
+        conn.execute(
+            "ALTER TABLE paper_strategy_daily ADD COLUMN context_json TEXT"
+        )
     conn.commit()
 
 
@@ -234,13 +243,51 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
             return None
         return {"lower": float(override["lower"]), "upper": float(override["upper"]),
                 "bucket": override["bucket"], "direction": override["direction"],
-                "vix": override.get("vix"), "biggap": bool(override.get("pc400_v210_biggap"))}
+                "vix": override.get("vix"), "vix_source": "backfill_override",
+                "biggap": bool(override.get("pc400_v210_biggap"))}
     state = _read_locked_hybrid_state(trade_date)
     if state is None:
         return None
     return {"lower": float(state["lower"]), "upper": float(state["upper"]),
             "bucket": state.get("bucket") or "PC50", "direction": state.get("direction"),
-            "vix": state.get("vix_at_open"), "biggap": bool(state.get("pc400_v210_biggap"))}
+            "vix": state.get("vix_at_open"), "vix_source": "locked_hybrid_state",
+            "biggap": bool(state.get("pc400_v210_biggap"))}
+
+
+def _resolve_replay_context(trade_date: str, day: dict):
+    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
+    try:
+        context = champion_inputs.resolve_day_context(
+            trade_date,
+            ohlc,
+            day["direction"],
+            day["vix"],
+            vix_source=day.get("vix_source", "supplied"),
+        )
+    except champion_inputs.ContextInputError as exc:
+        raise ReplayInputError(
+            f"Invalid session context for {trade_date}: {exc}; "
+            "existing rows retained"
+        ) from exc
+    range_source, use_abs = champion_inputs.alpha_source(
+        day["bucket"],
+        context.direction,
+        context.vix_open,
+        context.sgap,
+        day["biggap"],
+    )
+    provenance = context.to_dict()
+    provenance.update(
+        {
+            "range_lower": day["lower"],
+            "range_upper": day["upper"],
+            "tier": day["bucket"],
+            "biggap": day["biggap"],
+            "range_source": range_source,
+            "alpha_formula": "abs_denom" if use_abs else "std",
+        }
+    )
+    return ohlc, context, range_source, use_abs, provenance
 
 
 def replay_champion_signals(
@@ -267,12 +314,10 @@ def replay_champion_signals(
             "session_done": _session_over(trade_date),
         }
 
-    tier, direction = day["bucket"], day["direction"]
-    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
-    sgap, weekday, use_trail, regime = champion_inputs.day_context(
-        trade_date, ohlc, direction, day["vix"])
-    range_source, use_abs = champion_inputs.alpha_source(
-        tier, direction, day["vix"], sgap, day["biggap"])
+    tier = day["bucket"]
+    ohlc, context, range_source, use_abs, provenance = (
+        _resolve_replay_context(trade_date, day)
+    )
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs,
@@ -297,13 +342,15 @@ def replay_champion_signals(
         )
 
     _, sim_trades = champion_sim.simulate(
-        adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
-        weekday, regime, day["lower"], day["upper"])
+        adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
+        context.sgap, tier, context.weekday, context.regime,
+        day["lower"], day["upper"])
     return {
         "tier": tier,
-        "direction": direction,
+        "direction": context.direction,
         "sim_trades": sim_trades,
         "session_done": _session_over(trade_date),
+        "context": provenance,
     }
 
 
@@ -348,15 +395,13 @@ def run_day(
             )
         return {"trade_date": trade_date, "status": "no_trade", "net_rs": 0.0, "n_trades": 0}
 
-    tier, direction = day["bucket"], day["direction"]
+    tier = day["bucket"]
     # Resolve cell context (sgap needs 09:15 open + prev close) BEFORE building
     # inputs so the alpha source (regime vs gemini_c2) + formula are decided per
     # the Run F routing — see champion_inputs.alpha_source.
-    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
-    sgap, weekday, use_trail, regime = champion_inputs.day_context(
-        trade_date, ohlc, direction, day["vix"])
-    range_source, use_abs = champion_inputs.alpha_source(
-        tier, direction, day["vix"], sgap, day["biggap"])
+    ohlc, context, range_source, use_abs, provenance = (
+        _resolve_replay_context(trade_date, day)
+    )
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs, range_source=range_source)
@@ -381,8 +426,9 @@ def run_day(
         )
 
     _, sim_trades = champion_sim.simulate(
-        adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
-        weekday, regime, day["lower"], day["upper"])
+        adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
+        context.sgap, tier, context.weekday, context.regime,
+        day["lower"], day["upper"])
 
     # Build both expiry price books with a single CSV read.
     books = _build_price_books(trade_date)
@@ -433,8 +479,9 @@ def run_day(
 
     if persist:
         _save_daily(
-            conn, trade_date, status=status, tier=tier, gap_dir=direction,
-            trades=trades, commit=commit,
+            conn, trade_date, status=status, tier=tier,
+            gap_dir=context.direction, trades=trades, context=provenance,
+            commit=commit,
         )
 
         # Comparison variants use identical simulated trades and timestamps.
@@ -483,7 +530,9 @@ def _price_trade(prices: dict, t: dict, strike_offset: int = ITM_DISTANCE) -> di
     )
 
 
-def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades, commit=True) -> None:
+def _save_daily(
+    conn, trade_date, *, status, tier, gap_dir, trades, context=None, commit=True
+) -> None:
     pnl_pts = round(sum(t["pnl_pts"] for t in trades), 1)
     gross = round(sum(t["gross_rs"] for t in trades), 2)
     charges = round(sum(t["charges_rs"] for t in trades), 2)
@@ -502,14 +551,15 @@ def _save_daily(conn, trade_date, *, status, tier, gap_dir, trades, commit=True)
              t["entry_rule"], t["exit_reason"]))
     conn.execute(
         "INSERT INTO paper_strategy_daily (trade_date, status, tier, gap_dir, n_trades, "
-        "pnl_pts, gross_rs, charges_rs, net_rs, strategy_version, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+        "pnl_pts, gross_rs, charges_rs, net_rs, strategy_version, context_json, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status, tier=excluded.tier, "
         "gap_dir=excluded.gap_dir, n_trades=excluded.n_trades, pnl_pts=excluded.pnl_pts, "
         "gross_rs=excluded.gross_rs, charges_rs=excluded.charges_rs, net_rs=excluded.net_rs, "
-        "strategy_version=excluded.strategy_version, updated_at=excluded.updated_at",
+        "strategy_version=excluded.strategy_version, context_json=excluded.context_json, "
+        "updated_at=excluded.updated_at",
         (trade_date, status, tier, gap_dir, len(trades), pnl_pts, gross, charges, net,
-         STRATEGY_VERSION, now))
+         STRATEGY_VERSION, json.dumps(context, sort_keys=True) if context else None, now))
     if commit:
         conn.commit()
 

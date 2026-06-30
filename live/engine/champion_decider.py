@@ -31,13 +31,15 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
             return None
         return {"lower": float(override["lower"]), "upper": float(override["upper"]),
                 "bucket": override["bucket"], "direction": override["direction"],
-                "vix": override.get("vix"), "biggap": bool(override.get("pc400_v210_biggap"))}
+                "vix": override.get("vix"), "vix_source": "backfill_override",
+                "biggap": bool(override.get("pc400_v210_biggap"))}
     state = _read_locked_hybrid_state(trade_date)
     if state is None:
         return None
     return {"lower": float(state["lower"]), "upper": float(state["upper"]),
             "bucket": state.get("bucket") or "PC50", "direction": state.get("direction"),
-            "vix": state.get("vix_at_open"), "biggap": bool(state.get("pc400_v210_biggap"))}
+            "vix": state.get("vix_at_open"), "vix_source": "locked_hybrid_state",
+            "biggap": bool(state.get("pc400_v210_biggap"))}
 
 
 def champion_target(trade_date: str | None = None, now_ist: datetime | None = None,
@@ -59,14 +61,27 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     if day is None:
         return None
 
-    tier, direction = day["bucket"], day["direction"]
+    tier = day["bucket"]
     # Resolve cell context first (sgap needs 09:15 open + prev close) so the
     # alpha source (regime vs gemini_c2) + formula follow the Run F routing.
     ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
-    sgap, weekday, use_trail, regime = champion_inputs.day_context(
-        trade_date, ohlc, direction, day["vix"])
+    try:
+        context = champion_inputs.resolve_day_context(
+            trade_date,
+            ohlc,
+            day["direction"],
+            day["vix"],
+            vix_source=day.get("vix_source", "supplied"),
+        )
+    except champion_inputs.ContextInputError as exc:
+        return {
+            "position": "UNAVAILABLE",
+            "bucket": tier,
+            "direction": day["direction"],
+            "context_error": str(exc),
+        }
     range_source, use_abs = champion_inputs.alpha_source(
-        tier, direction, day["vix"], sgap, day["biggap"])
+        tier, context.direction, context.vix_open, context.sgap, day["biggap"])
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs, range_source=range_source)
@@ -84,20 +99,22 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     if trade_date == now_ist.date().isoformat():
         cutoff = pd.Timestamp(now_ist) - pd.Timedelta(minutes=5)
     if len(adf) < 2:
-        return {"position": "FLAT", "bucket": tier, "direction": direction,
+        return {"position": "FLAT", "bucket": tier, "direction": context.direction,
                 "last_closed_reason": None, "n_closed": 0}
 
     _, trades, open_state = champion_sim.simulate(
-        adf, ce_map, pe_map, ohlc, trade_date, use_trail, sgap, tier,
-        weekday, regime, day["lower"], day["upper"],
+        adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
+        context.sgap, tier, context.weekday, context.regime,
+        day["lower"], day["upper"],
         enable_entry_spot_recovery=enable_entry_spot_recovery,
         close_eod=False, return_state=True, entries_until_ts=cutoff)
 
     last_reason = trades[-1]["reason"] if trades else None
     if open_state is None:
-        return {"position": "FLAT", "bucket": tier, "direction": direction,
+        return {"position": "FLAT", "bucket": tier, "direction": context.direction,
                 "last_closed_reason": last_reason, "n_closed": len(trades)}
-    return {"position": open_state["side"], "bucket": tier, "direction": direction,
+    return {"position": open_state["side"], "bucket": tier,
+            "direction": context.direction,
             "entry_spot": open_state["entry_spot"], "entry_rule": open_state["entry_rule"],
             "tier": open_state["tier"], "gap_direction": open_state["gap_direction"],
             "last_closed_reason": last_reason, "n_closed": len(trades)}
@@ -109,6 +126,13 @@ def reconcile(target: dict | None, current_side: str | None) -> dict:
     current_side: "CALL"|"PUT" if the bot holds a position, else None.
     Returns {"action": "ENTER"|"EXIT"|"HOLD", "side", "reason", "rule"}.
     """
+    if target and target.get("position") == "UNAVAILABLE":
+        return {
+            "action": "HOLD",
+            "side": current_side,
+            "reason": "context_unavailable",
+            "rule": None,
+        }
     if not target or target.get("position") in (None, "FLAT"):
         if current_side is not None:
             return {"action": "EXIT", "side": None,
