@@ -332,9 +332,35 @@ def resolve_day_context(
     vix,
     *,
     vix_source: str = "supplied",
+    previous_session_date: str | None = None,
+    prev_close: float | None = None,
+    prev_close_source: str | None = None,
 ) -> ResolvedDayContext:
     """Resolve and validate immutable session context for a replay."""
-    previous_date, pc, pc_source = previous_session_close(trade_date)
+    has_explicit_previous = previous_session_date is not None or prev_close is not None
+    if has_explicit_previous:
+        if previous_session_date is None or prev_close is None:
+            raise ContextInputError(
+                "Explicit previous-session context requires both date and close"
+            )
+        try:
+            previous_ts = pd.Timestamp(previous_session_date)
+            trade_ts = pd.Timestamp(trade_date)
+            pc = float(prev_close)
+        except (TypeError, ValueError) as exc:
+            raise ContextInputError("Invalid explicit previous-session context") from exc
+        if previous_ts >= trade_ts:
+            raise ContextInputError(
+                f"Previous session {previous_session_date} is not before {trade_date}"
+            )
+        if not pd.notna(pc) or pc <= 0:
+            raise ContextInputError(f"Invalid explicit previous close: {prev_close!r}")
+        previous_date = previous_ts.date().isoformat()
+        pc_source = str(prev_close_source or "audited_override").strip()
+        if not pc_source:
+            raise ContextInputError("Explicit previous close requires provenance")
+    else:
+        previous_date, pc, pc_source = previous_session_close(trade_date)
     day_open = ohlc.day_open()
     try:
         day_open = float(day_open)

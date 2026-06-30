@@ -144,6 +144,50 @@ def test_day_context_records_exact_provenance(monkeypatch) -> None:
     assert context.regime == "TRAIL"
 
 
+def test_day_context_accepts_complete_audited_previous_session_override(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        champion_inputs,
+        "previous_session_close",
+        lambda *_: pytest.fail("shared lookup must not run for audited override"),
+    )
+    ohlc = champion_sim.OHLC(
+        {"09:15": (23615.90, 23640.0, 23590.0, 23610.0)}
+    )
+
+    context = champion_inputs.resolve_day_context(
+        "2026-06-01",
+        ohlc,
+        "UP",
+        16.18,
+        vix_source="backfill_override",
+        previous_session_date="2026-05-29",
+        prev_close=23576.75,
+        prev_close_source="audited_manifest:shared_market_2026-05-29",
+    )
+
+    assert context.previous_session_date == "2026-05-29"
+    assert context.prev_close == 23576.75
+    assert context.prev_close_source == "audited_manifest:shared_market_2026-05-29"
+    assert context.sgap == pytest.approx(39.15)
+
+
+def test_day_context_rejects_partial_previous_session_override() -> None:
+    ohlc = champion_sim.OHLC(
+        {"09:15": (23615.90, 23640.0, 23590.0, 23610.0)}
+    )
+
+    with pytest.raises(champion_inputs.ContextInputError, match="requires both"):
+        champion_inputs.resolve_day_context(
+            "2026-06-01",
+            ohlc,
+            "UP",
+            16.18,
+            previous_session_date="2026-05-29",
+        )
+
+
 def test_live_reconcile_holds_when_context_is_unavailable() -> None:
     target = {
         "position": "UNAVAILABLE",

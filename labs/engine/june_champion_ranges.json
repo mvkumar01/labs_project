@@ -5,6 +5,9 @@
     "bucket": "PC50",
     "direction": "UP",
     "vix": 16.18,
+    "previous_session_date": "2026-05-29",
+    "prev_close": 23576.75,
+    "prev_close_source": "audited_manifest:shared_market_2026-05-29",
     "pc400_v210_biggap": false,
     "skip": false
   },
