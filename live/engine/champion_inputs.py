@@ -164,6 +164,7 @@ class ResolvedDayContext:
     prev_close: float
     prev_close_source: str
     open_spot: float
+    open_spot_source: str
     direction: str
     vix_open: float | None
     vix_source: str
@@ -335,6 +336,8 @@ def resolve_day_context(
     previous_session_date: str | None = None,
     prev_close: float | None = None,
     prev_close_source: str | None = None,
+    open_spot: float | None = None,
+    open_spot_source: str | None = None,
 ) -> ResolvedDayContext:
     """Resolve and validate immutable session context for a replay."""
     has_explicit_previous = previous_session_date is not None or prev_close is not None
@@ -361,7 +364,12 @@ def resolve_day_context(
             raise ContextInputError("Explicit previous close requires provenance")
     else:
         previous_date, pc, pc_source = previous_session_close(trade_date)
-    day_open = ohlc.day_open()
+    has_explicit_open = open_spot is not None or open_spot_source is not None
+    if has_explicit_open and (open_spot is None or not open_spot_source):
+        raise ContextInputError(
+            "Explicit opening context requires both spot and provenance"
+        )
+    day_open = open_spot if has_explicit_open else ohlc.day_open()
     try:
         day_open = float(day_open)
     except (TypeError, ValueError) as exc:
@@ -396,6 +404,9 @@ def resolve_day_context(
         prev_close=pc,
         prev_close_source=pc_source,
         open_spot=day_open,
+        open_spot_source=(
+            str(open_spot_source) if has_explicit_open else "session_ohlc_09:15"
+        ),
         direction=resolved_direction,
         vix_open=resolved_vix,
         vix_source=resolved_vix_source,

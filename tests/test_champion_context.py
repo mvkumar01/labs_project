@@ -142,6 +142,7 @@ def test_day_context_records_exact_provenance(monkeypatch) -> None:
     assert context.vix_open == 15.63
     assert context.vix_source == "backfill_override"
     assert context.regime == "TRAIL"
+    assert context.open_spot_source == "session_ohlc_09:15"
 
 
 def test_day_context_accepts_complete_audited_previous_session_override(
@@ -186,6 +187,30 @@ def test_day_context_rejects_partial_previous_session_override() -> None:
             16.18,
             previous_session_date="2026-05-29",
         )
+
+
+def test_day_context_uses_verified_open_with_provenance(monkeypatch) -> None:
+    monkeypatch.setattr(
+        champion_inputs,
+        "previous_session_close",
+        lambda *_: ("2026-06-19", 24042.70, "audited_manifest"),
+    )
+    ohlc = champion_sim.OHLC(
+        {"09:15": (24071.30, 24090.0, 24050.0, 24080.0)}
+    )
+
+    context = champion_inputs.resolve_day_context(
+        "2026-06-23",
+        ohlc,
+        "UP",
+        12.93,
+        open_spot=24073.30,
+        open_spot_source="kite_historical_verified:hybrid_range_writer_log",
+    )
+
+    assert context.open_spot == 24073.30
+    assert context.open_spot_source == "kite_historical_verified:hybrid_range_writer_log"
+    assert context.sgap == pytest.approx(30.60)
 
 
 def test_live_reconcile_holds_when_context_is_unavailable() -> None:

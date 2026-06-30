@@ -247,6 +247,8 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
                 "previous_session_date": override.get("previous_session_date"),
                 "prev_close": override.get("prev_close"),
                 "prev_close_source": override.get("prev_close_source"),
+                "open_spot": override.get("open_spot"),
+                "open_spot_source": override.get("open_spot_source"),
                 "biggap": bool(override.get("pc400_v210_biggap"))}
     state = _read_locked_hybrid_state(trade_date)
     if state is None:
@@ -269,6 +271,8 @@ def _resolve_replay_context(trade_date: str, day: dict):
             previous_session_date=day.get("previous_session_date"),
             prev_close=day.get("prev_close"),
             prev_close_source=day.get("prev_close_source"),
+            open_spot=day.get("open_spot"),
+            open_spot_source=day.get("open_spot_source"),
         )
     except champion_inputs.ContextInputError as exc:
         raise ReplayInputError(
