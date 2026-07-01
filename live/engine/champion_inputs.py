@@ -31,6 +31,8 @@ SYMBOL = "NIFTY"
 VIX_TRAIL_CUTOFF = 17.0   # vix_open < cutoff (or missing) -> TRAIL regime
 MIN_VALID_VIX = 5.0
 MAX_VALID_VIX = 100.0
+SPOT_CONTEXT_TOLERANCE = 0.05
+VIX_CONTEXT_TOLERANCE = 0.01
 
 # v2.8 R13 PC400 carve-out thresholds (match v79_v281_isolation.select_alpha_source).
 PC400_VIX_BAND_LO = 16.0
@@ -230,32 +232,43 @@ def resolve_vix_open(
     supplied_source: str = "supplied",
 ) -> tuple[float | None, str]:
     """Resolve VIX without ever borrowing a different date's row."""
-    if supplied_vix is not None:
-        valid = _valid_vix(supplied_vix)
-        if valid is None:
-            raise ContextInputError(
-                f"Implausible VIX for {trade_date}: {supplied_vix!r}"
-            )
-        return valid, supplied_source
-
+    exact_value = None
+    exact_source = None
     vix_path = ALPHA_DATA_DIR / "analytics" / "vix_history.csv"
     if vix_path.exists():
         try:
             frame = pd.read_csv(vix_path, dtype={"date": str})
             exact = frame[frame["date"] == trade_date]
             if not exact.empty:
-                valid = _valid_vix(exact.iloc[-1].get("vix_open"))
-                if valid is None:
+                exact_value = _valid_vix(exact.iloc[-1].get("vix_open"))
+                if exact_value is None:
                     raise ContextInputError(
                         f"Invalid exact-date VIX row for {trade_date}"
                     )
-                return valid, f"vix_history:{trade_date}"
+                exact_source = f"vix_history:{trade_date}"
         except ContextInputError:
             raise
         except Exception as exc:
             raise ContextInputError(
                 f"Unable to read exact-date VIX for {trade_date}: {exc}"
             ) from exc
+    if supplied_vix is not None:
+        valid = _valid_vix(supplied_vix)
+        if valid is None:
+            raise ContextInputError(
+                f"Implausible VIX for {trade_date}: {supplied_vix!r}"
+            )
+        if (
+            exact_value is not None
+            and abs(valid - exact_value) > VIX_CONTEXT_TOLERANCE
+        ):
+            raise ContextInputError(
+                f"VIX mismatch for {trade_date}: supplied={valid:.2f}, "
+                f"exact_date={exact_value:.2f} ({exact_source})"
+            )
+        return valid, supplied_source
+    if exact_value is not None:
+        return exact_value, exact_source
     return None, "missing_exact_date"
 
 
@@ -362,6 +375,17 @@ def resolve_day_context(
         pc_source = str(prev_close_source or "audited_override").strip()
         if not pc_source:
             raise ContextInputError("Explicit previous close requires provenance")
+        observed_date, observed_pc, observed_source = previous_session_close(trade_date)
+        if (
+            previous_date != observed_date
+            or abs(pc - observed_pc) > SPOT_CONTEXT_TOLERANCE
+        ):
+            raise ContextInputError(
+                f"Previous-session mismatch for {trade_date}: "
+                f"supplied={previous_date} close={pc:.2f}, "
+                f"shared_store={observed_date} close={observed_pc:.2f} "
+                f"({observed_source})"
+            )
     else:
         previous_date, pc, pc_source = previous_session_close(trade_date)
     has_explicit_open = open_spot is not None or open_spot_source is not None
@@ -379,6 +403,15 @@ def resolve_day_context(
     if not pd.notna(day_open) or day_open <= 0:
         raise ContextInputError(
             f"Invalid opening NIFTY spot for {trade_date}: {day_open!r}"
+        )
+    observed_open = float(ohlc.day_open())
+    if (
+        has_explicit_open
+        and abs(day_open - observed_open) > SPOT_CONTEXT_TOLERANCE
+    ):
+        raise ContextInputError(
+            f"Opening mismatch for {trade_date}: supplied={day_open:.2f}, "
+            f"session_ohlc_09:15={observed_open:.2f}"
         )
     sgap = day_open - pc
     resolved_direction = "UP" if sgap >= 0 else "DOWN"

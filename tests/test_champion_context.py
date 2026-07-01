@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -7,6 +8,31 @@ from live.engine import champion_decider, champion_inputs, champion_sim
 
 
 DATE = "2026-06-11"
+
+
+def test_june23_manifest_uses_immediate_session_and_w1_range() -> None:
+    manifest_path = (
+        Path(__file__).resolve().parents[1]
+        / "labs"
+        / "engine"
+        / "june_champion_ranges.json"
+    )
+    day = json.loads(manifest_path.read_text(encoding="utf-8"))["2026-06-23"]
+
+    assert day == {
+        "lower": 24000,
+        "upper": 24200,
+        "bucket": "PC50",
+        "direction": "DOWN",
+        "vix": 12.93,
+        "previous_session_date": "2026-06-22",
+        "prev_close": 24085.70,
+        "prev_close_source": "shared_store_verified:2026-06-22",
+        "open_spot": 24071.30,
+        "open_spot_source": "nifty_1min_ohlc:09:15_open",
+        "pc400_v210_biggap": False,
+        "skip": False,
+    }
 
 
 def _prior_frame() -> pd.DataFrame:
@@ -103,6 +129,20 @@ def test_implausible_supplied_vix_fails_closed() -> None:
         champion_inputs.resolve_vix_open(DATE, 23897.95)
 
 
+def test_supplied_vix_must_match_exact_date_history(
+    monkeypatch, tmp_path: Path
+) -> None:
+    analytics = tmp_path / "analytics"
+    analytics.mkdir()
+    pd.DataFrame([{"date": DATE, "vix_open": 15.63}]).to_csv(
+        analytics / "vix_history.csv", index=False
+    )
+    monkeypatch.setattr(champion_inputs, "ALPHA_DATA_DIR", tmp_path)
+
+    with pytest.raises(champion_inputs.ContextInputError, match="VIX mismatch"):
+        champion_inputs.resolve_vix_open(DATE, 12.93)
+
+
 def test_day_context_rejects_direction_disagreement(monkeypatch) -> None:
     monkeypatch.setattr(
         champion_inputs,
@@ -151,7 +191,7 @@ def test_day_context_accepts_complete_audited_previous_session_override(
     monkeypatch.setattr(
         champion_inputs,
         "previous_session_close",
-        lambda *_: pytest.fail("shared lookup must not run for audited override"),
+        lambda *_: ("2026-05-29", 23576.75, "shared_store"),
     )
     ohlc = champion_sim.OHLC(
         {"09:15": (23615.90, 23640.0, 23590.0, 23610.0)}
@@ -174,6 +214,32 @@ def test_day_context_accepts_complete_audited_previous_session_override(
     assert context.sgap == pytest.approx(39.15)
 
 
+def test_day_context_rejects_stale_audited_previous_session_override(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        champion_inputs,
+        "previous_session_close",
+        lambda *_: ("2026-06-22", 24085.70, "shared_store"),
+    )
+    ohlc = champion_sim.OHLC(
+        {"09:15": (24071.30, 24090.0, 24050.0, 24080.0)}
+    )
+
+    with pytest.raises(
+        champion_inputs.ContextInputError, match="Previous-session mismatch"
+    ):
+        champion_inputs.resolve_day_context(
+            "2026-06-23",
+            ohlc,
+            "UP",
+            12.93,
+            previous_session_date="2026-06-19",
+            prev_close=24042.70,
+            prev_close_source="stale_writer_log",
+        )
+
+
 def test_day_context_rejects_partial_previous_session_override() -> None:
     ohlc = champion_sim.OHLC(
         {"09:15": (23615.90, 23640.0, 23590.0, 23610.0)}
@@ -189,7 +255,7 @@ def test_day_context_rejects_partial_previous_session_override() -> None:
         )
 
 
-def test_day_context_uses_verified_open_with_provenance(monkeypatch) -> None:
+def test_day_context_rejects_verified_open_disagreement(monkeypatch) -> None:
     monkeypatch.setattr(
         champion_inputs,
         "previous_session_close",
@@ -199,18 +265,38 @@ def test_day_context_uses_verified_open_with_provenance(monkeypatch) -> None:
         {"09:15": (24071.30, 24090.0, 24050.0, 24080.0)}
     )
 
+    with pytest.raises(champion_inputs.ContextInputError, match="Opening mismatch"):
+        champion_inputs.resolve_day_context(
+            "2026-06-23",
+            ohlc,
+            "UP",
+            12.93,
+            open_spot=24073.30,
+            open_spot_source="kite_historical_verified:hybrid_range_writer_log",
+        )
+
+
+def test_day_context_accepts_independently_matching_open(monkeypatch) -> None:
+    monkeypatch.setattr(
+        champion_inputs,
+        "previous_session_close",
+        lambda *_: ("2026-06-22", 24085.70, "shared_store"),
+    )
+    ohlc = champion_sim.OHLC(
+        {"09:15": (24071.30, 24090.0, 24050.0, 24080.0)}
+    )
+
     context = champion_inputs.resolve_day_context(
         "2026-06-23",
         ohlc,
-        "UP",
+        "DOWN",
         12.93,
-        open_spot=24073.30,
-        open_spot_source="kite_historical_verified:hybrid_range_writer_log",
+        open_spot=24071.30,
+        open_spot_source="nifty_1min_ohlc:09:15_open",
     )
 
-    assert context.open_spot == 24073.30
-    assert context.open_spot_source == "kite_historical_verified:hybrid_range_writer_log"
-    assert context.sgap == pytest.approx(30.60)
+    assert context.open_spot == 24071.30
+    assert context.sgap == pytest.approx(-14.40)
 
 
 def test_live_reconcile_holds_when_context_is_unavailable() -> None:
