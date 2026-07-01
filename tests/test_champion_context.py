@@ -261,6 +261,7 @@ def test_day_context_rejects_verified_open_disagreement(monkeypatch) -> None:
         "previous_session_close",
         lambda *_: ("2026-06-19", 24042.70, "audited_manifest"),
     )
+    monkeypatch.setattr(champion_inputs, "verified_session_open", lambda *_: None)
     ohlc = champion_sim.OHLC(
         {"09:15": (24071.30, 24090.0, 24050.0, 24080.0)}
     )
@@ -282,6 +283,11 @@ def test_day_context_accepts_independently_matching_open(monkeypatch) -> None:
         "previous_session_close",
         lambda *_: ("2026-06-22", 24085.70, "shared_store"),
     )
+    monkeypatch.setattr(
+        champion_inputs,
+        "verified_session_open",
+        lambda *_: (24071.30, "kite_historical_ohlc:2026-06-23:09:15"),
+    )
     ohlc = champion_sim.OHLC(
         {"09:15": (24071.30, 24090.0, 24050.0, 24080.0)}
     )
@@ -289,6 +295,34 @@ def test_day_context_accepts_independently_matching_open(monkeypatch) -> None:
     context = champion_inputs.resolve_day_context(
         "2026-06-23",
         ohlc,
+        "DOWN",
+        12.93,
+        open_spot=24071.30,
+        open_spot_source="nifty_1min_ohlc:09:15_open",
+    )
+
+    assert context.open_spot == 24071.30
+    assert context.sgap == pytest.approx(-14.40)
+
+
+def test_verified_open_overrides_collector_sample_for_validation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        champion_inputs,
+        "previous_session_close",
+        lambda *_: ("2026-06-22", 24085.70, "shared_store"),
+    )
+    monkeypatch.setattr(
+        champion_inputs,
+        "verified_session_open",
+        lambda *_: (24071.30, "kite_historical_ohlc:2026-06-23:09:15"),
+    )
+    sampled_ohlc = champion_sim.OHLC(
+        {"09:15": (24073.30, 24090.0, 24050.0, 24080.0)}
+    )
+
+    context = champion_inputs.resolve_day_context(
+        "2026-06-23",
+        sampled_ohlc,
         "DOWN",
         12.93,
         open_spot=24071.30,

@@ -152,6 +152,38 @@ def ohlc_by_minute(trade_date: str) -> dict:
     return out
 
 
+def verified_session_open(trade_date: str) -> tuple[float, str] | None:
+    """Return the broker-candle 09:15 open when retained by alphaIMB.
+
+    Labs' collector row is a sampled index LTP and can differ from the official
+    09:15 candle open by a few points.  That sampled value remains appropriate
+    for intrabar simulation, but it must never classify the opening gap.  The
+    alphaIMB OHLC file is populated from Kite historical candles and is the
+    independent opening source used to validate archived replay manifests.
+    """
+    path = ALPHA_DATA_DIR / "analytics" / "nifty_1min_ohlc.csv"
+    if not path.is_file():
+        return None
+    try:
+        frame = pd.read_csv(path, usecols=["timestamp", "open"])
+        timestamps = pd.to_datetime(frame["timestamp"], errors="coerce")
+        if getattr(timestamps.dt, "tz", None) is not None:
+            timestamps = timestamps.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
+        exact = frame.assign(_timestamp=timestamps)
+        exact = exact[
+            (exact["_timestamp"].dt.strftime("%Y-%m-%d") == trade_date)
+            & (exact["_timestamp"].dt.strftime("%H:%M") == "09:15")
+        ]
+        if exact.empty:
+            return None
+        value = float(pd.to_numeric(exact.iloc[-1]["open"], errors="coerce"))
+        if not pd.notna(value) or value <= 0:
+            return None
+        return value, f"kite_historical_ohlc:{trade_date}:09:15"
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 class ContextInputError(RuntimeError):
     """The session context is missing, stale, contradictory, or implausible."""
 
@@ -404,14 +436,20 @@ def resolve_day_context(
         raise ContextInputError(
             f"Invalid opening NIFTY spot for {trade_date}: {day_open!r}"
         )
-    observed_open = float(ohlc.day_open())
+    verified_open = verified_session_open(trade_date)
+    observed_open = (
+        float(verified_open[0]) if verified_open is not None else float(ohlc.day_open())
+    )
+    observed_open_source = (
+        verified_open[1] if verified_open is not None else "session_ohlc_09:15"
+    )
     if (
         has_explicit_open
         and abs(day_open - observed_open) > SPOT_CONTEXT_TOLERANCE
     ):
         raise ContextInputError(
             f"Opening mismatch for {trade_date}: supplied={day_open:.2f}, "
-            f"session_ohlc_09:15={observed_open:.2f}"
+            f"{observed_open_source}={observed_open:.2f}"
         )
     sgap = day_open - pc
     resolved_direction = "UP" if sgap >= 0 else "DOWN"
