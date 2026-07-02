@@ -29,10 +29,12 @@ labs_project/
 │   └── generate_token.py        TOTP login → zerodha_token.json (PA scheduled 08:55 IST)
 │
 ├── collector/
-│   ├── run_collector.py         Market-hours loop (60s) — spot + options
-│   ├── spot_collector.py        Spot index LTP → data/live/ daily CSV (unchanged)
+│   ├── run_collector.py         Market-hours loop (60s) — spot + futures + options
+│   ├── spot_collector.py        Spot index 1-min OHLCV → data/live/ daily CSV
+│   ├── futures_collector.py     Nearest-expiry futures 1-min OHLCV → data/live/ daily CSV (separate file from spot)
 │   ├── options_collector.py     Option chain LTP → shared_market_data/live/ (canonical shared store)
-│   └── instruments.py           Option symbol builder: spot ± 10%, nearest 2 expiries
+│   ├── instruments.py           Option symbol builder (spot ± 10%, nearest 2 expiries) + get_current_future()
+│   └── kite_bars.py             Shared "completed 1-min candle" fetch, used by spot_collector + futures_collector
 │
 ├── config/
 │   ├── labs_config.py           Constants: UNDERLYINGS, market hours, intervals, dirs, shared paths
@@ -40,7 +42,8 @@ labs_project/
 │   └── zerodha_token.json       Access token (regenerated daily)  [gitignored]
 │
 ├── data/
-│   ├── live/                    Spot 1-min OHLCV CSVs  [NEVER MODIFY]
+│   ├── live/                    Spot + futures 1-min OHLCV CSVs  [NEVER MODIFY]
+│   │                            {date}_{UNDERLYING}_spot_1min.csv / _futures_1min.csv
 │   └── archive/                 EOD .tar.gz archives    [gitignored]
 │
 │   NOTE: Options data is no longer in data/live/. It is written to the shared
@@ -316,3 +319,13 @@ Repo: `https://github.com/mvkumar01/labs_project` (private)
 Commit format: `feat:` / `fix:` / `refactor:` / `docs:` prefix.
 
 Gitignored: `data/live/`, `data/archive/`, `logs/`, `storage/labs.db`, `config/zerodha_token.json`, `*.pyc`, `__pycache__/`
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

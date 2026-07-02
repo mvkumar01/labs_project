@@ -8,6 +8,21 @@ from datetime import date
 from config.labs_config import UNDERLYINGS, STRIKE_BAND_PCT
 from market_data.expiry import expiry_code_from_symbol, is_monthly_expiry
 
+# kite.instruments(exchange) returns the full exchange instrument dump (tens of
+# thousands of rows) and doesn't change intraday. Cached per exchange per day so
+# adding a second caller (futures) doesn't double the API load of the 60s loop.
+_instrument_cache: dict[str, tuple[date, list]] = {}
+
+
+def _get_instruments(kite, exchange: str) -> list:
+    today = date.today()
+    cached = _instrument_cache.get(exchange)
+    if cached and cached[0] == today:
+        return cached[1]
+    data = kite.instruments(exchange)
+    _instrument_cache[exchange] = (today, data)
+    return data
+
 
 def _round_strike(price: float, step: int) -> int:
     return round(price / step) * step
@@ -36,7 +51,7 @@ def build_option_symbols(
     low, high = get_strike_range(underlying, spot)
 
     exchange = "NFO" if underlying in ("NIFTY", "BANKNIFTY") else "BFO"
-    instruments = kite.instruments(exchange)
+    instruments = _get_instruments(kite, exchange)
 
     today = date.today()
     expiries: list[date] = sorted({
@@ -71,3 +86,27 @@ def build_option_symbols(
         and low <= i["strike"] <= high
     ]
     return symbols
+
+
+def get_current_future(kite, underlying: str) -> dict:
+    """
+    Return the instrument dict (tradingsymbol, instrument_token, expiry, ...) for
+    the nearest-expiry future contract of `underlying`.
+    Raises ValueError if no unexpired future contract is listed.
+    """
+    exchange = "NFO" if underlying in ("NIFTY", "BANKNIFTY") else "BFO"
+    instruments = _get_instruments(kite, exchange)
+
+    today = date.today()
+    futures = sorted(
+        (
+            i for i in instruments
+            if i["name"] == underlying
+            and i["instrument_type"] == "FUT"
+            and i["expiry"] and i["expiry"] >= today
+        ),
+        key=lambda i: i["expiry"],
+    )
+    if not futures:
+        raise ValueError(f"No unexpired future contract found for {underlying}")
+    return futures[0]

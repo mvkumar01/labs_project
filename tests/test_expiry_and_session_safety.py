@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from datetime import date, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
-from collector.instruments import build_option_symbols
+from collector import futures_collector
+from collector import instruments as instruments_module
+from collector.futures_collector import collect_futures
+from collector.instruments import build_option_symbols, get_current_future
 from collector.run_collector import _market_open
 from collector.spot_collector import MarketSessionClosed, collect_spot
 from labs.engine.backtest import _option_session_quality, _resolve_contract_from_options
@@ -15,6 +21,11 @@ from market_data.expiry import select_expiry_code, select_symbol_for_expiry
 
 
 class ExpirySelectionTests(unittest.TestCase):
+    def setUp(self):
+        # _get_instruments() caches per (exchange, date); clear between tests so
+        # one test's fake instrument list can't leak into another's assertions.
+        instruments_module._instrument_cache.clear()
+
     def test_month_end_week_selects_monthly_before_next_week(self):
         expiries = ["26MAY", "26602"]
         self.assertEqual(select_expiry_code(expiries, "2026-05-25", "nearest_weekly"), "26MAY")
@@ -135,6 +146,95 @@ class SessionSafetyTests(unittest.TestCase):
 
         with self.assertRaises(MarketSessionClosed):
             collect_spot(Kite(), "NIFTY", "2026-06-19", datetime(2026, 6, 19, 9, 15))
+
+
+class FuturesCollectorTests(unittest.TestCase):
+    def setUp(self):
+        instruments_module._instrument_cache.clear()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._patcher = patch.object(futures_collector, "DATA_DIR", Path(self._tmpdir.name))
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        self._tmpdir.cleanup()
+
+    def test_get_current_future_picks_nearest_unexpired_expiry(self):
+        today = date.today()
+        instruments = [
+            {"name": "NIFTY", "instrument_type": "FUT", "expiry": today - timedelta(days=1),
+             "tradingsymbol": "NIFTY26MAYFUT", "instrument_token": 111},
+            {"name": "NIFTY", "instrument_type": "FUT", "expiry": today + timedelta(days=10),
+             "tradingsymbol": "NIFTY26JUNFUT", "instrument_token": 222},
+            {"name": "NIFTY", "instrument_type": "FUT", "expiry": today + timedelta(days=40),
+             "tradingsymbol": "NIFTY26JULFUT", "instrument_token": 333},
+            {"name": "NIFTY", "instrument_type": "CE", "expiry": today + timedelta(days=10),
+             "tradingsymbol": "NIFTY26JUN25000CE", "instrument_token": 444},
+        ]
+
+        class Kite:
+            def instruments(self, _exchange):
+                return instruments
+
+        future = get_current_future(Kite(), "NIFTY")
+        self.assertEqual(future["tradingsymbol"], "NIFTY26JUNFUT")
+        self.assertEqual(future["instrument_token"], 222)
+
+    def test_get_current_future_raises_when_no_contract_listed(self):
+        class Kite:
+            def instruments(self, _exchange):
+                return []
+
+        with self.assertRaises(ValueError):
+            get_current_future(Kite(), "NIFTY")
+
+    def test_collect_futures_writes_separate_file_from_spot(self):
+        future_expiry = date.today() + timedelta(days=10)
+
+        class Kite:
+            def instruments(self, _exchange):
+                return [{
+                    "name": "NIFTY", "instrument_type": "FUT", "expiry": future_expiry,
+                    "tradingsymbol": "NIFTY26JUNFUT", "instrument_token": 222,
+                }]
+
+            def historical_data(self, **_kwargs):
+                return [{
+                    "date": datetime(2026, 6, 19, 9, 14),
+                    "open": 25010.0, "high": 25050.0, "low": 24990.0, "close": 25030.0,
+                    "volume": 12345,
+                }]
+
+        written = collect_futures(Kite(), "NIFTY", "2026-06-19", datetime(2026, 6, 19, 9, 16))
+        self.assertTrue(written)
+
+        futures_path = Path(self._tmpdir.name) / "2026-06-19_NIFTY_futures_1min.csv"
+        spot_path    = Path(self._tmpdir.name) / "2026-06-19_NIFTY_spot_1min.csv"
+        self.assertTrue(futures_path.exists())
+        self.assertFalse(spot_path.exists())
+
+        rows = futures_path.read_text().strip().splitlines()
+        self.assertEqual(rows[0], "timestamp,tradingsymbol,open,high,low,close,volume")
+        self.assertEqual(
+            rows[1],
+            "2026-06-19 09:14:00,NIFTY26JUNFUT,25010.0,25050.0,24990.0,25030.0,12345",
+        )
+
+    def test_collect_futures_is_noop_without_completed_bar(self):
+        class Kite:
+            def instruments(self, _exchange):
+                return [{
+                    "name": "NIFTY", "instrument_type": "FUT",
+                    "expiry": date.today() + timedelta(days=10),
+                    "tradingsymbol": "NIFTY26JUNFUT", "instrument_token": 222,
+                }]
+
+            def historical_data(self, **_kwargs):
+                return []
+
+        written = collect_futures(Kite(), "NIFTY", "2026-06-19", datetime(2026, 6, 19, 9, 15))
+        self.assertFalse(written)
+        self.assertEqual(list(Path(self._tmpdir.name).iterdir()), [])
 
 
 if __name__ == "__main__":

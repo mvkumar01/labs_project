@@ -23,15 +23,12 @@ Behavioural notes
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
-import pytz
 
 from config.labs_config import UNDERLYINGS, DATA_DIR
-
-IST = pytz.timezone("Asia/Kolkata")
+from collector.kite_bars import previous_completed_bar as _previous_completed_bar
+from collector.kite_bars import to_ist_naive as _to_ist_naive
 
 _HEADER = ["timestamp", "open", "high", "low", "close", "volume"]
 
@@ -49,35 +46,6 @@ def _ensure_header(path: Path) -> None:
     if not path.exists():
         with path.open("w", newline="") as f:
             csv.writer(f).writerow(_HEADER)
-
-
-def _to_ist_naive(dt: datetime) -> datetime:
-    """Return an IST-local naive datetime regardless of input tz."""
-    if isinstance(dt, str):
-        dt = datetime.fromisoformat(dt)
-    if dt.tzinfo is None:
-        return dt
-    return dt.astimezone(IST).replace(tzinfo=None)
-
-
-def _previous_completed_bar(kite, instrument_token: int, ts: datetime) -> Optional[dict]:
-    """
-    Return the most recently COMPLETED 1-min candle as of ts.
-    If ts is 10:15:00 IST, returns the 10:14 bar (covering 10:14:00-10:14:59).
-    Returns None if no completed bar exists in the window (e.g., the 09:15 cycle).
-    """
-    ts_naive = _to_ist_naive(ts)
-    bars = kite.historical_data(
-        instrument_token=instrument_token,
-        from_date=ts_naive - timedelta(minutes=3),
-        to_date=ts_naive,
-        interval="minute",
-    )
-    for bar in reversed(bars):
-        bar_ts_naive = _to_ist_naive(bar["date"])
-        if bar_ts_naive < ts_naive:
-            return bar
-    return None
 
 
 def collect_spot(kite, underlying: str, trade_date: str, ts: datetime) -> float:

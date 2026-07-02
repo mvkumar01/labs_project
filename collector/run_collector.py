@@ -1,7 +1,7 @@
 """
 Labs market-data collector.
 Runs every 60 seconds during 09:15–15:30 IST.
-Collects 1-min spot + options snapshots for NIFTY, BANKNIFTY, SENSEX.
+Collects 1-min spot + futures + options snapshots for NIFTY, BANKNIFTY, SENSEX.
 
 PA always-on task: python pa_run_collector.py
 Auth recovery: after AUTH_FAIL_LIMIT consecutive all-underlying auth failures,
@@ -23,6 +23,7 @@ sys.path.insert(0, str(BASE_DIR))
 import auth.session_manager as session_manager
 from collector.spot_collector import MarketSessionClosed, collect_spot
 from collector.options_collector import collect_options
+from collector.futures_collector import collect_futures
 from config.labs_config import (
     UNDERLYINGS, MARKET_OPEN, MARKET_CLOSE,
     COLLECTOR_INTERVAL_SECS, LOG_DIR,
@@ -124,7 +125,19 @@ def run() -> None:
             try:
                 spot = collect_spot(kite, underlying, trade_date, ts)
                 n    = collect_options(kite, underlying, spot, trade_date, ts)
-                log.info("%s ok — spot=%.2f options=%d rows", underlying, spot, n)
+
+                # Isolated: a futures-side failure (e.g. no listed contract)
+                # must not block the spot/options success already captured above.
+                try:
+                    fut_written = collect_futures(kite, underlying, trade_date, ts)
+                except Exception as fut_exc:
+                    fut_written = False
+                    log.error("%s futures collection error: %s", underlying, fut_exc)
+
+                log.info(
+                    "%s ok — spot=%.2f options=%d rows futures=%s",
+                    underlying, spot, n, fut_written,
+                )
                 successes_this_cycle += 1
 
             except MarketSessionClosed as exc:
