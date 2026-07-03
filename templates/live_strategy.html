@@ -79,9 +79,9 @@
         <div class="card"><div class="k">Gross executable P&amp;L</div>
           <div class="v {{ 'green' if v212_stats.gross_total>0 else ('red' if v212_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(v212_stats.gross_total) }}</div>
           <div class="sub-k">ask entry · bid exit · one 65-unit lot</div></div>
-        <div class="card"><div class="k">June coverage</div>
-          <div class="v">{{ v212_stats.first_date[8:10] }}–{{ v212_stats.last_date[8:10] }} Jun</div>
-          <div class="sub-k">{{ v212_stats.days }} recorded sessions · available archive</div></div>
+        <div class="card"><div class="k">Coverage</div>
+          <div class="v" style="font-size:20px">{{ v212_stats.first_date }} → {{ v212_stats.last_date }}</div>
+          <div class="sub-k">{{ v212_stats.days }} recorded sessions · archive + live</div></div>
         <div class="card"><div class="k">Segments / quotes</div>
           <div class="v">{{ v212_stats.priced_segments }}/{{ v212_stats.segments }}</div>
           <div class="sub-k">{{ v212_stats.coverage_pct }}% priced · {{ v212_stats.unavailable_segments }} unavailable</div></div>
@@ -121,7 +121,7 @@
       </table>
       {% endif %}
 
-      <h2 style="margin-top:24px">June daily history</h2>
+      <h2 style="margin-top:24px">Daily history</h2>
       <table class="perf">
         <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th>
           <th>Segments</th><th>Quotes</th><th>Spot pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
@@ -145,7 +145,7 @@
         a close back on the favourable side. Normal Alpha stop/target invalidation cancels a pending recovery.
         All v2.11 range, signal, trail and target rules remain unchanged. The full research comparison was
         +10,170.3 spot points versus v2.11's +7,948.8 (+2,221.4), MaxDD 150 versus 170, and 12/12 positive months.
-        This page's executable June sample is limited to the archive shown above and is not an out-of-sample claim.
+        This page's executable sample is limited to the recorded archive/live sessions shown above.
         Paper only — never places real orders.
       </p>
     {% endif %}

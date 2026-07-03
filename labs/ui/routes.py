@@ -326,16 +326,16 @@ def live_strategy():
             comparison_variant_totals = {}
             comparison_by_date = {}
 
-        # Alpha v2.12 is deliberately isolated from the v2.11 ledger. The
-        # page shows only the promoted June evaluation window and executable
-        # ask-in / bid-out results.
+        # Alpha v2.12 is deliberately isolated from the v2.11 ledger. Include
+        # every recorded session from its June launch onward so this live tab
+        # does not freeze at the end of the original evaluation month.
         try:
             v212_cur = conn.execute(
                 "SELECT trade_date,status,tier,gap_dir,expiry_code,n_segments,"
                 "priced_segments,unavailable_segments,spot_pnl_pts,gross_rs,"
                 "charges_rs,net_rs,strategy_version,updated_at "
                 "FROM alpha_v212_daily WHERE trade_date >= '2026-06-01' "
-                "AND trade_date < '2026-07-01' ORDER BY trade_date DESC"
+                "ORDER BY trade_date DESC"
             )
             v212_cols = [column[0] for column in v212_cur.description]
             v212_rows = [dict(zip(v212_cols, row)) for row in v212_cur.fetchall()]
