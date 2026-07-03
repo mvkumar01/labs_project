@@ -140,8 +140,8 @@
       </table>
 
       <p class="note">
-        v2.12 changes only risk handling: every original signal-entry spot is the stop. A touch exits at that
-        original spot, then arms same-side recovery at the same level; re-entry requires a one-minute touch and
+        v2.12 changes only risk handling: every original signal-entry spot is the stop. A touch triggers an exit
+        valued at that one-minute candle's close, then arms same-side recovery at the original level; re-entry requires a one-minute touch and
         a close back on the favourable side. Normal Alpha stop/target invalidation cancels a pending recovery.
         All v2.11 range, signal, trail and target rules remain unchanged. The full research comparison was
         +10,170.3 spot points versus v2.11's +7,948.8 (+2,221.4), MaxDD 150 versus 170, and 12/12 positive months.

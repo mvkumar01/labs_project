@@ -402,7 +402,9 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             reason = ""
 
             # v2.12 overlay runs before every legacy spot/trail stop. A touched
-            # original entry level exits at zero spot points and arms recovery.
+            # original entry level triggers the stop; execution is modelled at
+            # that one-minute candle's close (not an unattainably perfect fill
+            # at the touched level), then same-side recovery is armed.
             if enable_entry_spot_recovery:
                 stop_hits = 0
                 active_at_end = True
@@ -414,11 +416,18 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                         )
                         if hit:
                             stop_hits += 1
+                            stop_exit_spot = float(bc)
+                            stop_pnl = (
+                                stop_exit_spot - esp
+                                if pos == "call"
+                                else esp - stop_exit_spot
+                            )
+                            pnl += stop_pnl
                             trades.append(dict(
-                                pnl=0.0, reason="ENTRY_SPOT_SL", pos=pos,
+                                pnl=round(stop_pnl, 2), reason="ENTRY_SPOT_SL", pos=pos,
                                 entry_ts=entry_ts, exit_ts=bts,
                                 entry_alpha=entry_alpha, exit_alpha=ca,
-                                entry_spot=esp, exit_spot=esp,
+                                entry_spot=esp, exit_spot=stop_exit_spot,
                                 entry_rule=entry_rule, tier=tier,
                             ))
                             active_at_end = False

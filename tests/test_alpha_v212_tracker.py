@@ -83,12 +83,13 @@ def test_entry_spot_stop_then_confirmed_recovery_reenters_same_side() -> None:
         0, 1000, enable_entry_spot_recovery=True,
     )
 
-    assert pnl == 10.0
+    assert pnl == 9.0
     assert [segment["reason"] for segment in segments] == [
         "ENTRY_SPOT_SL", "TGT_ALPHA"
     ]
     assert [segment["pos"] for segment in segments] == ["call", "call"]
-    assert segments[0]["pnl"] == 0.0
+    assert segments[0]["pnl"] == -1.0
+    assert segments[0]["exit_spot"] == 99.0
     assert pd.Timestamp(segments[1]["entry_ts"]).strftime("%H:%M") == "09:30"
 
 
