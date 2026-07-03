@@ -143,6 +143,37 @@ def test_supplied_vix_must_match_exact_date_history(
         champion_inputs.resolve_vix_open(DATE, 12.93)
 
 
+def test_valid_locked_vix_survives_incomplete_exact_date_row(
+    monkeypatch, tmp_path: Path
+) -> None:
+    analytics = tmp_path / "analytics"
+    analytics.mkdir()
+    pd.DataFrame([{"date": DATE, "vix_open": None}]).to_csv(
+        analytics / "vix_history.csv", index=False
+    )
+    monkeypatch.setattr(champion_inputs, "ALPHA_DATA_DIR", tmp_path)
+
+    assert champion_inputs.resolve_vix_open(
+        DATE, 12.13, supplied_source="locked_hybrid_state"
+    ) == (12.13, "locked_hybrid_state")
+
+
+def test_incomplete_exact_date_vix_without_locked_value_fails(
+    monkeypatch, tmp_path: Path
+) -> None:
+    analytics = tmp_path / "analytics"
+    analytics.mkdir()
+    pd.DataFrame([{"date": DATE, "vix_open": None}]).to_csv(
+        analytics / "vix_history.csv", index=False
+    )
+    monkeypatch.setattr(champion_inputs, "ALPHA_DATA_DIR", tmp_path)
+
+    with pytest.raises(
+        champion_inputs.ContextInputError, match="Invalid exact-date VIX"
+    ):
+        champion_inputs.resolve_vix_open(DATE, None)
+
+
 def test_day_context_rejects_direction_disagreement(monkeypatch) -> None:
     monkeypatch.setattr(
         champion_inputs,

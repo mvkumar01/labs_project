@@ -266,18 +266,17 @@ def resolve_vix_open(
     """Resolve VIX without ever borrowing a different date's row."""
     exact_value = None
     exact_source = None
+    exact_row_present = False
     vix_path = ALPHA_DATA_DIR / "analytics" / "vix_history.csv"
     if vix_path.exists():
         try:
             frame = pd.read_csv(vix_path, dtype={"date": str})
             exact = frame[frame["date"] == trade_date]
             if not exact.empty:
+                exact_row_present = True
                 exact_value = _valid_vix(exact.iloc[-1].get("vix_open"))
-                if exact_value is None:
-                    raise ContextInputError(
-                        f"Invalid exact-date VIX row for {trade_date}"
-                    )
-                exact_source = f"vix_history:{trade_date}"
+                if exact_value is not None:
+                    exact_source = f"vix_history:{trade_date}"
         except ContextInputError:
             raise
         except Exception as exc:
@@ -301,6 +300,8 @@ def resolve_vix_open(
         return valid, supplied_source
     if exact_value is not None:
         return exact_value, exact_source
+    if exact_row_present:
+        raise ContextInputError(f"Invalid exact-date VIX row for {trade_date}")
     return None, "missing_exact_date"
 
 
