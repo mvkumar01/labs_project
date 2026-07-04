@@ -126,7 +126,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!orders || !orders.length) {
-      tb.innerHTML = '<tr><td colspan="6" style="color:#64748b">No orders yet.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="7" style="color:#64748b">No orders yet.</td></tr>';
       return;
     }
     orders.forEach(function (o) {
@@ -134,12 +134,18 @@
       var tag = o.dry_run
         ? '<span class="tag-dry">DRY</span>'
         : '<span class="tag-live">LIVE</span>';
+      // PnL only exists for round-trip EXIT rows; ENTER (and unmatched) show --.
+      var pnlCell = (o.net_pnl === null || o.net_pnl === undefined)
+        ? '<td class="pnl-cell">--</td>'
+        : '<td class="pnl-cell ' + (Number(o.net_pnl) >= 0 ? "pos" : "neg") + '">' +
+            fmtRs(o.net_pnl) + "</td>";
       tr.innerHTML =
         "<td>" + fmtTime(o.created_at) + "</td>" +
         "<td>" + (o.action || "") + " " + (o.side || "") + "</td>" +
         "<td>" + (o.symbol || "") + "</td>" +
         "<td>" + (o.qty || 0) + "</td>" +
         "<td>" + (o.status || "") + "</td>" +
+        pnlCell +
         "<td>" + tag + "</td>";
       tb.appendChild(tr);
     });

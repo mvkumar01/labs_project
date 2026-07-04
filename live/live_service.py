@@ -579,9 +579,26 @@ def recent_orders(user_id: str, conn_id: str, limit: int = 20,
     if own:
         conn = get_live_conn()
     try:
+        # Attach realized PnL to EXIT rows. live_orders has no PnL of its own;
+        # the round-trip result lives in live_trades, recorded in the same exit
+        # cycle (both timestamps are _now_iso() UTC). Match on the natural key
+        # (conn/symbol/side/dry_run) and pick the trade whose exit_time is
+        # closest to this order's created_at (guards re-entries on one symbol).
+        # ENTER rows and any unmatched EXIT get NULL. Read-only — the order
+        # write path is untouched.
         rows = conn.execute(
-            "SELECT * FROM live_orders WHERE user_id = ? AND conn_id = ? "
-            "ORDER BY created_at DESC LIMIT ?",
+            "SELECT o.*, ("
+            "  SELECT COALESCE(t.net_pnl, t.pnl) FROM live_trades t "
+            "  WHERE o.action = 'EXIT' "
+            "    AND t.user_id = o.user_id AND t.conn_id = o.conn_id "
+            "    AND t.symbol = o.symbol AND t.side = o.side "
+            "    AND t.dry_run = o.dry_run "
+            "    AND ABS(julianday(t.exit_time) - julianday(o.created_at)) < (60.0 / 86400.0) "
+            "  ORDER BY ABS(julianday(t.exit_time) - julianday(o.created_at)) ASC "
+            "  LIMIT 1"
+            ") AS net_pnl "
+            "FROM live_orders o WHERE o.user_id = ? AND o.conn_id = ? "
+            "ORDER BY o.created_at DESC LIMIT ?",
             (user_id, conn_id, limit),
         ).fetchall()
         return [dict(r) for r in rows]
