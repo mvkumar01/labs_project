@@ -215,6 +215,15 @@ def _is_final_status(status: str) -> bool:
     }
 
 
+# An EXIT whose prior same-bar attempt ended in one of these DID NOT place at
+# the broker (throttled / gate-blocked / crashed mid-place) — so the stop is
+# still needed and must be re-attempted, not permanently SKIPped by its idem
+# key (2026-07-07: a throttled exit was abandoned for the rest of the bar). The
+# pre-exit long reconcile (_verify_matching_long_before_exit) guards the retry
+# against a double-sell. Entries never auto-retry (no such reconcile).
+_RETRIABLE_EXIT_STATUSES = {"FAILED", "GATE_BLOCKED", "PENDING"}
+
+
 def _refresh_order_result(adapter, result: OrderResult, *,
                           polls: int = 6, delay_s: float = 1.0) -> OrderResult:
     """Best-effort broker-side status enrichment after placement.
@@ -384,14 +393,28 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
 
     if not inserted:
         existing = svc.get_order_ledger(idem_key, conn)
-        log.info("idempotent SKIP (key seen) | conn=%s key=%s status=%s",
-                 conn_id, idem_key, existing.get("status"))
-        return OrderResult(
-            broker_order_id=existing.get("broker_order_id"),
-            status=existing.get("status", "PENDING"),
-            avg_fill_price=existing.get("avg_fill_price"),
-            raw={"idempotent_skip": True},
+        status = str(existing.get("status") or "").upper()
+        # Retry a still-needed EXIT that did not place last time; everything
+        # else (entries, already-placed/working orders) stays SKIPped so the
+        # idempotency double-order guard holds.
+        retry_exit = (
+            action == "EXIT"
+            and not existing.get("broker_order_id")
+            and status in _RETRIABLE_EXIT_STATUSES
         )
+        if not retry_exit:
+            log.info("idempotent SKIP (key seen) | conn=%s key=%s status=%s",
+                     conn_id, idem_key, existing.get("status"))
+            return OrderResult(
+                broker_order_id=existing.get("broker_order_id"),
+                status=existing.get("status", "PENDING"),
+                avg_fill_price=existing.get("avg_fill_price"),
+                raw={"idempotent_skip": True},
+            )
+        log.info("idempotent EXIT retry (prior=%s, nothing placed) | conn=%s key=%s",
+                 status, conn_id, idem_key)
+        # fall through: re-run gates + verify-long + exit_all; the update_order_
+        # ledger call below overwrites this row with the new outcome.
 
     # ── DRY_RUN logged-intent path — never touches the broker ─────────────
     if dry_run:
