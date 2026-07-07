@@ -164,7 +164,11 @@ def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str
     This keeps live trading aligned with the collector's own market-data source
     of truth instead of guessing broker symbol formats.
     """
-    spot = adapter.get_spot()
+    # Data policy: strike selection uses Kite -> 1-min CSV, never the execution
+    # broker (Angel is orders/positions only). No spot -> skip this entry.
+    spot = _fast_spot()
+    if spot is None:
+        raise RuntimeError("no spot for strike selection (kite + shared store dark)")
     step = UNDERLYINGS[UNDERLYING]["strike_step"]
     atm = round(spot / step) * step
     strike = atm - ITM_DISTANCE if side == "CALL" else atm + ITM_DISTANCE
@@ -402,6 +406,35 @@ def _fast_spot():
     return get_latest_spot()
 
 
+def get_kite_ltp(symbol: str):
+    """Option-premium LTP from the labs Kite data session. The collector's
+    tradingsymbols ARE Zerodha NFO symbols, so Kite prices them directly.
+    Returns None on any failure."""
+    try:
+        from auth.session_manager import get_kite
+
+        key = f"NFO:{symbol}"
+        return float(get_kite().ltp(key)[key]["last_price"])
+    except Exception as e:
+        log.warning("kite ltp read failed %s: %s", symbol, type(e).__name__)
+        return None
+
+
+def _fast_ltp(adapter, symbol: str, *, allow_broker_fallback: bool = False):
+    """Order-pricing premium: Kite first (data policy — the execution broker is
+    never polled for data). ENTRIES are strict: no Kite price -> raise, skip the
+    entry this cycle (never price an optional trade off Angel). EXITS pass
+    allow_broker_fallback=True: a Kite outage must never block a stop, so the
+    execution broker is the last resort there — a single order-time fetch, not
+    polling."""
+    v = get_kite_ltp(symbol)
+    if v is not None and v > 0:
+        return v
+    if allow_broker_fallback:
+        return adapter.get_ltp(symbol)
+    raise RuntimeError(f"no Kite LTP for {symbol} — entry skipped")
+
+
 def _as_float(value):
     try:
         return float(value)
@@ -532,16 +565,22 @@ def _pc400_trail_uses_spot(tier: str | None, side: str | None,
     )
 
 
-def evaluate_v212_fast_spot(state: dict, live_spot) -> dict:
+def evaluate_v212_fast_spot(state: dict, live_spot, confirm_spot=None) -> dict:
     """v2.12 per-poll (tick) spot decision from persisted state + live spot.
 
     Pure (no broker, no DB) so it is unit-testable like the PC400 trail. Returns
     {"action": "EXIT"|"ENTER"|"HOLD", "reason", ...}:
       - OPEN + spot touched entry_spot      -> EXIT (entry-spot SL); caller arms
-        recovery at entry_spot.
-      - FLAT + recovery_armed + favorable    -> ENTER (recovery re-entry) at the
-        re-crossed recovery_level.
-    A missing/None spot is always HOLD — never a spurious stop.
+        recovery at entry_spot. Fast out: the tick spot alone decides.
+      - FLAT + recovery_armed + favorable    -> ENTER (recovery re-entry), but
+        ONLY when `confirm_spot` (the latest completed 1-min snapshot) is ALSO
+        on the favourable side. Patient back in: research v2.12 re-enters on a
+        1-min bar that touches the level and CLOSES favourable; an unconfirmed
+        2s tick cross fires on noise the research filter rejected, and the
+        honest-fill study showed the level itself is never an earnable price
+        (fill ≈ the confirming close).
+    A missing/None spot (or missing confirm for ENTER) is always HOLD — never a
+    spurious stop, never an unconfirmed re-entry.
     """
     spot = _as_float(live_spot)
     if spot is None:
@@ -557,8 +596,12 @@ def evaluate_v212_fast_spot(state: dict, live_spot) -> dict:
     if int(state.get("recovery_armed") or 0) == 1:
         lvl = _as_float(state.get("recovery_level"))
         rside = (state.get("recovery_side") or "").upper()
+        conf = _as_float(confirm_spot)
         if lvl is not None and rside in ("CALL", "PUT") and (
                 (rside == "CALL" and spot > lvl) or (rside == "PUT" and spot < lvl)):
+            if conf is None or (rside == "CALL" and conf <= lvl) or (
+                    rside == "PUT" and conf >= lvl):
+                return {"action": "HOLD", "reason": "recovery_unconfirmed"}
             return {"action": "ENTER", "side": rside, "recovery_level": lvl,
                     "reason": "RECOVERY"}
         return {"action": "HOLD", "reason": "recovery_waiting"}
@@ -819,7 +862,7 @@ def _om_desired_main(user_id, conn_id, adapter, pos, signal_engines, blocked):
         symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
         return SourcePos("main", symbol, side, qty,
-                         entry_price=adapter.get_ltp(symbol),
+                         entry_price=_fast_ltp(adapter, symbol),
                          entry_spot=bar.get("spot"), entry_rule=sig.get("rule") or "main")
     if sig["action"] == "EXIT" and pos is not None:
         return None
@@ -845,7 +888,7 @@ def _om_desired_r2(user_id, conn_id, adapter, pos, blocked):
         symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
         return SourcePos("r2", symbol, side, qty,
-                         entry_price=adapter.get_ltp(symbol),
+                         entry_price=_fast_ltp(adapter, symbol),
                          entry_spot=bar.get("spot"), entry_rule="r2")
     if sig["action"] == "EXIT" and pos is not None:
         return None
@@ -915,7 +958,10 @@ def _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net, dry_run,
     for o in orders:
         side = "CALL" if o.symbol.endswith("CE") else "PUT"
         action = "ENTER" if o.txn == "BUY" else "EXIT"
-        price = adapter.get_ltp(o.symbol)
+        # Kite-first pricing; the broker fallback is exit-only (a Kite outage
+        # must never block a flatten, but must never price an optional entry).
+        price = _fast_ltp(adapter, o.symbol,
+                          allow_broker_fallback=(action == "EXIT"))
         result = _route_order(adapter, user_id, conn_id, action=action, side=side,
                               symbol=o.symbol, qty=o.qty, price=price, dry_run=dry_run,
                               entry_rule="om")
@@ -936,7 +982,8 @@ def _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net, dry_run,
     for src, tgt in desired.items():
         prev = ledger.get(src)
         if tgt is None and prev is not None:                 # source exited
-            exit_price = fills.get(prev.symbol) or adapter.get_ltp(prev.symbol)
+            exit_price = fills.get(prev.symbol) or _fast_ltp(
+                adapter, prev.symbol, allow_broker_fallback=True)
             _record_exit_result(
                 user_id, conn_id,
                 {"side": prev.side, "symbol": prev.symbol,
@@ -988,7 +1035,7 @@ def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
             reason = r2_vix_tp_exit(side_l, entry_spot, float(spot),
                                     alpha_bar.get("vix_at_open"))
             if reason:
-                exit_price = adapter.get_ltp(current_symbol)
+                exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
                 result = _route_order(adapter, user_id, conn_id, action="EXIT",
                                       side=current_side, symbol=current_symbol,
                                       qty=current_qty, price=exit_price, dry_run=dry_run)
@@ -1017,7 +1064,7 @@ def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
         side = sig["side"]
         symbol = resolve_itm_option(adapter, side, trade_date=trade_date)
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-        price = adapter.get_ltp(symbol)
+        price = _fast_ltp(adapter, symbol)
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule="r2")
@@ -1034,7 +1081,7 @@ def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
             notify_telegram(msg + (" [DRY-RUN]" if dry_run else ""))
 
     elif sig["action"] == "EXIT" and current_open:
-        exit_price = adapter.get_ltp(current_symbol)
+        exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
         result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                               symbol=current_symbol, qty=current_qty,
                               price=exit_price, dry_run=dry_run)
@@ -1219,7 +1266,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if eod_watchdog(now_t):
         squared_off = not current_open
         if current_open:
-            exit_price = adapter.get_ltp(current_symbol)
+            exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
             result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                                   symbol=current_symbol, qty=current_qty, price=exit_price,
                                   dry_run=dry_run)
@@ -1285,10 +1332,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # the 1-min snapshot is enough. Spot is sourced from Kite, never Angel.
         _need_spot = current_open or int(st.get("recovery_armed") or 0) == 1
         fast = evaluate_v212_fast_spot(
-            st, _fast_spot() if _need_spot else get_latest_spot())
+            st, _fast_spot() if _need_spot else get_latest_spot(),
+            confirm_spot=get_latest_spot())
         bar_ts = alpha_bar.get("timestamp")
         if fast["action"] == "EXIT" and current_open:
-            exit_price = adapter.get_ltp(current_symbol)
+            exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
             result = _route_order(
                 adapter, user_id, conn_id, action="EXIT", side=current_side,
                 symbol=current_symbol, qty=current_qty, price=exit_price,
@@ -1314,7 +1362,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             lvl = fast["recovery_level"]
             symbol = resolve_itm_option(adapter, rside, trade_date=_today_ist_iso())
             qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-            price = adapter.get_ltp(symbol)
+            price = _fast_ltp(adapter, symbol)
             result = _route_order(
                 adapter, user_id, conn_id, action="ENTER", side=rside,
                 symbol=symbol, qty=qty, price=price, dry_run=dry_run,
@@ -1347,7 +1395,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     "spot trail exit conn=%s side=%s spot_pnl=%.2f peak_pnl=%.2f stop=%s",
                     conn_id, current_side, trail["pnl"], trail["peak_pnl"], trail["stop"],
                 )
-                exit_price = adapter.get_ltp(current_symbol)
+                exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
                 result = _route_order(
                     adapter, user_id, conn_id, action="EXIT", side=current_side,
                     symbol=current_symbol, qty=current_qty, price=exit_price,
@@ -1387,7 +1435,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 svc.save_trade_state(user_id, conn_id, st)
             if (dd["drift_protective_armed"] and dd["drift_protective_stop"] is not None
                     and _cs is not None and _cs >= dd["drift_protective_stop"]):
-                exit_price = adapter.get_ltp(current_symbol)
+                exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
                 result = _route_order(adapter, user_id, conn_id, action="EXIT",
                                       side=current_side, symbol=current_symbol,
                                       qty=current_qty, price=exit_price, dry_run=dry_run)
@@ -1448,7 +1496,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         side = sig["side"]
         symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-        price = adapter.get_ltp(symbol)
+        price = _fast_ltp(adapter, symbol)
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule=sig.get("rule") or "none")
@@ -1473,7 +1521,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             notify_telegram(msg)
 
     elif sig["action"] == "EXIT" and current_open:
-        exit_price = adapter.get_ltp(current_symbol)
+        exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
         result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                               symbol=current_symbol, qty=current_qty,
                               price=exit_price, dry_run=dry_run)

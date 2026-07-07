@@ -203,7 +203,7 @@ class ZerodhaAdapter(BrokerAdapter):
         )
 
     def exit_all(self, *, symbol: str, qty: int, reason: str,
-                 idempotency_key: str) -> OrderResult:
+                 idempotency_key: str, price: float | None = None) -> OrderResult:
         if not _live_orders_enabled():
             raise NotImplementedError(
                 "LIVE_ARMED not enabled — Phase 1 gated. Zerodha live exit "
@@ -242,7 +242,9 @@ class ZerodhaAdapter(BrokerAdapter):
                     "reason": reason,
                 },
             )
-        exit_price = self.get_ltp(symbol)
+        # Caller-supplied marketable SELL limit (crosses the spread so a stop
+        # fills); own-LTP fallback only when the caller sent none.
+        exit_price = price if price and price > 0 else self.get_ltp(symbol)
         with order_proxy(self._kite):
             order_id = self._kite.place_order(
                 variety=self._kite.VARIETY_REGULAR,

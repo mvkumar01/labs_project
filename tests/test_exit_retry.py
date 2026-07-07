@@ -43,8 +43,9 @@ class FlakyExitAdapter:
     def get_order_status(self, broker_order_id):
         return {}
 
-    def exit_all(self, *, symbol, qty, reason, idempotency_key):
+    def exit_all(self, *, symbol, qty, reason, idempotency_key, price=None):
         self.exit_calls += 1
+        self.last_exit_price = price
         if self.exit_calls <= self._fail_times:
             raise THROTTLE
         return OrderResult(broker_order_id="OID123", status="PLACED",

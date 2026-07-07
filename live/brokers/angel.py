@@ -438,7 +438,7 @@ class AngelAdapter(BrokerAdapter):
         )
 
     def exit_all(self, *, symbol: str, qty: int, reason: str,
-                 idempotency_key: str) -> OrderResult:
+                 idempotency_key: str, price: float | None = None) -> OrderResult:
         if not _live_orders_enabled():
             raise NotImplementedError(
                 "LIVE_ARMED not enabled — Phase 1 gated. Angel live exit "
@@ -485,7 +485,9 @@ class AngelAdapter(BrokerAdapter):
             "ordertype": self._ORDER_TYPE,
             "producttype": self._PRODUCT,
             "duration": "DAY",
-            "price": self.get_ltp(symbol),  # data fetch — runs direct (dict built first)
+            # Caller-supplied marketable SELL limit (crosses the spread so a
+            # stop fills); own-LTP fallback only when the caller sent none.
+            "price": price if price and price > 0 else self.get_ltp(symbol),
             "quantity": qty,
             "ordertag": _angel_order_tag(idempotency_key),
         }

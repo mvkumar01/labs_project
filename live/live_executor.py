@@ -459,7 +459,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
     try:
         if action == "EXIT":
             result = adapter.exit_all(symbol=symbol, qty=qty, reason="exit",
-                                      idempotency_key=idem_key)
+                                      idempotency_key=idem_key, price=price)
         else:
             result = adapter.place_order(side=side, symbol=symbol, qty=qty,
                                          price=price, idempotency_key=idem_key)

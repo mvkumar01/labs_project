@@ -41,22 +41,39 @@ def test_open_put_below_entry_spot_holds():
              24005.0)["action"] == "HOLD"
 
 
-def test_recovery_call_favorable_recross_reenters():
+def test_recovery_call_confirmed_recross_reenters():
     d = f(_state(recovery_armed=1, recovery_level=24111.65, recovery_side="CALL"),
-          24112.0)
+          24112.0, confirm_spot=24113.0)
     assert d["action"] == "ENTER"
     assert d["side"] == "CALL"
     assert d["recovery_level"] == 24111.65
 
 
+def test_recovery_call_tick_cross_without_confirmation_holds():
+    """GAP A: a 2s tick cross alone must NOT re-enter — research v2.12 requires
+    the 1-min bar to close favourable; the minute snapshot is the live proxy."""
+    d = f(_state(recovery_armed=1, recovery_level=24111.65, recovery_side="CALL"),
+          24112.0, confirm_spot=24110.0)          # tick crossed, minute has not
+    assert d["action"] == "HOLD"
+    assert d["reason"] == "recovery_unconfirmed"
+    # No confirm data at all -> also HOLD (never an unconfirmed re-entry).
+    assert f(_state(recovery_armed=1, recovery_level=24111.65,
+                    recovery_side="CALL"), 24112.0)["action"] == "HOLD"
+
+
 def test_recovery_call_not_yet_recrossed_holds():
     assert f(_state(recovery_armed=1, recovery_level=24111.65, recovery_side="CALL"),
-             24110.0)["action"] == "HOLD"
+             24110.0, confirm_spot=24112.0)["action"] == "HOLD"
 
 
-def test_recovery_put_favorable_recross_reenters():
+def test_recovery_put_confirmed_recross_reenters():
     assert f(_state(recovery_armed=1, recovery_level=24008.65, recovery_side="PUT"),
-             24007.0)["action"] == "ENTER"
+             24007.0, confirm_spot=24006.0)["action"] == "ENTER"
+
+
+def test_recovery_put_unconfirmed_holds():
+    assert f(_state(recovery_armed=1, recovery_level=24008.65, recovery_side="PUT"),
+             24007.0, confirm_spot=24009.0)["action"] == "HOLD"
 
 
 def test_missing_spot_never_stops():

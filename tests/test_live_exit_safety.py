@@ -35,8 +35,9 @@ class FakeAdapter:
     def get_order_status(self, broker_order_id):
         return {}
 
-    def exit_all(self, *, symbol, qty, reason, idempotency_key):
+    def exit_all(self, *, symbol, qty, reason, idempotency_key, price=None):
         self.exit_calls += 1
+        self.last_exit_price = price
         return OrderResult(
             broker_order_id="OID123",
             status="PLACED",
@@ -124,6 +125,9 @@ def test_live_exit_allows_matching_long_position():
 
     assert result.status == "PLACED"
     assert adapter.exit_calls == 1
+    # GAP B: the caller's (marketable) exit price must reach the adapter so the
+    # stop's SELL limit crosses the spread instead of re-fetching raw LTP.
+    assert adapter.last_exit_price == 100.0
 
 
 if __name__ == "__main__":

@@ -114,6 +114,11 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     def exit_all(self, *, symbol: str, qty: int, reason: str,
-                 idempotency_key: str) -> OrderResult:
-        """Square off `qty` of `symbol`. Same guard as place_order in Phase 0."""
+                 idempotency_key: str, price: float | None = None) -> OrderResult:
+        """Square off `qty` of `symbol`. Same guard as place_order in Phase 0.
+
+        `price` is the caller's SELL limit, already marketable-adjusted so a
+        stop's limit crosses the spread (2026-07-07: raw-LTP exit limits can
+        sit unfilled in a falling market). When None, adapters fall back to
+        their own LTP read."""
         ...
