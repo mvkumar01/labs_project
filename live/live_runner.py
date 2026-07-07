@@ -219,6 +219,49 @@ def _order_applied(status: str, *, dry_run: bool) -> bool:
     return status.upper() in {"COMPLETE", "COMPLETED", "FILLED", "EXECUTED"}
 
 
+# Marketable-limit buffer (D1). Entries/exits are placed as LIMIT at the current
+# LTP, which can sit UNFILLED when the premium ticks away in the seconds after
+# placement (2026-07-07 incident: a BUY limit @204.20 lagged the rising premium,
+# filled LATE and untracked, so entry_spot never armed and the exit booked from a
+# 0 cost basis -> phantom +11.5k). Crossing the spread by a small buffer makes the
+# order marketable so it fills inside the post-placement confirmation-poll window.
+# Applied LIVE-only (see _route_order) so dry-run pricing — and therefore
+# completed-day replays and tests — stay byte-identical.
+MARKETABLE_BUFFER_PCT = 0.006   # 0.6% — enough to cross a NIFTY option spread
+OPTION_TICK = 0.05
+
+
+def _marketable_limit(txn: str, price):
+    """Nudge a LIMIT price across the spread: BUY pays up, SELL gives up, both
+    by MARKETABLE_BUFFER_PCT and rounded to the option tick. No-op on bad price."""
+    if price is None or price <= 0:
+        return price
+    buf = price * MARKETABLE_BUFFER_PCT
+    px = price + buf if txn == "BUY" else max(OPTION_TICK, price - buf)
+    return round(round(px / OPTION_TICK) * OPTION_TICK, 2)
+
+
+def _order_accepted(result, *, dry_run: bool) -> bool:
+    """Entry-recording gate (D2) — broader than _order_applied.
+
+    A live entry must be persisted as OPEN the moment the broker ACCEPTS it —
+    filled OR still working (open / trigger pending) — so entry_spot arms the
+    spot-SL and the position has a real cost basis even if the fill lags the
+    confirmation poll. EXITS keep the strict _order_applied (state is released
+    only on a confirmed fill). If a working entry ultimately never fills, the
+    broker-vs-DB reconcile (broker flat while DB open) clears the state next
+    cycle, so this can never leave a phantom OPEN."""
+    if dry_run:
+        return result.status == "DRY_RUN"
+    if _order_applied(result.status, dry_run=False):
+        return True
+    return bool(getattr(result, "broker_order_id", None)) and str(
+        result.status or "").upper() not in {
+        "REJECTED", "CANCELLED", "CANCELED", "FAILED", "GATE_BLOCKED",
+        "NO_LONG_POSITION", "EXIT_QTY_EXCEEDS_POSITION", "PENDING",
+    }
+
+
 def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_price: float,
                         qty: int, reason: str, dry_run: bool) -> None:
     entry_price = float(position.get("entry_price") or 0.0)
@@ -602,6 +645,11 @@ def evaluate_signal(engine: AlphaSignalEngine, alpha_bar: dict | None,
 # ══════════════════════════════════════════════════════════════════════════
 def _route_order(adapter, user_id, conn_id, *, action, side, symbol, qty, price,
                  dry_run, entry_rule="none", conn=None):
+    # D1: make the LIMIT marketable so it fills inside the confirmation-poll
+    # window instead of lagging the premium. LIVE only — dry-run price is left
+    # untouched to keep replay/tests byte-identical.
+    if not dry_run:
+        price = _marketable_limit("BUY" if action == "ENTER" else "SELL", price)
     trade_date = _today_ist_iso()
     seq = next_intent_seq(user_id, conn_id, trade_date, conn)
     strategy_version = svc.get_config(user_id, conn_id, "strategy_version", conn)
@@ -1239,7 +1287,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 adapter, user_id, conn_id, action="ENTER", side=rside,
                 symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                 entry_rule="RECOVERY")
-            if _order_applied(result.status, dry_run=dry_run):
+            if _order_accepted(result, dry_run=dry_run):  # D2: record working fills too
                 state_symbol = (result.raw or {}).get("broker_symbol") or symbol
                 st.update({"position": "OPEN", "side": rside, "symbol": state_symbol,
                            "entry_price": result.avg_fill_price or price,
@@ -1372,7 +1420,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule=sig.get("rule") or "none")
-        if _order_applied(result.status, dry_run=dry_run):
+        if _order_accepted(result, dry_run=dry_run):  # D2: record working fills too
             state_symbol = (result.raw or {}).get("broker_symbol") or symbol
             st.update({"position": "OPEN", "side": side, "symbol": state_symbol,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
