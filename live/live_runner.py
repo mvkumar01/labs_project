@@ -375,6 +375,21 @@ def get_latest_spot():
         return None
 
 
+def _live_spot(adapter):
+    """Freshest spot for the per-poll (2s) v2.12 spot-SL: the broker's live LTP
+    when reachable, else the 1-min shared-store snapshot. Makes the entry-spot
+    SL / recovery react at the poll cadence instead of only when a new 1-min row
+    lands. Never raises — a failed read returns the 1-min value (or None), and
+    evaluate_v212_fast_spot HOLDs on None, so it can never fabricate a stop."""
+    try:
+        s = adapter.get_spot()
+        if s is not None and float(s) > 0:
+            return float(s)
+    except Exception as e:
+        log.warning("live spot read failed: %s", type(e).__name__)
+    return get_latest_spot()
+
+
 def _as_float(value):
     try:
         return float(value)
@@ -1253,7 +1268,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # replay from re-entering a just-stopped position. Inert if spot is missing
     # (never a spurious stop) or while not v2.12.
     if use_champion and v212_recovery:
-        fast = evaluate_v212_fast_spot(st, get_latest_spot())
+        # Fresh broker LTP (poll-cadence ~2s) only while there is something to
+        # act on — an open position to stop or an armed recovery to catch;
+        # otherwise the 1-min snapshot is enough and we skip the broker read.
+        _need_spot = current_open or int(st.get("recovery_armed") or 0) == 1
+        fast = evaluate_v212_fast_spot(
+            st, _live_spot(adapter) if _need_spot else get_latest_spot())
         bar_ts = alpha_bar.get("timestamp")
         if fast["action"] == "EXIT" and current_open:
             exit_price = adapter.get_ltp(current_symbol)
