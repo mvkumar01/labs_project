@@ -538,6 +538,11 @@ def live_strategy():
         # ── Basket replay (v2.11 signals re-priced as multi-leg structures) ──
         try:
             from labs.engine.basket_replay import BASKETS, pending_dates
+            basket_defs = BASKETS
+            # pending_dates() first — it CREATEs the basket tables, so the
+            # SELECT below cannot die with "no such table" on a fresh deploy
+            # (which silently zeroed the pending count and hid the button).
+            basket_pending = len(pending_dates(conn))
             bk_cur = conn.execute(
                 "SELECT trade_date,side,basket,expiry_code,n_trades,priced,"
                 "unavailable,gross_rs,charges_rs,net_rs FROM basket_daily "
@@ -545,8 +550,6 @@ def live_strategy():
             )
             bk_cols = [column[0] for column in bk_cur.description]
             bk_rows = [dict(zip(bk_cols, row)) for row in bk_cur.fetchall()]
-            basket_defs = BASKETS
-            basket_pending = len(pending_dates(conn))
             for row in bk_rows:
                 bdef = BASKETS.get(row["side"], {}).get(row["basket"])
                 if bdef is None:
