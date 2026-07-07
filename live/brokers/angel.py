@@ -55,6 +55,28 @@ INSTRUMENT_FILE = STATE_DIR / "angel_instruments.json"
 # still refreshes; within a cycle the reads collapse to one call each.
 _READ_CACHE_TTL = 1.5
 
+# Bounded backoff/retry on Angel throttling (rate-limit defense, 2026-07-07).
+# 3 tries at 0.5s -> 1.0s adds at most ~1.5s and lets a throttled call recover
+# instead of failing (a stop must still be bounded, so tries are small).
+_RETRY_TRIES = 3
+_RETRY_BASE_DELAY = 0.5
+
+
+def _is_rate_limited(exc) -> bool:
+    """Angel gateway throttle. The request was REJECTED before processing, so
+    nothing was placed — safe to retry even for an order."""
+    return "exceeding access rate" in str(exc).lower()
+
+
+def _is_transient_read(exc) -> bool:
+    """Retryable for idempotent READS only: throttle or a garbled JSON body
+    (Angel returns unparseable payloads under load). NOT used for orders — a
+    parse error there could mask a placed order and a retry would double it."""
+    m = str(exc).lower()
+    return (_is_rate_limited(exc)
+            or "couldn't parse the json" in m
+            or "could not parse the json" in m)
+
 
 class AngelAdapter(BrokerAdapter):
     broker_name = "angel"
@@ -104,7 +126,7 @@ class AngelAdapter(BrokerAdapter):
         try:
             # Cheap authenticated read — profile/RMS limit. Any success means
             # the session token is live. Never logs cred values.
-            response = self._smart.rmsLimit()
+            response = self._with_backoff(self._smart.rmsLimit, _is_transient_read)
             return (
                 isinstance(response, dict)
                 and response.get("status") is True
@@ -133,6 +155,18 @@ class AngelAdapter(BrokerAdapter):
 
     def _invalidate_reads(self) -> None:
         self._read_cache.clear()
+
+    def _with_backoff(self, fn, retryable):
+        """Call fn(), retrying with exponential backoff while `retryable(exc)`
+        is True, up to _RETRY_TRIES. Non-retryable errors and the final failure
+        propagate. Bounded so an order/stop can never wait indefinitely."""
+        for attempt in range(_RETRY_TRIES):
+            try:
+                return fn()
+            except Exception as e:
+                if not retryable(e) or attempt == _RETRY_TRIES - 1:
+                    raise
+                time.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
 
     # ── market reads ──────────────────────────────────────────────────────
     def available_funds(self) -> float | None:
@@ -163,7 +197,9 @@ class AngelAdapter(BrokerAdapter):
         return self._cached("spot", _READ_CACHE_TTL, self._get_spot_uncached)
 
     def _get_spot_uncached(self) -> float:
-        data = self._smart.ltpData("NSE", "Nifty 50", "26000")
+        data = self._with_backoff(
+            lambda: self._smart.ltpData("NSE", "Nifty 50", "26000"),
+            _is_transient_read)
         return float(data["data"]["ltp"])
 
     def get_ltp(self, symbol: str) -> float:
@@ -172,7 +208,9 @@ class AngelAdapter(BrokerAdapter):
 
     def _get_ltp_uncached(self, symbol: str) -> float:
         meta = self._resolve_symbol_meta(symbol)
-        data = self._smart.ltpData(self._EXCHANGE, meta["symbol"], meta["token"])
+        data = self._with_backoff(
+            lambda: self._smart.ltpData(self._EXCHANGE, meta["symbol"], meta["token"]),
+            _is_transient_read)
         return float(((data or {}).get("data") or {}).get("ltp") or 0.0)
 
     def quote(self, symbols: list) -> dict:
@@ -182,7 +220,7 @@ class AngelAdapter(BrokerAdapter):
         return self._cached("position", _READ_CACHE_TTL, self._get_position_uncached)
 
     def _get_position_uncached(self) -> Position:
-        resp = self._smart.position()
+        resp = self._with_backoff(self._smart.position, _is_transient_read)
         if not isinstance(resp, dict) or resp.get("status") is not True:
             raise RuntimeError("Angel position read failed")
         net = resp.get("data") or []
@@ -365,7 +403,11 @@ class AngelAdapter(BrokerAdapter):
         # Static IP used ONLY for the order placement (symbol/token resolution
         # above already ran direct). order_proxy restores env + SDK proxy after.
         with order_proxy(self._smart):
-            resp = self._smart.placeOrder(order_params)
+            # Retry ONLY on an explicit throttle (order was rejected, nothing
+            # placed). Never retry on ambiguous/parse errors — the order may
+            # have gone through, and a blind retry would double it.
+            resp = self._with_backoff(
+                lambda: self._smart.placeOrder(order_params), _is_rate_limited)
         self._invalidate_reads()   # book changed — next position/LTP read is fresh
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
@@ -450,7 +492,11 @@ class AngelAdapter(BrokerAdapter):
         # Static IP used ONLY for the order placement; the get_ltp above and the
         # symbol/token resolution already ran direct while building order_params.
         with order_proxy(self._smart):
-            resp = self._smart.placeOrder(order_params)
+            # Retry ONLY on an explicit throttle (order was rejected, nothing
+            # placed). Never retry on ambiguous/parse errors — the order may
+            # have gone through, and a blind retry would double it.
+            resp = self._with_backoff(
+                lambda: self._smart.placeOrder(order_params), _is_rate_limited)
         self._invalidate_reads()   # book changed — next position/LTP read is fresh
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
