@@ -375,6 +375,33 @@ def get_latest_spot():
         return None
 
 
+def get_kite_spot():
+    """NIFTY index LTP from the labs Zerodha (Kite) data session — the same feed
+    the collector uses. It is a DATA read: no static IP, and it does NOT touch
+    the Angel execution broker's rate budget. Returns None on any failure so the
+    caller can fall back to the 1-min snapshot."""
+    try:
+        from auth.session_manager import get_kite
+
+        data = get_kite().ltp("NSE:NIFTY 50")
+        return float(data["NSE:NIFTY 50"]["last_price"])
+    except Exception as e:
+        log.warning("kite spot read failed: %s", type(e).__name__)
+        return None
+
+
+def _fast_spot():
+    """Freshest spot for the per-poll (~2s) v2.12 spot-SL: Kite NIFTY LTP first,
+    else the 1-min shared-store snapshot. NEVER reads it from Angel — the
+    execution broker's quota is reserved for orders/position (2026-07-07 rate-
+    limit incident). None -> evaluate_v212_fast_spot HOLDs (never a spurious
+    stop)."""
+    s = get_kite_spot()
+    if s is not None and s > 0:
+        return s
+    return get_latest_spot()
+
+
 def _as_float(value):
     try:
         return float(value)
@@ -1253,7 +1280,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # replay from re-entering a just-stopped position. Inert if spot is missing
     # (never a spurious stop) or while not v2.12.
     if use_champion and v212_recovery:
-        fast = evaluate_v212_fast_spot(st, get_latest_spot())
+        # Fresh Kite spot (poll cadence ~2s) only while there is something to act
+        # on — an open position to stop or an armed recovery to catch; otherwise
+        # the 1-min snapshot is enough. Spot is sourced from Kite, never Angel.
+        _need_spot = current_open or int(st.get("recovery_armed") or 0) == 1
+        fast = evaluate_v212_fast_spot(
+            st, _fast_spot() if _need_spot else get_latest_spot())
         bar_ts = alpha_bar.get("timestamp")
         if fast["action"] == "EXIT" and current_open:
             exit_price = adapter.get_ltp(current_symbol)
