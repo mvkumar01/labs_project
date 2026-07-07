@@ -55,16 +55,21 @@ def test_missing_quote_makes_whole_trade_unavailable():
     assert res["net_rs"] is None and res["legs"] == []
 
 
-def test_put_itm_strike_is_above_spot():
-    legs = br.BASKETS["PUT"]["naked_itm200"]["legs"]        # BUY pe +200
-    quotes = {
-        (EK, 24200, "pe"): {"bid": 250.0, "ask": 252.0},
-        (XK, 24200, "pe"): {"bid": 270.0, "ask": 272.0},
-    }
+def test_protected_synthetic_short_three_legs():
+    legs = br.BASKETS["PUT"]["protected_synthetic_short"]["legs"]
+    quotes = dict(QUOTES)
+    quotes.update({
+        (EK, 24200, "ce"): {"bid": 40.0, "ask": 42.0},      # OTM200 hedge leg
+        (XK, 24200, "ce"): {"bid": 55.0, "ask": 57.0},
+    })
     res = br.price_basket_trade(dict(TRADE, side="PUT"), legs, quotes)
     assert res["status"] == "priced"
-    assert res["legs"][0]["strike"] == 24200                # ITM PE above spot
-    assert res["legs"][0]["pnl_pts"] == 18.0                # 270 bid out - 252 ask in
+    assert len(res["legs"]) == 3
+    # B ATM pe: 60 bid out - 82 ask in = -22 ; S ATM ce: 100 bid in - 132 ask out = -32
+    # B OTM200 ce hedge: 55 bid out - 42 ask in = +13
+    assert [l["pnl_pts"] for l in res["legs"]] == [-22.0, -32.0, 13.0]
+    assert [l["strike"] for l in res["legs"]] == [24000, 24000, 24200]
+    assert res["gross_rs"] == round((-22.0 - 32.0 + 13.0) * QTY, 2)
 
 
 def test_replay_day_persists_all_baskets(monkeypatch):
@@ -96,8 +101,30 @@ def test_replay_day_persists_all_baskets(monkeypatch):
         (DATE,)).fetchone()
     assert spread == (0, 1)                                  # strikes unquoted
     put_row = conn.execute(
-        "SELECT n_trades FROM basket_daily WHERE side='PUT' AND basket='naked_itm200'"
+        "SELECT n_trades FROM basket_daily WHERE side='PUT' AND basket='short_synthetic'"
     ).fetchone()
     assert put_row[0] == 0                                   # no PUT trades that day
     assert summary["CALL:long_synthetic"] != 0
     assert br.pending_dates(conn) == []                      # day fully replayed
+
+
+def test_day_replayed_under_old_basket_set_is_pending_again():
+    """Adding a basket must re-open already-replayed days so refresh fills the
+    new rows; stale rows for removed baskets must not satisfy the check."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE paper_strategy_trades (trade_date TEXT, seq INTEGER,"
+        " side TEXT, entry_ts TEXT, exit_ts TEXT, entry_spot REAL,"
+        " PRIMARY KEY (trade_date, seq))")
+    conn.execute(
+        "INSERT INTO paper_strategy_trades VALUES (?,?,?,?,?,?)",
+        (DATE, 1, "CALL", ENTRY_TS, EXIT_TS, 24012.0))
+    br._ensure_tables(conn)
+    # Simulate an old replay: one current basket + one removed (naked) basket.
+    conn.execute(
+        "INSERT INTO basket_daily VALUES (?,?,?,?,1,1,0,0,0,0,?)",
+        (DATE, "CALL", "long_synthetic", "X", "now"))
+    conn.execute(
+        "INSERT INTO basket_daily VALUES (?,?,?,?,1,1,0,0,0,0,?)",
+        (DATE, "CALL", "naked_itm200", "X", "now"))
+    assert br.pending_dates(conn) == [DATE]                  # new baskets missing

@@ -352,7 +352,7 @@
           {% set combo = side ~ ':' ~ bkey %}
           <label style="display:block;font-size:13px;margin:4px 0;cursor:pointer">
             <input type="checkbox" class="bk-toggle" data-col="{{ combo }}"
-              {{ 'checked' if bkey in ('naked_itm200', 'long_synthetic', 'short_synthetic') else '' }}>
+              {{ 'checked' if 'synthetic' in bkey else '' }}>
             {{ bdef.label }}
             {% if combo in basket_totals %}
               {% set bt = basket_totals[combo] %}
@@ -411,9 +411,11 @@
         only the instrument changes. Strikes are set from each trade's entry spot: ATM = nearest 50,
         ITM/OTM = ±200 points. Rationale: on a breakeven spot stop a naked long option still loses
         (theta / IV / spread), while a delta≈1 synthetic books ≈0 by construction and a debit spread
-        hard-caps the loss; synthetics carry short-leg margin and need the stop to actually fire.
-        SELL legs are priced bid-in / ask-out. Charges are applied per leg, so two-leg baskets pay
-        roughly double the charges of a naked option.
+        hard-caps the loss. The plain synthetic carries an UNCAPPED short leg (and its margin); the
+        three-leg protected synthetic buys an OTM200 hedge against that short leg, capping the
+        structural tail risk at roughly the 200-point gap for the extra hedge debit.
+        SELL legs are priced bid-in / ask-out. Charges are applied per leg, so multi-leg baskets pay
+        a multiple of a single option's charges.
       </p>
       {% endif %}
 

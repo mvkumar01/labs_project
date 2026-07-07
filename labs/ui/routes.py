@@ -548,6 +548,9 @@ def live_strategy():
             basket_defs = BASKETS
             basket_pending = len(pending_dates(conn))
             for row in bk_rows:
+                bdef = BASKETS.get(row["side"], {}).get(row["basket"])
+                if bdef is None:
+                    continue  # stale row from a basket no longer defined
                 key = f"{row['side']}:{row['basket']}"
                 d = row["trade_date"]
                 basket_by_date.setdefault(d, {})[key] = (
@@ -555,7 +558,7 @@ def live_strategy():
                 )
                 tot = basket_totals.setdefault(key, {
                     "side": row["side"], "basket": row["basket"],
-                    "label": BASKETS[row["side"]][row["basket"]]["label"],
+                    "label": bdef["label"],
                     "net_total": 0.0, "charges_total": 0.0, "trades": 0,
                     "priced": 0, "unavailable": 0, "win_days": 0,
                     "loss_days": 0, "worst_day": 0.0, "best_day": 0.0,

@@ -35,17 +35,13 @@ from storage.db import get_conn
 # (+200). Every leg uses the same contract at entry and exit.
 BASKETS = {
     "CALL": {
-        "naked_itm200": {
-            "label": "Naked ITM200 Call (live)",
-            "legs": [("BUY", "ce", -200)],
-        },
-        "naked_atm": {
-            "label": "Naked ATM Call",
-            "legs": [("BUY", "ce", 0)],
-        },
         "long_synthetic": {
             "label": "Long Synthetic (B ATM CE + S ATM PE)",
             "legs": [("BUY", "ce", 0), ("SELL", "pe", 0)],
+        },
+        "protected_synthetic_long": {
+            "label": "Protected Synthetic Long (B ATM CE + S ATM PE + B OTM200 PE)",
+            "legs": [("BUY", "ce", 0), ("SELL", "pe", 0), ("BUY", "pe", -200)],
         },
         "bull_call_spread": {
             "label": "Bull Call Spread (B ITM200 CE + S OTM200 CE)",
@@ -57,17 +53,13 @@ BASKETS = {
         },
     },
     "PUT": {
-        "naked_itm200": {
-            "label": "Naked ITM200 Put (live)",
-            "legs": [("BUY", "pe", 200)],
-        },
-        "naked_atm": {
-            "label": "Naked ATM Put",
-            "legs": [("BUY", "pe", 0)],
-        },
         "short_synthetic": {
             "label": "Short Synthetic (B ATM PE + S ATM CE)",
             "legs": [("BUY", "pe", 0), ("SELL", "ce", 0)],
+        },
+        "protected_synthetic_short": {
+            "label": "Protected Synthetic Short (B ATM PE + S ATM CE + B OTM200 CE)",
+            "legs": [("BUY", "pe", 0), ("SELL", "ce", 0), ("BUY", "ce", 200)],
         },
         "bear_put_spread": {
             "label": "Bear Put Spread (B ITM200 PE + S OTM200 PE)",
@@ -228,18 +220,26 @@ def replay_day(trade_date: str, conn: sqlite3.Connection | None = None) -> dict:
 
 
 def pending_dates(conn: sqlite3.Connection | None = None) -> list:
-    """Recorded v2.11 days that have no basket rows yet (oldest first)."""
+    """Recorded v2.11 days missing rows for ANY currently-defined basket
+    (oldest first). A day replayed under an older basket set therefore becomes
+    pending again when new baskets are added; replay_day REPLACEs idempotently.
+    Rows for baskets no longer defined are ignored (and hidden by the view)."""
     own = conn is None
     if own:
         conn = get_conn()
     try:
         _ensure_tables(conn)
+        combos = {f"{s}:{b}" for s in BASKETS for b in BASKETS[s]}
+        have: dict = {}
+        for d, key in conn.execute(
+            "SELECT trade_date, side || ':' || basket FROM basket_daily"
+        ):
+            have.setdefault(d, set()).add(key)
         cur = conn.execute(
-            "SELECT DISTINCT trade_date FROM paper_strategy_trades "
-            "WHERE trade_date NOT IN (SELECT DISTINCT trade_date FROM basket_daily) "
-            "ORDER BY trade_date"
+            "SELECT DISTINCT trade_date FROM paper_strategy_trades ORDER BY trade_date"
         )
-        return [r[0] for r in cur.fetchall()]
+        return [d for (d,) in cur.fetchall()
+                if not combos.issubset(have.get(d, set()))]
     finally:
         if own:
             conn.close()
