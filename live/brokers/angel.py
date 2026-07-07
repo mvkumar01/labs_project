@@ -20,6 +20,7 @@ import json
 import os
 import calendar
 import re
+import time
 from datetime import datetime
 
 from .base import BrokerAdapter, OrderResult, Position
@@ -47,6 +48,13 @@ INSTRUMENT_MASTER_URL = (
 )
 INSTRUMENT_FILE = STATE_DIR / "angel_instruments.json"
 
+# Short-TTL read cache (rate-limit defense, 2026-07-07). One ~2s poll cycle
+# reads position/LTP several times (reconcile + gate + verify + exit_all); each
+# was a separate Angel call, so an order burst ~6 data calls and tripped Angel's
+# per-second limit. TTL < the runner's POLL_INTERVAL (2s) so every new cycle
+# still refreshes; within a cycle the reads collapse to one call each.
+_READ_CACHE_TTL = 1.5
+
 
 class AngelAdapter(BrokerAdapter):
     broker_name = "angel"
@@ -64,6 +72,7 @@ class AngelAdapter(BrokerAdapter):
         self._client_code = (creds or {}).get("client_code", "")
         self._token_cache = {}
         self._symbol_cache = {}
+        self._read_cache = {}   # key -> (expiry_monotonic, value); see _cached
 
     # ── session ─────────────────────────────────────────────────────────
     def connect(self) -> None:
@@ -108,6 +117,23 @@ class AngelAdapter(BrokerAdapter):
         # Return a stable identifier for duplicate-account isolation.
         return f"angel:{self._client_code}"
 
+    # ── short-TTL read cache ──────────────────────────────────────────────
+    # Collapses the repeated position/LTP/spot reads within one poll cycle into
+    # ONE broker call each. Invalidated after every order so post-trade reads
+    # reflect the new book. is_connected() is deliberately NOT cached (it is a
+    # health check — staleness could mask a dropped session).
+    def _cached(self, key, ttl, fn):
+        now = time.monotonic()
+        hit = self._read_cache.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        val = fn()
+        self._read_cache[key] = (now + ttl, val)
+        return val
+
+    def _invalidate_reads(self) -> None:
+        self._read_cache.clear()
+
     # ── market reads ──────────────────────────────────────────────────────
     def available_funds(self) -> float | None:
         if self._smart is None:
@@ -134,10 +160,17 @@ class AngelAdapter(BrokerAdapter):
         return None
 
     def get_spot(self) -> float:
+        return self._cached("spot", _READ_CACHE_TTL, self._get_spot_uncached)
+
+    def _get_spot_uncached(self) -> float:
         data = self._smart.ltpData("NSE", "Nifty 50", "26000")
         return float(data["data"]["ltp"])
 
     def get_ltp(self, symbol: str) -> float:
+        return self._cached(("ltp", symbol), _READ_CACHE_TTL,
+                            lambda: self._get_ltp_uncached(symbol))
+
+    def _get_ltp_uncached(self, symbol: str) -> float:
         meta = self._resolve_symbol_meta(symbol)
         data = self._smart.ltpData(self._EXCHANGE, meta["symbol"], meta["token"])
         return float(((data or {}).get("data") or {}).get("ltp") or 0.0)
@@ -146,6 +179,9 @@ class AngelAdapter(BrokerAdapter):
         return {symbol: {"ltp": self.get_ltp(symbol)} for symbol in symbols}
 
     def get_position(self) -> Position:
+        return self._cached("position", _READ_CACHE_TTL, self._get_position_uncached)
+
+    def _get_position_uncached(self) -> Position:
         resp = self._smart.position()
         if not isinstance(resp, dict) or resp.get("status") is not True:
             raise RuntimeError("Angel position read failed")
@@ -330,6 +366,7 @@ class AngelAdapter(BrokerAdapter):
         # above already ran direct). order_proxy restores env + SDK proxy after.
         with order_proxy(self._smart):
             resp = self._smart.placeOrder(order_params)
+        self._invalidate_reads()   # book changed — next position/LTP read is fresh
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
             data = resp.get("data") or {}
@@ -414,6 +451,7 @@ class AngelAdapter(BrokerAdapter):
         # symbol/token resolution already ran direct while building order_params.
         with order_proxy(self._smart):
             resp = self._smart.placeOrder(order_params)
+        self._invalidate_reads()   # book changed — next position/LTP read is fresh
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
             data = resp.get("data") or {}
