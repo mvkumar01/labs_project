@@ -231,7 +231,7 @@ def live_strategy():
     active_live_tab = request.args.get("tab", "nifty")
     if active_live_tab not in {
         "nifty", "alpha_v212", "sensex_alpha", "sensex_alpha_inverted",
-        "sensex_v211", "sensex_v211_inverted",
+        "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
         active_live_tab = "nifty"
     rows, trades, stats = [], [], {}
@@ -240,6 +240,8 @@ def live_strategy():
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
     sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     v212_rows, v212_trades, v212_stats = [], [], {}
+    basket_defs, basket_totals, basket_by_date = {}, {}, {}
+    basket_pending, basket_error = 0, None
     try:
         conn = get_conn()
         cur = conn.execute(
@@ -533,10 +535,58 @@ def live_strategy():
             } and "no such table" not in str(exc):
                 sensex_v211_stats = {"error": str(exc)}
 
+        # ── Basket replay (v2.11 signals re-priced as multi-leg structures) ──
+        try:
+            from labs.engine.basket_replay import BASKETS, pending_dates
+            bk_cur = conn.execute(
+                "SELECT trade_date,side,basket,expiry_code,n_trades,priced,"
+                "unavailable,gross_rs,charges_rs,net_rs FROM basket_daily "
+                "ORDER BY trade_date DESC"
+            )
+            bk_cols = [column[0] for column in bk_cur.description]
+            bk_rows = [dict(zip(bk_cols, row)) for row in bk_cur.fetchall()]
+            basket_defs = BASKETS
+            basket_pending = len(pending_dates(conn))
+            for row in bk_rows:
+                key = f"{row['side']}:{row['basket']}"
+                d = row["trade_date"]
+                basket_by_date.setdefault(d, {})[key] = (
+                    float(row["net_rs"]) if row["priced"] else None
+                )
+                tot = basket_totals.setdefault(key, {
+                    "side": row["side"], "basket": row["basket"],
+                    "label": BASKETS[row["side"]][row["basket"]]["label"],
+                    "net_total": 0.0, "charges_total": 0.0, "trades": 0,
+                    "priced": 0, "unavailable": 0, "win_days": 0,
+                    "loss_days": 0, "worst_day": 0.0, "best_day": 0.0,
+                })
+                net = float(row["net_rs"] or 0)
+                tot["net_total"] = round(tot["net_total"] + net, 2)
+                tot["charges_total"] = round(
+                    tot["charges_total"] + float(row["charges_rs"] or 0), 2)
+                tot["trades"] += int(row["n_trades"] or 0)
+                tot["priced"] += int(row["priced"] or 0)
+                tot["unavailable"] += int(row["unavailable"] or 0)
+                if row["priced"]:
+                    if net > 0:
+                        tot["win_days"] += 1
+                    elif net < 0:
+                        tot["loss_days"] += 1
+                    tot["worst_day"] = round(min(tot["worst_day"], net), 2)
+                    tot["best_day"] = round(max(tot["best_day"], net), 2)
+        except Exception as exc:
+            if active_live_tab == "baskets" and "no such table" not in str(exc):
+                basket_error = str(exc)
+
     except Exception as exc:  # never 500 the page if the table is empty/new
         stats = {"error": str(exc)}
     return render_template(
         "live_strategy.html",
+        basket_defs=basket_defs,
+        basket_totals=basket_totals,
+        basket_by_date=basket_by_date,
+        basket_pending=basket_pending,
+        basket_error=basket_error,
         rows=rows, trades=trades, stats=stats,
         contract_variants=CONTRACT_VARIANTS,
         comparison_variant_totals=comparison_variant_totals,
@@ -552,3 +602,25 @@ def live_strategy():
         v212_trades=v212_trades,
         v212_stats=v212_stats,
     )
+
+
+@labs_bp.route("/api/baskets/refresh", methods=["POST"])
+def baskets_refresh():
+    """Replay up to `limit` pending v2.11 days into the basket tables. Bounded
+    per call so a PA web request never runs long; the tab's Refresh button
+    keeps calling while `remaining` > 0. Paper data only — no orders."""
+    from labs.engine.basket_replay import run_backfill
+    try:
+        limit = min(int(request.args.get("limit", 5)), 10)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        result = run_backfill(limit=limit)
+        return jsonify({
+            "ok": True,
+            "done": len(result["done"]),
+            "remaining": result["remaining"],
+            "errors": result["errors"],
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500

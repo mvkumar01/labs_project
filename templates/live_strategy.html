@@ -45,6 +45,7 @@
     <div class="live-tabs">
       <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
       <a href="/labs/live?tab=alpha_v212" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
+      <a href="/labs/live?tab=baskets" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">Baskets</a>
       <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="/labs/live?tab=sensex_alpha_inverted" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
       <a href="/labs/live?tab=sensex_v211" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
@@ -319,6 +320,136 @@
         SENSEX option ask at the signal mark and exit requires the exact bid at the exit mark. Missing quotes
         remain explicitly unavailable; LTP is never substituted.
       </p>
+    {% endif %}
+
+    {% elif active_live_tab == 'baskets' %}
+    <h1>Baskets — v2.11 signals as multi-leg structures (paper)</h1>
+    <p class="sub">Every recorded v2.11 signal trade re-priced as alternative option baskets —
+      pick structures under CALL and PUT separately and compare. Legs fill at <b>exact-minute
+      ask (buy) / bid (sell)</b>, charges per leg, one 65-unit lot per leg. Missing quotes are
+      explicitly unavailable — never an LTP fallback. Paper only.</p>
+
+    {% if basket_error %}
+      <p class="empty">Baskets unavailable ({{ basket_error }}).</p>
+    {% else %}
+
+      <div style="display:flex;gap:10px;align-items:center;margin:10px 0;flex-wrap:wrap">
+        <button type="button" id="bk-refresh" {{ 'disabled' if not basket_pending else '' }}>
+          {{ 'Replay ' ~ basket_pending ~ ' pending day(s)' if basket_pending else 'All recorded days replayed' }}
+        </button>
+        <span id="bk-refresh-status" class="muted" style="font-size:13px"></span>
+      </div>
+
+      {% if not basket_totals %}
+        <p class="empty">No basket rows yet. Click the replay button above to price the recorded v2.11 days.</p>
+      {% else %}
+
+      <div style="display:flex;gap:28px;flex-wrap:wrap;margin:14px 0">
+        {% for side in ['CALL', 'PUT'] %}
+        <div>
+          <p class="section-title" style="margin-top:0">{{ side }}-signal baskets</p>
+          {% for bkey, bdef in basket_defs[side].items() %}
+          {% set combo = side ~ ':' ~ bkey %}
+          <label style="display:block;font-size:13px;margin:4px 0;cursor:pointer">
+            <input type="checkbox" class="bk-toggle" data-col="{{ combo }}"
+              {{ 'checked' if bkey in ('naked_itm200', 'long_synthetic', 'short_synthetic') else '' }}>
+            {{ bdef.label }}
+            {% if combo in basket_totals %}
+              {% set bt = basket_totals[combo] %}
+              <span class="{{ 'green' if bt.net_total>0 else ('red' if bt.net_total<0 else 'muted') }}">
+                ₹{{ "{:,.0f}".format(bt.net_total) }}</span>
+            {% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <h2 style="margin-top:18px">Selected basket totals</h2>
+      <table class="perf" id="bk-summary">
+        <thead><tr><th>Basket</th><th>Side</th><th>Net ₹</th><th>Charges ₹</th>
+          <th>Trades</th><th>Priced</th><th>Win / loss days</th><th>Best day</th><th>Worst day</th></tr></thead>
+        <tbody>
+        {% for combo, bt in basket_totals.items() %}
+          <tr data-col="{{ combo }}">
+            <td>{{ bt.label }}</td><td>{{ bt.side }}</td>
+            <td class="{{ 'green' if bt.net_total>0 else ('red' if bt.net_total<0 else '') }}">₹{{ "{:,.2f}".format(bt.net_total) }}</td>
+            <td class="muted">₹{{ "{:,.2f}".format(bt.charges_total) }}</td>
+            <td>{{ bt.trades }}</td><td>{{ bt.priced }}/{{ bt.priced + bt.unavailable }}</td>
+            <td><span class="green">{{ bt.win_days }}</span> / <span class="red">{{ bt.loss_days }}</span></td>
+            <td class="green">₹{{ "{:,.2f}".format(bt.best_day) }}</td>
+            <td class="red">₹{{ "{:,.2f}".format(bt.worst_day) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px">Daily net ₹ by basket</h2>
+      <div style="overflow-x:auto">
+      <table class="perf" id="bk-daily">
+        <thead><tr><th>Date</th>
+          {% for combo, bt in basket_totals.items() %}
+            <th data-col="{{ combo }}">{{ bt.side }}<br>{{ bt.basket }}</th>
+          {% endfor %}
+        </tr></thead>
+        <tbody>
+        {% for d, cols in basket_by_date|dictsort(reverse=true) %}
+          <tr><td>{{ d }}</td>
+          {% for combo in basket_totals %}
+            {% set val = cols.get(combo) %}
+            <td data-col="{{ combo }}" class="{{ 'green' if val and val>0 else ('red' if val and val<0 else 'muted') }}">
+              {{ "₹{:,.0f}".format(val) if val is not none else '—' }}</td>
+          {% endfor %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+
+      <p class="note">
+        Timing is the recorded v2.11 champion ledger (same entries, exits, and sides as the Alpha v2.11 tab) —
+        only the instrument changes. Strikes are set from each trade's entry spot: ATM = nearest 50,
+        ITM/OTM = ±200 points. Rationale: on a breakeven spot stop a naked long option still loses
+        (theta / IV / spread), while a delta≈1 synthetic books ≈0 by construction and a debit spread
+        hard-caps the loss; synthetics carry short-leg margin and need the stop to actually fire.
+        SELL legs are priced bid-in / ask-out. Charges are applied per leg, so two-leg baskets pay
+        roughly double the charges of a naked option.
+      </p>
+      {% endif %}
+
+      <script>
+      (function () {
+        function applyToggles() {
+          var checked = {};
+          document.querySelectorAll('.bk-toggle').forEach(function (c) {
+            checked[c.dataset.col] = c.checked;
+          });
+          document.querySelectorAll('[data-col]').forEach(function (el) {
+            if (el.classList.contains('bk-toggle')) return;
+            el.style.display = checked[el.dataset.col] === false ? 'none' : '';
+          });
+        }
+        document.querySelectorAll('.bk-toggle').forEach(function (c) {
+          c.addEventListener('change', applyToggles);
+        });
+        applyToggles();
+
+        var btn = document.getElementById('bk-refresh');
+        var status = document.getElementById('bk-refresh-status');
+        if (btn) btn.addEventListener('click', function run() {
+          btn.disabled = true;
+          status.textContent = 'replaying…';
+          fetch('/labs/api/baskets/refresh?limit=5', {method: 'POST'})
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              if (!j.ok) { status.textContent = 'error: ' + j.error; return; }
+              status.textContent = j.done + ' day(s) replayed, ' + j.remaining + ' remaining';
+              if (j.remaining > 0) { run(); } else { location.reload(); }
+            })
+            .catch(function (e) { status.textContent = 'error: ' + e; btn.disabled = false; });
+        });
+      })();
+      </script>
     {% endif %}
 
     {% else %}
