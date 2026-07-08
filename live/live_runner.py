@@ -158,11 +158,14 @@ def next_intent_seq(user_id: str, conn_id: str, trade_date: str, conn=None) -> i
 # ══════════════════════════════════════════════════════════════════════════
 # Contract selection
 # ══════════════════════════════════════════════════════════════════════════
-def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str:
+def resolve_itm_option(adapter, side: str, trade_date: str | None = None,
+                       distance: int = ITM_DISTANCE) -> str:
     """Resolve a real tradingsymbol from the shared live option-chain CSV.
 
     This keeps live trading aligned with the collector's own market-data source
-    of truth instead of guessing broker symbol formats.
+    of truth instead of guessing broker symbol formats. `distance` is points
+    in-the-money (negative = out-of-the-money) — the funds-aware fallback steps
+    it down when the account cannot cover the ITM200 premium.
     """
     # Data policy: strike selection uses Kite -> 1-min CSV, never the execution
     # broker (Angel is orders/positions only). No spot -> skip this entry.
@@ -171,7 +174,7 @@ def resolve_itm_option(adapter, side: str, trade_date: str | None = None) -> str
         raise RuntimeError("no spot for strike selection (kite + shared store dark)")
     step = UNDERLYINGS[UNDERLYING]["strike_step"]
     atm = round(spot / step) * step
-    strike = atm - ITM_DISTANCE if side == "CALL" else atm + ITM_DISTANCE
+    strike = atm - distance if side == "CALL" else atm + distance
     opt_type = "CE" if side == "CALL" else "PE"
     trade_date = trade_date or _today_ist_iso()
     path = SHARED_LIVE_DIR / trade_date / f"{UNDERLYING}_options_1min.csv"
@@ -402,8 +405,11 @@ def _fast_spot():
     stop)."""
     s = get_kite_spot()
     if s is not None and s > 0:
+        _log_spot_sample("kite", s)
         return s
-    return get_latest_spot()
+    s = get_latest_spot()
+    _log_spot_sample("csv1m", s)
+    return s
 
 
 def get_kite_ltp(symbol: str):
@@ -433,6 +439,65 @@ def _fast_ltp(adapter, symbol: str, *, allow_broker_fallback: bool = False):
     if allow_broker_fallback:
         return adapter.get_ltp(symbol)
     raise RuntimeError(f"no Kite LTP for {symbol} — entry skipped")
+
+
+# ── Funds-aware strike fallback ────────────────────────────────────────────
+# A long option entry needs the full premium (~price x qty). With no funds
+# check the ITM200 order would just be RMS-rejected and the signal sat out.
+# Instead, step the strike 50 pts cheaper at a time (CALL: higher strike,
+# PUT: lower) until the premium fits available funds — down to OTM100 at most
+# (beyond that the delta no longer resembles the strategy the edge was
+# measured on). Funds are read once per entry attempt (order-lifecycle, not
+# polling); if the read fails the ITM200 attempt proceeds — the broker RMS
+# stays the final authority.
+AFFORDABILITY_BUFFER = 1.03      # headroom for the marketable limit + charges
+MIN_STRIKE_DISTANCE = -100       # never cheaper than OTM100
+
+
+def resolve_affordable_option(adapter, side: str, qty: int,
+                              trade_date: str | None = None):
+    """Return (symbol, kite_ltp) for the deepest affordable strike, starting at
+    ITM200. Raises (entry skipped) when even OTM100 does not fit."""
+    try:
+        funds = adapter.available_funds()
+    except Exception as e:
+        log.warning("funds read failed (%s) — proceeding at ITM200, broker "
+                    "RMS is the final gate", type(e).__name__)
+        funds = None
+    distance = ITM_DISTANCE
+    while distance >= MIN_STRIKE_DISTANCE:
+        symbol = resolve_itm_option(adapter, side, trade_date, distance=distance)
+        price = _fast_ltp(adapter, symbol)          # strict Kite (entry pricing)
+        if funds is None or funds >= price * qty * AFFORDABILITY_BUFFER:
+            if distance != ITM_DISTANCE:
+                msg = (f"⚠️ funds ₹{funds:,.0f} < ITM200 need — strike downgraded "
+                       f"to {'ITM' if distance > 0 else 'OTM'}{abs(distance)} "
+                       f"{symbol} @ {price}")
+                log.warning(msg)
+                notify_telegram(msg)
+            return symbol, price
+        distance -= 50
+    raise RuntimeError(
+        f"funds {funds} cannot cover even OTM100 x{qty} — entry skipped")
+
+
+def _log_spot_sample(source: str, value) -> None:
+    """Forward-capture every per-poll spot sample to logs/spot2s_DATE.csv so
+    tick-vs-1min stop decisions can be replayed on real data later. Zero extra
+    API cost (only samples already fetched are logged); must never raise."""
+    try:
+        now = _now_ist()
+        path = Path(__file__).resolve().parent.parent / "logs" / (
+            f"spot2s_{now.strftime('%Y-%m-%d')}.csv")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        header = not path.exists()
+        with path.open("a", encoding="utf-8") as fh:
+            if header:
+                fh.write("ts,source,spot\n")
+            fh.write(f"{now.isoformat()},{source},"
+                     f"{'' if value is None else value}\n")
+    except Exception:
+        pass
 
 
 def _as_float(value):
@@ -859,10 +924,11 @@ def _om_desired_main(user_id, conn_id, adapter, pos, signal_engines, blocked):
     if (sig["action"] == "ENTER" and pos is None and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
-        symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        symbol, entry_price = resolve_affordable_option(
+            adapter, side, qty, trade_date=_today_ist_iso())
         return SourcePos("main", symbol, side, qty,
-                         entry_price=_fast_ltp(adapter, symbol),
+                         entry_price=entry_price,
                          entry_spot=bar.get("spot"), entry_rule=sig.get("rule") or "main")
     if sig["action"] == "EXIT" and pos is not None:
         return None
@@ -885,10 +951,11 @@ def _om_desired_r2(user_id, conn_id, adapter, pos, blocked):
     if (sig["action"] == "ENTER" and pos is None and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
-        symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        symbol, entry_price = resolve_affordable_option(
+            adapter, side, qty, trade_date=_today_ist_iso())
         return SourcePos("r2", symbol, side, qty,
-                         entry_price=_fast_ltp(adapter, symbol),
+                         entry_price=entry_price,
                          entry_spot=bar.get("spot"), entry_rule="r2")
     if sig["action"] == "EXIT" and pos is not None:
         return None
@@ -1062,9 +1129,9 @@ def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
     if (sig["action"] == "ENTER" and not current_open and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
-        symbol = resolve_itm_option(adapter, side, trade_date=trade_date)
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-        price = _fast_ltp(adapter, symbol)
+        symbol, price = resolve_affordable_option(
+            adapter, side, qty, trade_date=trade_date)
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule="r2")
@@ -1360,9 +1427,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 and check_daily_loss(user_id, conn_id)):
             rside = fast["side"]
             lvl = fast["recovery_level"]
-            symbol = resolve_itm_option(adapter, rside, trade_date=_today_ist_iso())
             qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-            price = _fast_ltp(adapter, symbol)
+            symbol, price = resolve_affordable_option(
+                adapter, rside, qty, trade_date=_today_ist_iso())
             result = _route_order(
                 adapter, user_id, conn_id, action="ENTER", side=rside,
                 symbol=symbol, qty=qty, price=price, dry_run=dry_run,
@@ -1494,9 +1561,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if (sig["action"] == "ENTER" and not current_open and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
-        symbol = resolve_itm_option(adapter, side, trade_date=_today_ist_iso())
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-        price = _fast_ltp(adapter, symbol)
+        symbol, price = resolve_affordable_option(
+            adapter, side, qty, trade_date=_today_ist_iso())
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule=sig.get("rule") or "none")
