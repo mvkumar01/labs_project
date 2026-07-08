@@ -1402,8 +1402,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     use_champion = svc.get_config(user_id, conn_id, "decision_engine") == "champion_replay"
     v212_recovery = svc.get_config(user_id, conn_id, "strategy_version") == "v2.12"
 
-    # v2.12 has no separate tick transition path. Paper and live both consume
-    # completed one-minute OHLC through the canonical champion replay below.
+    # v2.12 decisions are canonical (the recovery-enabled replay below); the
+    # tick overlay further down only ACCELERATES the stop's execution.
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
     # Run it before alpha_seen de-duplication so repeated polls can arm/fire it.
     if current_open and not use_champion:
@@ -1470,6 +1470,43 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     svc.reset_trade_state(user_id, conn_id)
                 return
 
+    # ── v2.12 tick-stop overlay (fast out, patient back in) ──────────────
+    # The decision stream stays canonical (the recovery-enabled replay below);
+    # this overlay only ACCELERATES the entry-spot stop's execution. When the
+    # live Kite spot crosses the replay's anchored barrier intra-candle, exit
+    # at market NOW instead of waiting for the candle to complete (up to ~59s
+    # earlier — the tail-cutting that is v2.12's measured edge). The champion
+    # cursor is deliberately NOT advanced here: the replay books the same stop
+    # at the candle close, and the already-flat acknowledgement in the champion
+    # branch consumes that event, so live and paper record the SAME canonical
+    # segment. Re-entry is never taken here — it stays canonical. A missing
+    # tick spot or anchor skips silently (never a spurious stop).
+    if current_open and use_champion and v212_recovery:
+        _anchor = _as_float(st.get("entry_spot"))
+        _tick = _as_float(_fast_spot())
+        _side_u = (current_side or "").upper()
+        if _anchor is not None and _tick is not None and (
+                (_side_u == "CALL" and _tick <= _anchor)
+                or (_side_u == "PUT" and _tick >= _anchor)):
+            exit_price = _fast_ltp(adapter, current_symbol)
+            result = _route_order(
+                adapter, user_id, conn_id, action="EXIT", side=current_side,
+                symbol=current_symbol, qty=current_qty, price=exit_price,
+                dry_run=dry_run)
+            if _order_applied(result.status, dry_run=dry_run):
+                _record_exit_result(
+                    user_id, conn_id, st,
+                    exit_price=result.avg_fill_price or exit_price,
+                    qty=current_qty, reason="ENTRY_SPOT_SL_TICK",
+                    dry_run=dry_run)
+                # reset preserves the champion cursor, so the replay's own
+                # stop event acks while flat instead of re-exiting.
+                svc.reset_trade_state(user_id, conn_id)
+                log.info(
+                    "v2.12 tick stop conn=%s side=%s anchor=%.2f spot=%.2f",
+                    conn_id, _side_u, _anchor, _tick)
+            return
+
     trade_date = _today_ist_iso()
     alpha_key = (alpha_bar.get("timestamp"), alpha_bar.get("alpha"))
     if use_champion and v212_recovery:
@@ -1486,7 +1523,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # At the boundary immediately after a completed trigger candle, Kite
         # historical OHLC does not yet contain the new candle. The current Kite
         # index spot is the live executable proxy for that next-candle open.
-        live_execution_spot = _fast_spot(adapter) if v212_recovery else None
+        live_execution_spot = _fast_spot() if v212_recovery else None
         target = champion_decider.champion_target(
             trade_date, now_ist=_now_ist(),
             enable_entry_spot_recovery=v212_recovery,
@@ -1524,6 +1561,20 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             })
             svc.save_trade_state(user_id, conn_id, st)
         champ_entry_spot = (target or {}).get("entry_spot")
+        # Anchor self-heal: the replay is canonical for the stop barrier. If a
+        # late-arriving candle revises the replay's anchored entry_spot, the
+        # persisted anchor (which drives the tick overlay above) follows it —
+        # 2026-07-08: a 3-pt live-vs-paper anchor gap held a stop 8 minutes
+        # past paper's exit and cost -29 premium points.
+        if (v212_recovery and current_open and champ_entry_spot is not None
+                and (target or {}).get("position") == (current_side or "").upper()):
+            _canon_anchor = _as_float(champ_entry_spot)
+            if (_canon_anchor is not None
+                    and _as_float(st.get("entry_spot")) != _canon_anchor):
+                st["entry_spot"] = _canon_anchor
+                svc.save_trade_state(user_id, conn_id, st)
+                log.info("v2.12 anchor synced to replay conn=%s entry_spot=%.2f",
+                         conn_id, _canon_anchor)
         log.info("champion conn=%s ts=%s pos=%s target=%s sig=%s",
                  conn_id, alpha_bar.get("timestamp"),
                  "OPEN" if current_open else "NONE", target, sig)
