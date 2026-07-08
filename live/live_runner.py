@@ -228,6 +228,19 @@ def _order_applied(status: str, *, dry_run: bool) -> bool:
     return status.upper() in {"COMPLETE", "COMPLETED", "FILLED", "EXECUTED"}
 
 
+def _advance_champion_cursor(user_id: str, conn_id: str, st: dict, *,
+                             count: int, event_id, trade_date: str | None = None
+                             ) -> None:
+    """Single writer for the v2.12 replay cursor. Every path that consumes a
+    canonical closed event MUST advance through here — divergent hand-rolled
+    writes are how a stop gets re-emitted or dropped after a restart."""
+    update = {"champion_closed_count": count, "champion_last_event_id": event_id}
+    if trade_date is not None:
+        update["champion_trade_date"] = trade_date
+    st.update(update)
+    svc.save_trade_state(user_id, conn_id, st)
+
+
 # Marketable-limit buffer (D1). Entries/exits are placed as LIMIT at the current
 # LTP, which can sit UNFILLED when the premium ticks away in the seconds after
 # placement (2026-07-07 incident: a BUY limit @204.20 lagged the rising premium,
@@ -1533,12 +1546,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         if v212_recovery and st.get("champion_trade_date") != trade_date:
             # First observation of a date adopts the canonical replay cursor;
             # historical events cannot safely be sent to a broker after startup.
-            st.update({
-                "champion_trade_date": trade_date,
-                "champion_closed_count": target_closed_count,
-                "champion_last_event_id": target_event_id,
-            })
-            svc.save_trade_state(user_id, conn_id, st)
+            _advance_champion_cursor(
+                user_id, conn_id, st, count=target_closed_count,
+                event_id=target_event_id, trade_date=trade_date)
         closed_count_seen = int(st.get("champion_closed_count") or 0)
         if v212_recovery:
             sig = champion_decider.reconcile_replay_event(
@@ -1555,11 +1565,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # If already flat, acknowledge the closed segment now; the final replay
         # target below may immediately request its canonical recovery re-entry.
         if replay_event_pending and not current_open:
-            st.update({
-                "champion_closed_count": target_closed_count,
-                "champion_last_event_id": target_event_id,
-            })
-            svc.save_trade_state(user_id, conn_id, st)
+            _advance_champion_cursor(
+                user_id, conn_id, st, count=target_closed_count,
+                event_id=target_event_id)
         champ_entry_spot = (target or {}).get("entry_spot")
         # Anchor self-heal: the replay is canonical for the stop barrier. If a
         # late-arriving candle revises the replay's anchored entry_spot, the
@@ -1640,11 +1648,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                               price=exit_price, dry_run=dry_run)
         if _order_applied(result.status, dry_run=dry_run):
             if replay_event_pending:
-                st.update({
-                    "champion_closed_count": target_closed_count,
-                    "champion_last_event_id": target_event_id,
-                })
-                svc.save_trade_state(user_id, conn_id, st)
+                _advance_champion_cursor(
+                    user_id, conn_id, st, count=target_closed_count,
+                    event_id=target_event_id)
             _record_exit_result(
                 user_id,
                 conn_id,

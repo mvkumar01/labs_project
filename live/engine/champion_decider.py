@@ -140,9 +140,6 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     replay_meta = {
         "last_closed_reason": last_reason,
         "last_closed_event_id": last_event_id,
-        "last_closed_exit_ts": (
-            str(last_trade.get("exit_ts")) if last_trade is not None else None
-        ),
         "n_closed": len(economic_trades),
     }
     if open_state is None:
