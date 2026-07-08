@@ -615,7 +615,7 @@ def arm_dry_run():
 @live_bp.route("/arm", methods=["POST"])
 @csrf_protect
 def arm():
-    """Arm LIVE for THIS user's conn. Evaluate the 6 gates against DB/config (NO
+    """Arm LIVE for THIS user's conn. Evaluate all gates against DB/config (NO
     broker call: the web process holds no broker session). If all DB-checkable
     gates pass, transition DRY_RUN -> LIVE_ARMED. The runner re-checks all gates
     with a live adapter immediately before any real order."""

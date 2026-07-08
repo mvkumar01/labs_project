@@ -90,7 +90,19 @@ def test_entry_spot_stop_then_confirmed_recovery_reenters_same_side() -> None:
     assert [segment["pos"] for segment in segments] == ["call", "call"]
     assert segments[0]["pnl"] == -1.0
     assert segments[0]["exit_spot"] == 99.0
-    assert pd.Timestamp(segments[1]["entry_ts"]).strftime("%H:%M") == "09:30"
+    # 09:25 candle high/low detects the stop and its close supplies spot P&L;
+    # the earliest causal executable quote is the following 09:26 mark.
+    assert pd.Timestamp(segments[0]["exit_ts"]).strftime("%H:%M") == "09:26"
+    assert pd.Timestamp(segments[1]["entry_ts"]).strftime("%H:%M") == "09:31"
+
+
+def test_completed_candle_execution_cannot_cross_eod_square_off() -> None:
+    assert champion_sim._event_is_executable_before_eod(
+        DATE, pd.Timestamp(f"{DATE} 15:25")
+    )
+    assert not champion_sim._event_is_executable_before_eod(
+        DATE, pd.Timestamp(f"{DATE} 15:26")
+    )
 
 
 def test_overlay_default_off_preserves_v211_single_segment() -> None:
@@ -103,6 +115,51 @@ def test_overlay_default_off_preserves_v211_single_segment() -> None:
     assert pnl == 10.0
     assert len(segments) == 1
     assert segments[0]["reason"] == "TGT_ALPHA"
+
+
+def test_pricing_uses_first_quote_after_event_never_prior_quote() -> None:
+    segment = _segment()
+    strike = 23300
+    quotes = {
+        (_mark("09:19"), strike, "ce"): {"bid": 90.0, "ask": 91.0},
+        (_mark("09:21"), strike, "ce"): {
+            "bid": 99.0, "ask": 100.0, "tradingsymbol": "NIFTY_TEST_CE",
+        },
+        (_mark("09:26"), strike, "ce"): {
+            "bid": 110.0, "ask": 111.0, "tradingsymbol": "NIFTY_TEST_CE",
+        },
+    }
+
+    trade = tracker._price_segment(segment, "26618", quotes)
+
+    assert trade["quote_status"] == "priced"
+    assert pd.Timestamp(trade["entry_ts"]).strftime("%H:%M") == "09:21"
+    assert pd.Timestamp(trade["exit_ts"]).strftime("%H:%M") == "09:26"
+    assert trade["entry_ask"] == 100.0
+    assert trade["exit_bid"] == 110.0
+
+
+def test_pricing_skips_exact_minute_row_without_two_sided_book() -> None:
+    segment = _segment()
+    strike = 23300
+    quotes = {
+        (_mark("09:20"), strike, "ce"): {"bid": None, "ask": None},
+        (_mark("09:21"), strike, "ce"): {
+            "bid": 99.0, "ask": 100.0, "tradingsymbol": "NIFTY_TEST_CE",
+        },
+        (_mark("09:25"), strike, "ce"): {"bid": 110.0, "ask": None},
+        (_mark("09:27"), strike, "ce"): {
+            "bid": 111.0, "ask": 112.0, "tradingsymbol": "NIFTY_TEST_CE",
+        },
+    }
+
+    trade = tracker._price_segment(segment, "26618", quotes)
+
+    assert trade["quote_status"] == "priced"
+    assert pd.Timestamp(trade["entry_ts"]).strftime("%H:%M") == "09:21"
+    assert pd.Timestamp(trade["exit_ts"]).strftime("%H:%M") == "09:27"
+    assert trade["entry_ask"] == 100.0
+    assert trade["exit_bid"] == 111.0
 
 
 def test_tracker_prices_itm200_at_ask_in_bid_out_and_persists(monkeypatch) -> None:

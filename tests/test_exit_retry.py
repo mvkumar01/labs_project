@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -21,6 +23,11 @@ USER_ID = "user-1"
 CONN_ID = "user-1:angel"
 SYMBOL = "NIFTY16JUN2623050CE"
 THROTTLE = RuntimeError("Access denied because of exceeding access rate")
+
+
+@pytest.fixture(autouse=True)
+def _static_order_proxy(monkeypatch):
+    monkeypatch.setenv("LIVE_ORDER_PROXY_URL", "http://static.test:1234")
 
 
 class FlakyExitAdapter:
