@@ -79,23 +79,79 @@ def _labs_spot_ohlc(trade_date: str) -> "pd.DataFrame | None":
     live CSV exists intraday, so TODAY resolves to real 1-min high/low (not flat
     spot) — which is what makes intra-bar triggers (trail / TP-SL / v2.12 entry-
     spot recovery) behave the same live as in backfill."""
+    sig, frame = _labs_spot_ohlc_cached(trade_date)
+    return frame
+
+
+# mtime/size-keyed caches (rate/CPU defense, 2026-07-08 review): the runner
+# polls latest_completed_ohlc_minute every ~2s and champion_target rebuilds
+# inputs per minute; without caching that re-parsed the full day's CSVs ~30x
+# per minute per connection on PA. Same pattern as alpha_hybrid/r2_book:
+# one parse per collector write. Only the 2 most recent dates are retained.
+_LABS_OHLC_CACHE: dict = {}      # trade_date -> (sig, DataFrame)
+_LATEST_MINUTE_CACHE: dict = {}  # (trade_date, sig) -> key | None
+_OHLC_BY_MINUTE_CACHE: dict = {}  # trade_date -> (source-sigs, minute dict)
+_VERIFIED_OPEN_CACHE: dict = {}   # (trade_date, mtime, size) -> open | None
+_PREV_CLOSE_CACHE: dict = {}      # trade_date -> (pday, close, source)
+
+
+def _prune_date_cache(cache: dict) -> None:
+    while len(cache) > 2:
+        cache.pop(sorted(cache)[0], None)
+
+
+def _labs_sig(trade_date: str):
+    """Cheap change-signature (one stat) of the labs spot source for the date;
+    None when the source is absent — callers then skip memoization, which also
+    keeps monkeypatched `_labs_spot_ohlc` test seams working."""
+    live = DATA_DIR / f"{trade_date}_{SYMBOL}_spot_1min.csv"
+    try:
+        stat = live.stat()
+        return ("live", stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        pass
+    if (ARCHIVE_DIR / f"{trade_date}.tar.gz").is_file():
+        return ("tar",)
+    return None
+
+
+def _labs_spot_ohlc_cached(trade_date: str):
+    """(signature, frame) for the labs spot CSV; parses only when the file
+    changed. Archive tarballs are immutable, so they parse exactly once."""
     name = f"{trade_date}_{SYMBOL}_spot_1min.csv"
     live = DATA_DIR / name
     if live.is_file():
         try:
-            return pd.read_csv(live)
+            stat = live.stat()
+            sig = ("live", stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None, None
+        hit = _LABS_OHLC_CACHE.get(trade_date)
+        if hit is not None and hit[0] == sig:
+            return hit
+        try:
+            frame = pd.read_csv(live)
         except (OSError, ValueError):
-            return None
+            return None, None
+        _LABS_OHLC_CACHE[trade_date] = (sig, frame)
+        _prune_date_cache(_LABS_OHLC_CACHE)
+        return sig, frame
     tar_path = ARCHIVE_DIR / f"{trade_date}.tar.gz"
     if tar_path.is_file():
+        hit = _LABS_OHLC_CACHE.get(trade_date)
+        if hit is not None and hit[0] == ("tar",):
+            return hit
         try:
             with tarfile.open(tar_path, "r:gz") as tar:
                 member = tar.extractfile(name)
                 if member is not None:
-                    return pd.read_csv(member)
+                    frame = pd.read_csv(member)
+                    _LABS_OHLC_CACHE[trade_date] = (("tar",), frame)
+                    _prune_date_cache(_LABS_OHLC_CACHE)
+                    return ("tar",), frame
         except (tarfile.TarError, KeyError, OSError, ValueError):
-            return None
-    return None
+            return None, None
+    return None, None
 
 
 def latest_completed_ohlc_minute(trade_date: str) -> str | None:
@@ -104,19 +160,29 @@ def latest_completed_ohlc_minute(trade_date: str) -> str | None:
     The live runner uses this cheap key to replay v2.12 once per newly completed
     minute (and once per new alpha mark), instead of either polling the full
     replay every two seconds or waiting for the next five-minute alpha mark.
+    Runs every ~2s poll, so the derived key is memoized per file signature —
+    an unchanged CSV costs one stat(), no parse.
     """
+    sig = _labs_sig(trade_date)
     frame = _labs_spot_ohlc(trade_date)
     if frame is None or frame.empty or "timestamp" not in frame.columns:
         return None
+    cache_key = (trade_date, sig)
+    if sig is not None and cache_key in _LATEST_MINUTE_CACHE:
+        return _LATEST_MINUTE_CACHE[cache_key]
     timestamps = pd.to_datetime(frame["timestamp"], errors="coerce").dropna()
-    if timestamps.empty:
-        return None
-    latest = timestamps.max()
-    if getattr(latest, "tzinfo", None) is not None:
-        latest = latest.tz_convert("Asia/Kolkata").tz_localize(None)
-    if latest.strftime("%Y-%m-%d") != trade_date:
-        return None
-    return latest.strftime("%Y-%m-%dT%H:%M")
+    result = None
+    if not timestamps.empty:
+        latest = timestamps.max()
+        if getattr(latest, "tzinfo", None) is not None:
+            latest = latest.tz_convert("Asia/Kolkata").tz_localize(None)
+        if latest.strftime("%Y-%m-%d") == trade_date:
+            result = latest.strftime("%Y-%m-%dT%H:%M")
+    if sig is not None:
+        _LATEST_MINUTE_CACHE[cache_key] = result
+        while len(_LATEST_MINUTE_CACHE) > 8:
+            _LATEST_MINUTE_CACHE.pop(next(iter(_LATEST_MINUTE_CACHE)))
+    return result
 
 
 def ohlc_by_minute(trade_date: str) -> dict:
@@ -134,8 +200,25 @@ def ohlc_by_minute(trade_date: str) -> dict:
     rather than flat spot, so intra-bar triggers fire identically live and in
     backfill (previously today fell back to flat spot and suppressed v2.12
     re-entries / trail / TP-SL)."""
-    out: dict = {}
+    labs_sig = _labs_sig(trade_date)
     labs = _labs_spot_ohlc(trade_date)
+
+    def _fsig(path):
+        try:
+            stat = path.stat()
+            return (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None
+
+    cache_key = (
+        labs_sig,
+        _fsig(ALPHA_DATA_DIR / "analytics" / "nifty_1min_ohlc.csv"),
+        _fsig(SHARED_LIVE_DIR / trade_date / f"{SYMBOL}_options_1min.csv"),
+    ) if labs_sig is not None else None
+    hit = _OHLC_BY_MINUTE_CACHE.get(trade_date)
+    if cache_key is not None and hit is not None and hit[0] == cache_key:
+        return hit[1]
+    out: dict = {}
     if labs is not None and not labs.empty:
         ts = pd.to_datetime(labs["timestamp"], errors="coerce")
         if getattr(ts.dt, "tz", None) is not None:
@@ -170,6 +253,9 @@ def ohlc_by_minute(trade_date: str) -> dict:
                 out[hm] = (float(sp), float(sp), float(sp), float(sp))
     except (FileNotFoundError, ValueError):
         pass
+    if cache_key is not None:
+        _OHLC_BY_MINUTE_CACHE[trade_date] = (cache_key, out)
+        _prune_date_cache(_OHLC_BY_MINUTE_CACHE)
     return out
 
 
@@ -186,6 +272,13 @@ def verified_session_open(trade_date: str) -> tuple[float, str] | None:
     if not path.is_file():
         return None
     try:
+        stat = path.stat()
+        cache_key = (trade_date, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+    if cache_key is not None and cache_key in _VERIFIED_OPEN_CACHE:
+        return _VERIFIED_OPEN_CACHE[cache_key]
+    try:
         frame = pd.read_csv(path, usecols=["timestamp", "open"])
         timestamps = pd.to_datetime(frame["timestamp"], errors="coerce")
         if getattr(timestamps.dt, "tz", None) is not None:
@@ -195,12 +288,16 @@ def verified_session_open(trade_date: str) -> tuple[float, str] | None:
             (exact["_timestamp"].dt.strftime("%Y-%m-%d") == trade_date)
             & (exact["_timestamp"].dt.strftime("%H:%M") == "09:15")
         ]
-        if exact.empty:
-            return None
-        value = float(pd.to_numeric(exact.iloc[-1]["open"], errors="coerce"))
-        if not pd.notna(value) or value <= 0:
-            return None
-        return value, f"kite_historical_ohlc:{trade_date}:09:15"
+        result = None
+        if not exact.empty:
+            value = float(pd.to_numeric(exact.iloc[-1]["open"], errors="coerce"))
+            if pd.notna(value) and value > 0:
+                result = (value, f"kite_historical_ohlc:{trade_date}:09:15")
+        if cache_key is not None:
+            _VERIFIED_OPEN_CACHE[cache_key] = result
+            while len(_VERIFIED_OPEN_CACHE) > 8:
+                _VERIFIED_OPEN_CACHE.pop(next(iter(_VERIFIED_OPEN_CACHE)))
+        return result
     except (OSError, ValueError, KeyError):
         return None
 
@@ -236,6 +333,9 @@ def previous_session_close(trade_date: str) -> tuple[str, float, str]:
     rolling VIX file, so treating its last older row as yesterday caused June
     replays to use an April close and silently switch Alpha routing.
     """
+    hit = _PREV_CLOSE_CACHE.get(trade_date)
+    if hit is not None:
+        return hit
     for pday in _previous_trading_days(trade_date):
         try:
             prior = load_options_frame(
@@ -255,7 +355,12 @@ def previous_session_close(trade_date: str) -> tuple[str, float, str]:
             # Frozen single-print files are not valid market sessions.
             if len(spots) >= 2 and spots.nunique() >= 2:
                 source = str(prior.attrs.get("source_path") or "shared_store")
-                return pday, float(spots.iloc[-1]), source
+                result = (pday, float(spots.iloc[-1]), source)
+                # Prior-session closes are immutable intraday; failures are
+                # never cached, so a late-appearing store still self-heals.
+                _PREV_CLOSE_CACHE[trade_date] = result
+                _prune_date_cache(_PREV_CLOSE_CACHE)
+                return result
         except Exception:
             continue
     raise ContextInputError(
