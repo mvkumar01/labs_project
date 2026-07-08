@@ -86,10 +86,24 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date, day["lower"], day["upper"], use_abs, range_source=range_source)
-    except Exception:
-        return None
+    except Exception as exc:
+        # Transient input failure (shared-store CSV mid-write, IO blip) must
+        # NOT read as FLAT: a None target with an open position would flatten a
+        # healthy real-money book. UNAVAILABLE -> reconcile HOLDs (same
+        # treatment as ContextInputError above).
+        return {
+            "position": "UNAVAILABLE",
+            "bucket": tier,
+            "direction": day["direction"],
+            "context_error": f"{type(exc).__name__}: {exc}",
+        }
     if adf is None or adf.empty:
-        return None
+        return {
+            "position": "UNAVAILABLE",
+            "bucket": tier,
+            "direction": day["direction"],
+            "context_error": "alpha frame empty/not yet available",
+        }
 
     # OI alpha is a point snapshot at the five-minute mark; unlike OHLC it does
     # not wait for the bucket to close. Spot stops/recoveries still use only

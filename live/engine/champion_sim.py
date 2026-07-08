@@ -473,9 +473,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             reason = ""
 
             # v2.12 overlay runs before every legacy spot/trail stop. The
-            # completed candle detects the touch; execution uses the following
-            # one-minute candle's open. `esp` remains the strategy's original
-            # signal barrier while `fill_entry_spot` carries economic slippage.
+            # completed candle detects the touch and its CLOSE values the stop
+            # (production model, 81def99 — keeps paper history continuous);
+            # execution is timestamped at the following one-minute mark, the
+            # earliest causally reachable quote. `esp` remains the strategy's
+            # original signal barrier while `fill_entry_spot` carries economic
+            # slippage.
             if enable_entry_spot_recovery:
                 stop_hits = 0
                 active_at_end = True
@@ -489,12 +492,13 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             or (pos == "put" and bh >= esp)
                         )
                         if hit:
-                            # Current-day paper waits until this open is in Kite
-                            # OHLC; live supplies the just-started candle spot.
+                            # Current-day paper waits until the next mark is in
+                            # Kite OHLC (proves the event is causally past);
+                            # live supplies the just-started candle spot.
                             if executable_spot is None:
                                 break
                             stop_hits += 1
-                            stop_exit_spot = float(executable_spot)
+                            stop_exit_spot = float(bc)
                             stop_pnl = (
                                 stop_exit_spot - fill_entry_spot
                                 if pos == "call"

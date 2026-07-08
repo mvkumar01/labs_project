@@ -22,11 +22,12 @@ order is placed; even in LIVE_ARMED every adapter's place_order/exit_all raises
 NotImplementedError until a deliberate Phase-1 enablement commit.
 """
 import logging
+import re
 import sys
 import time
 from csv import DictReader
 from dataclasses import dataclass
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import date as dt_date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -428,13 +429,69 @@ def get_kite_ltp(symbol: str):
         return None
 
 
+_ANGEL_SYMBOL_RE = re.compile(
+    r"^NIFTY(\d{2})([A-Z]{3})(\d{2})(\d{4,5})(CE|PE)$")
+_MONTH_NUM = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+              "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+_kite_symbol_cache: dict = {}
+
+
+def kite_symbol_for(broker_symbol: str, trade_date: str | None = None) -> str:
+    """Map an execution-broker (Angel ddMMMyy) NIFTY option symbol to the Kite
+    tradingsymbol with the same strike/type/expiry DATE, via today's collector
+    chain. Pure string/CSV work — no broker API (2026-07-08: every live exit's
+    Kite pricing KeyError'd because current_symbol comes from the Angel book,
+    e.g. NIFTY14JUL2624400PE vs Kite's NIFTY2671424400PE). Returns the input
+    unchanged when it already looks like a Kite symbol or no mapping exists."""
+    m = _ANGEL_SYMBOL_RE.match(str(broker_symbol).strip().upper())
+    if not m:
+        return broker_symbol            # already Kite-format (or unknown)
+    dd, mon, yy, strike, otype = m.groups()
+    month = _MONTH_NUM.get(mon)
+    if month is None:
+        return broker_symbol
+    target = dt_date(2000 + int(yy), month, int(dd))
+    trade_date = trade_date or _today_ist_iso()
+    key = (trade_date, broker_symbol)
+    hit = _kite_symbol_cache.get(key)
+    if hit is not None:
+        return hit
+    from market_data.expiry import expiry_code_from_symbol, expiry_sort_date
+
+    path = SHARED_LIVE_DIR / trade_date / f"{UNDERLYING}_options_1min.csv"
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            for row in DictReader(handle):
+                sym = (row.get("tradingsymbol") or "").strip()
+                if not sym or not sym.endswith(otype):
+                    continue
+                try:
+                    if int(float(row.get("strike") or 0)) != int(strike):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                code = expiry_code_from_symbol(sym, UNDERLYING)
+                if code and expiry_sort_date(code) == target:
+                    _kite_symbol_cache[key] = sym
+                    return sym
+    except OSError:
+        pass
+    return broker_symbol
+
+
 def _fast_ltp(_adapter, symbol: str):
     """Order-pricing premium from Kite only, outside the static-IP proxy.
 
     Angel is execution/position state only. If Kite pricing is unavailable the
     intent fails closed and retries; it never fetches market data from Angel.
+    Position symbols read back from the Angel book are transparently remapped
+    to their Kite tradingsymbol (kite_symbol_for) before pricing.
     """
     v = get_kite_ltp(symbol)
+    if v is None or v <= 0:
+        alt = kite_symbol_for(symbol)
+        if alt != symbol:
+            v = get_kite_ltp(alt)
     if v is not None and v > 0:
         return v
     raise RuntimeError(f"no Kite LTP for {symbol} — order intent deferred")
