@@ -98,6 +98,27 @@ def _labs_spot_ohlc(trade_date: str) -> "pd.DataFrame | None":
     return None
 
 
+def latest_completed_ohlc_minute(trade_date: str) -> str | None:
+    """Timestamp key for the newest completed labs one-minute spot candle.
+
+    The live runner uses this cheap key to replay v2.12 once per newly completed
+    minute (and once per new alpha mark), instead of either polling the full
+    replay every two seconds or waiting for the next five-minute alpha mark.
+    """
+    frame = _labs_spot_ohlc(trade_date)
+    if frame is None or frame.empty or "timestamp" not in frame.columns:
+        return None
+    timestamps = pd.to_datetime(frame["timestamp"], errors="coerce").dropna()
+    if timestamps.empty:
+        return None
+    latest = timestamps.max()
+    if getattr(latest, "tzinfo", None) is not None:
+        latest = latest.tz_convert("Asia/Kolkata").tz_localize(None)
+    if latest.strftime("%Y-%m-%d") != trade_date:
+        return None
+    return latest.strftime("%Y-%m-%dT%H:%M")
+
+
 def ohlc_by_minute(trade_date: str) -> dict:
     """{'HH:MM': (open,high,low,close)} for the trade_date.
 

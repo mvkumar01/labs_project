@@ -34,7 +34,10 @@ from storage.db import get_conn
 SYMBOL = "NIFTY"
 LOT_SIZE = int(UNDERLYINGS[SYMBOL]["lot_size"])
 QTY = LOT_SIZE
-STRATEGY_VERSION = "alpha_v2.12_entry_spot_recovery_itm200_bidask_close1m"
+STRATEGY_VERSION = (
+    "alpha_v2.12_entry_spot_recovery_itm200_bidask_"
+    "completed1m_nextmark"
+)
 
 
 class AlphaV212InputError(RuntimeError):
@@ -116,6 +119,41 @@ def _timestamp_key(value) -> str:
     return ts.floor("min").isoformat()
 
 
+def _quote_at_or_after(
+    quotes: dict,
+    target_ts: str,
+    strike: int,
+    option_type: str,
+    *,
+    max_delay_minutes: int = 5,
+) -> tuple[str, dict]:
+    """First two-sided quote at/after an event, never a pre-event quote."""
+    exact = quotes.get((target_ts, strike, option_type))
+    if (
+        exact is not None
+        and _finite_positive(exact.get("bid")) is not None
+        and _finite_positive(exact.get("ask")) is not None
+    ):
+        return target_ts, exact
+    target = pd.Timestamp(target_ts)
+    latest = target + pd.Timedelta(minutes=max_delay_minutes)
+    candidates = []
+    for (quote_ts, quote_strike, quote_type), quote in quotes.items():
+        if quote_strike != strike or quote_type != option_type:
+            continue
+        timestamp = pd.Timestamp(quote_ts)
+        if (
+            target <= timestamp <= latest
+            and _finite_positive(quote.get("bid")) is not None
+            and _finite_positive(quote.get("ask")) is not None
+        ):
+            candidates.append((timestamp, quote_ts, quote))
+    if not candidates:
+        return target_ts, {}
+    _, actual_ts, quote = min(candidates, key=lambda item: item[0])
+    return actual_ts, quote
+
+
 def build_executable_book(trade_date: str) -> tuple[str, dict]:
     """Return nearest-expiry exact-minute bid/ask quotes."""
     try:
@@ -185,10 +223,14 @@ def _price_segment(segment: dict, expiry_code: str, quotes: dict) -> dict:
         if side == "CALL"
         else _r50(float(segment["entry_spot"]) + ITM_DISTANCE)
     )
-    entry_ts = _timestamp_key(segment["entry_ts"])
-    exit_ts = _timestamp_key(segment["exit_ts"])
-    entry = quotes.get((entry_ts, strike, option_type), {})
-    exit_ = quotes.get((exit_ts, strike, option_type), {})
+    requested_entry_ts = _timestamp_key(segment["entry_ts"])
+    requested_exit_ts = _timestamp_key(segment["exit_ts"])
+    entry_ts, entry = _quote_at_or_after(
+        quotes, requested_entry_ts, strike, option_type
+    )
+    exit_ts, exit_ = _quote_at_or_after(
+        quotes, requested_exit_ts, strike, option_type
+    )
     entry_bid, entry_ask = entry.get("bid"), entry.get("ask")
     exit_bid, exit_ask = exit_.get("bid"), exit_.get("ask")
     quote_status = "priced"
@@ -271,13 +313,10 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
         ) from exc
     if adf is None or adf.empty:
         raise AlphaV212InputError(f"v2.12 input frame is empty for {trade_date}")
-    # Current-day: keep the in-progress bucket as a STOPS-ONLY partial bar
-    # (entry-spot SL + recovery re-entry fire on its 1-min sub-bars; alpha
-    # entries/exits stay on completed bars) so labs v2.12 reacts intra-bar like
-    # the live bot. Past days -> cutoff None -> byte-identical to before.
-    cutoff = None
-    if trade_date == datetime.now(IST).date().isoformat():
-        cutoff = pd.Timestamp(datetime.now(IST)) - pd.Timedelta(minutes=5)
+    # Alpha is an exact-mark OI snapshot, so the current mark is actionable as
+    # soon as it exists. The simulator separately consumes only completed
+    # one-minute OHLC rows for v2.12 stop/recovery decisions.
+    cutoff = champion_sim.exact_mark_cutoff(trade_date, datetime.now(IST))
     if len(adf) < 2:
         raise AlphaV212InputError(
             f"v2.12 input frame has only {len(adf)} completed bars for {trade_date}"

@@ -178,6 +178,9 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 recovery_level       REAL,
                 recovery_side        TEXT,
                 spot_stop_bar        TEXT,
+                champion_trade_date  TEXT,
+                champion_closed_count INTEGER DEFAULT 0,
+                champion_last_event_id TEXT,
                 updated_at           TEXT
             );
 
@@ -314,6 +317,20 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
             ("recovery_level", "REAL"),
             ("recovery_side", "TEXT"),
             ("spot_stop_bar", "TEXT"),
+        ):
+            if col not in state_cols:
+                conn.execute(
+                    f"ALTER TABLE live_trade_state ADD COLUMN {col} {decl}")
+                conn.commit()
+
+        # Canonical replay cursor (2026-07-08). A same-side paper stop/re-entry
+        # ends OPEN on the same side, so final-position reconciliation alone
+        # cannot observe it. These fields persist the last applied closed event.
+        state_cols = _cols("live_trade_state")
+        for col, decl in (
+            ("champion_trade_date", "TEXT"),
+            ("champion_closed_count", "INTEGER DEFAULT 0"),
+            ("champion_last_event_id", "TEXT"),
         ):
             if col not in state_cols:
                 conn.execute(

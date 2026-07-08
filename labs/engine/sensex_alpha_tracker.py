@@ -499,7 +499,7 @@ def _price_trade(trade: dict, quotes: dict, lot_size: int) -> dict:
     entry_bid = entry_quote.get("bid")
     exit_ask = exit_quote.get("ask")
     quote_status = "priced"
-    option_points = option_rupees = None
+    option_points = option_rupees = charges_rs = net_rupees = None
     if entry_ask is None:
         quote_status = "entry_ask_unavailable"
     elif entry_bid is not None and entry_ask < entry_bid:
@@ -511,6 +511,10 @@ def _price_trade(trade: dict, quotes: dict, lot_size: int) -> dict:
     else:
         option_points = round(exit_bid - entry_ask, 2)
         option_rupees = round(option_points * lot_size, 2)
+        charges_rs = round(
+            sensex_round_trip_charges(entry_ask, exit_bid, lot_size)["total"], 2
+        )
+        net_rupees = round(option_rupees - charges_rs, 2)
     trade.update({
         "tradingsymbol": entry_quote.get("tradingsymbol"),
         "entry_bid": entry_bid,
@@ -519,6 +523,8 @@ def _price_trade(trade: dict, quotes: dict, lot_size: int) -> dict:
         "exit_ask": exit_ask,
         "option_pnl_pts": option_points,
         "option_gross_rs": option_rupees,
+        "charges_rs": charges_rs,
+        "net_rs": net_rupees,
         "quote_status": quote_status,
     })
     return trade

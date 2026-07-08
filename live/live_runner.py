@@ -40,7 +40,7 @@ from live.brokers.angel import AngelAdapter
 from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
-from live.engine import champion_decider
+from live.engine import champion_decider, champion_inputs
 from live.engine.r2_book import (
     r2_alpha_bars, r2_signal, r2_vix_tp_exit, latest_spot_1min as r2_latest_spot,
 )
@@ -159,7 +159,8 @@ def next_intent_seq(user_id: str, conn_id: str, trade_date: str, conn=None) -> i
 # Contract selection
 # ══════════════════════════════════════════════════════════════════════════
 def resolve_itm_option(adapter, side: str, trade_date: str | None = None,
-                       distance: int = ITM_DISTANCE) -> str:
+                       distance: int = ITM_DISTANCE,
+                       reference_spot: float | None = None) -> str:
     """Resolve a real tradingsymbol from the shared live option-chain CSV.
 
     This keeps live trading aligned with the collector's own market-data source
@@ -169,7 +170,7 @@ def resolve_itm_option(adapter, side: str, trade_date: str | None = None,
     """
     # Data policy: strike selection uses Kite -> 1-min CSV, never the execution
     # broker (Angel is orders/positions only). No spot -> skip this entry.
-    spot = _fast_spot()
+    spot = _as_float(reference_spot) if reference_spot is not None else _fast_spot()
     if spot is None:
         raise RuntimeError("no spot for strike selection (kite + shared store dark)")
     step = UNDERLYINGS[UNDERLYING]["strike_step"]
@@ -398,11 +399,12 @@ def get_kite_spot():
 
 
 def _fast_spot():
-    """Freshest spot for the per-poll (~2s) v2.12 spot-SL: Kite NIFTY LTP first,
-    else the 1-min shared-store snapshot. NEVER reads it from Angel — the
-    execution broker's quota is reserved for orders/position (2026-07-07 rate-
-    limit incident). None -> evaluate_v212_fast_spot HOLDs (never a spurious
-    stop)."""
+    """Fresh spot for non-replay consumers: Kite first, then shared 1-minute.
+
+    Canonical v2.12 stop/recovery no longer uses this tick path; it consumes the
+    paper replay's completed one-minute OHLC. This helper remains for legacy
+    strike selection and never reads from the Angel execution broker.
+    """
     s = get_kite_spot()
     if s is not None and s > 0:
         _log_spot_sample("kite", s)
@@ -426,19 +428,16 @@ def get_kite_ltp(symbol: str):
         return None
 
 
-def _fast_ltp(adapter, symbol: str, *, allow_broker_fallback: bool = False):
-    """Order-pricing premium: Kite first (data policy — the execution broker is
-    never polled for data). ENTRIES are strict: no Kite price -> raise, skip the
-    entry this cycle (never price an optional trade off Angel). EXITS pass
-    allow_broker_fallback=True: a Kite outage must never block a stop, so the
-    execution broker is the last resort there — a single order-time fetch, not
-    polling."""
+def _fast_ltp(_adapter, symbol: str):
+    """Order-pricing premium from Kite only, outside the static-IP proxy.
+
+    Angel is execution/position state only. If Kite pricing is unavailable the
+    intent fails closed and retries; it never fetches market data from Angel.
+    """
     v = get_kite_ltp(symbol)
     if v is not None and v > 0:
         return v
-    if allow_broker_fallback:
-        return adapter.get_ltp(symbol)
-    raise RuntimeError(f"no Kite LTP for {symbol} — entry skipped")
+    raise RuntimeError(f"no Kite LTP for {symbol} — order intent deferred")
 
 
 # ── Funds-aware strike fallback ────────────────────────────────────────────
@@ -455,7 +454,8 @@ MIN_STRIKE_DISTANCE = -100       # never cheaper than OTM100
 
 
 def resolve_affordable_option(adapter, side: str, qty: int,
-                              trade_date: str | None = None):
+                              trade_date: str | None = None,
+                              reference_spot: float | None = None):
     """Return (symbol, kite_ltp) for the deepest affordable strike, starting at
     ITM200. Raises (entry skipped) when even OTM100 does not fit."""
     try:
@@ -466,7 +466,12 @@ def resolve_affordable_option(adapter, side: str, qty: int,
         funds = None
     distance = ITM_DISTANCE
     while distance >= MIN_STRIKE_DISTANCE:
-        symbol = resolve_itm_option(adapter, side, trade_date, distance=distance)
+        resolver_kwargs = {"distance": distance}
+        if reference_spot is not None:
+            resolver_kwargs["reference_spot"] = reference_spot
+        symbol = resolve_itm_option(
+            adapter, side, trade_date, **resolver_kwargs
+        )
         price = _fast_ltp(adapter, symbol)          # strict Kite (entry pricing)
         if funds is None or funds >= price * qty * AFFORDABILITY_BUFFER:
             if distance != ITM_DISTANCE:
@@ -628,49 +633,6 @@ def _pc400_trail_uses_spot(tier: str | None, side: str | None,
         or (side == "PUT" and gap_direction == "UP")
         or (side == "CALL" and gap_direction == "DOWN")
     )
-
-
-def evaluate_v212_fast_spot(state: dict, live_spot, confirm_spot=None) -> dict:
-    """v2.12 per-poll (tick) spot decision from persisted state + live spot.
-
-    Pure (no broker, no DB) so it is unit-testable like the PC400 trail. Returns
-    {"action": "EXIT"|"ENTER"|"HOLD", "reason", ...}:
-      - OPEN + spot touched entry_spot      -> EXIT (entry-spot SL); caller arms
-        recovery at entry_spot. Fast out: the tick spot alone decides.
-      - FLAT + recovery_armed + favorable    -> ENTER (recovery re-entry), but
-        ONLY when `confirm_spot` (the latest completed 1-min snapshot) is ALSO
-        on the favourable side. Patient back in: research v2.12 re-enters on a
-        1-min bar that touches the level and CLOSES favourable; an unconfirmed
-        2s tick cross fires on noise the research filter rejected, and the
-        honest-fill study showed the level itself is never an earnable price
-        (fill ≈ the confirming close).
-    A missing/None spot (or missing confirm for ENTER) is always HOLD — never a
-    spurious stop, never an unconfirmed re-entry.
-    """
-    spot = _as_float(live_spot)
-    if spot is None:
-        return {"action": "HOLD", "reason": "no_spot"}
-    if (state.get("position") or "NONE").upper() == "OPEN":
-        es = _as_float(state.get("entry_spot"))
-        side = (state.get("side") or "").upper()
-        if es is not None and (
-                (side == "CALL" and spot <= es) or (side == "PUT" and spot >= es)):
-            return {"action": "EXIT", "reason": "ENTRY_SPOT_SL",
-                    "recovery_level": es, "recovery_side": side}
-        return {"action": "HOLD", "reason": "open_no_touch"}
-    if int(state.get("recovery_armed") or 0) == 1:
-        lvl = _as_float(state.get("recovery_level"))
-        rside = (state.get("recovery_side") or "").upper()
-        conf = _as_float(confirm_spot)
-        if lvl is not None and rside in ("CALL", "PUT") and (
-                (rside == "CALL" and spot > lvl) or (rside == "PUT" and spot < lvl)):
-            if conf is None or (rside == "CALL" and conf <= lvl) or (
-                    rside == "PUT" and conf >= lvl):
-                return {"action": "HOLD", "reason": "recovery_unconfirmed"}
-            return {"action": "ENTER", "side": rside, "recovery_level": lvl,
-                    "reason": "RECOVERY"}
-        return {"action": "HOLD", "reason": "recovery_waiting"}
-    return {"action": "HOLD", "reason": "flat"}
 
 
 def evaluate_pc400_spot_trail(state: dict, alpha_bar: dict | None,
@@ -1027,8 +989,7 @@ def _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net, dry_run,
         action = "ENTER" if o.txn == "BUY" else "EXIT"
         # Kite-first pricing; the broker fallback is exit-only (a Kite outage
         # must never block a flatten, but must never price an optional entry).
-        price = _fast_ltp(adapter, o.symbol,
-                          allow_broker_fallback=(action == "EXIT"))
+        price = _fast_ltp(adapter, o.symbol)
         result = _route_order(adapter, user_id, conn_id, action=action, side=side,
                               symbol=o.symbol, qty=o.qty, price=price, dry_run=dry_run,
                               entry_rule="om")
@@ -1049,8 +1010,7 @@ def _om_execute(user_id, conn_id, adapter, ledger, desired, broker_net, dry_run,
     for src, tgt in desired.items():
         prev = ledger.get(src)
         if tgt is None and prev is not None:                 # source exited
-            exit_price = fills.get(prev.symbol) or _fast_ltp(
-                adapter, prev.symbol, allow_broker_fallback=True)
+            exit_price = fills.get(prev.symbol) or _fast_ltp(adapter, prev.symbol)
             _record_exit_result(
                 user_id, conn_id,
                 {"side": prev.side, "symbol": prev.symbol,
@@ -1102,7 +1062,7 @@ def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
             reason = r2_vix_tp_exit(side_l, entry_spot, float(spot),
                                     alpha_bar.get("vix_at_open"))
             if reason:
-                exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
+                exit_price = _fast_ltp(adapter, current_symbol)
                 result = _route_order(adapter, user_id, conn_id, action="EXIT",
                                       side=current_side, symbol=current_symbol,
                                       qty=current_qty, price=exit_price, dry_run=dry_run)
@@ -1148,7 +1108,7 @@ def _process_r2_signal(user_id: str, conn_id: str, *, adapter, st: dict,
             notify_telegram(msg + (" [DRY-RUN]" if dry_run else ""))
 
     elif sig["action"] == "EXIT" and current_open:
-        exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
+        exit_price = _fast_ltp(adapter, current_symbol)
         result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                               symbol=current_symbol, qty=current_qty,
                               price=exit_price, dry_run=dry_run)
@@ -1333,7 +1293,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if eod_watchdog(now_t):
         squared_off = not current_open
         if current_open:
-            exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
+            exit_price = _fast_ltp(adapter, current_symbol)
             result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                                   symbol=current_symbol, qty=current_qty, price=exit_price,
                                   dry_run=dry_run)
@@ -1385,69 +1345,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     use_champion = svc.get_config(user_id, conn_id, "decision_engine") == "champion_replay"
     v212_recovery = svc.get_config(user_id, conn_id, "strategy_version") == "v2.12"
 
-    # ── v2.12 fast spot-stop layer (per-poll / tick) ─────────────────────────
-    # Alpha entries/exits stay on the 5-min champion replay (below); the spot
-    # entry-spot SL (0-pt) and its recovery RE-ENTRY run here on LIVE spot every
-    # poll so they react intra-bar, not at bar close. The champion replay runs
-    # WITHOUT recovery for this connection (see below), so this layer is the sole
-    # owner of the entry-spot SL + recovery; a `recovery_armed` latch keeps the
-    # replay from re-entering a just-stopped position. Inert if spot is missing
-    # (never a spurious stop) or while not v2.12.
-    if use_champion and v212_recovery:
-        # Fresh Kite spot (poll cadence ~2s) only while there is something to act
-        # on — an open position to stop or an armed recovery to catch; otherwise
-        # the 1-min snapshot is enough. Spot is sourced from Kite, never Angel.
-        _need_spot = current_open or int(st.get("recovery_armed") or 0) == 1
-        fast = evaluate_v212_fast_spot(
-            st, _fast_spot() if _need_spot else get_latest_spot(),
-            confirm_spot=get_latest_spot())
-        bar_ts = alpha_bar.get("timestamp")
-        if fast["action"] == "EXIT" and current_open:
-            exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
-            result = _route_order(
-                adapter, user_id, conn_id, action="EXIT", side=current_side,
-                symbol=current_symbol, qty=current_qty, price=exit_price,
-                dry_run=dry_run)
-            if _order_applied(result.status, dry_run=dry_run):
-                _record_exit_result(
-                    user_id, conn_id, st,
-                    exit_price=result.avg_fill_price or exit_price,
-                    qty=current_qty, reason=fast["reason"], dry_run=dry_run)
-                # Flat but ARM recovery (do not reset — keep the armed level).
-                st.update({"position": "NONE", "side": None, "symbol": None,
-                           "entry_price": None, "entry_time": None, "qty": None,
-                           "entry_spot": None, "entry_rule": None, "peak_pnl": 0.0,
-                           "recovery_armed": 1, "recovery_level": fast["recovery_level"],
-                           "recovery_side": fast["recovery_side"], "spot_stop_bar": bar_ts})
-                svc.save_trade_state(user_id, conn_id, st)
-                log.info("v2.12 entry-spot SL conn=%s side=%s es=%.2f -> recovery armed",
-                         conn_id, current_side, fast["recovery_level"])
-            return
-        if (fast["action"] == "ENTER" and not current_open and not blocked
-                and check_daily_loss(user_id, conn_id)):
-            rside = fast["side"]
-            lvl = fast["recovery_level"]
-            qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
-            symbol, price = resolve_affordable_option(
-                adapter, rside, qty, trade_date=_today_ist_iso())
-            result = _route_order(
-                adapter, user_id, conn_id, action="ENTER", side=rside,
-                symbol=symbol, qty=qty, price=price, dry_run=dry_run,
-                entry_rule="RECOVERY")
-            if _order_accepted(result, dry_run=dry_run):  # D2: record working fills too
-                state_symbol = (result.raw or {}).get("broker_symbol") or symbol
-                st.update({"position": "OPEN", "side": rside, "symbol": state_symbol,
-                           "entry_price": result.avg_fill_price or price,
-                           "entry_time": _now_iso(), "qty": qty,
-                           "virtual": 1 if dry_run else 0, "entry_rule": "RECOVERY",
-                           "entry_spot": lvl, "peak_pnl": 0.0,
-                           "recovery_armed": 0, "recovery_level": None,
-                           "recovery_side": None})
-                svc.save_trade_state(user_id, conn_id, st)
-                log.info("v2.12 recovery re-entry conn=%s side=%s level=%.2f",
-                         conn_id, rside, lvl)
-            return
-
+    # v2.12 has no separate tick transition path. Paper and live both consume
+    # completed one-minute OHLC through the canonical champion replay below.
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
     # Run it before alpha_seen de-duplication so repeated polls can arm/fire it.
     if current_open and not use_champion:
@@ -1462,7 +1361,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     "spot trail exit conn=%s side=%s spot_pnl=%.2f peak_pnl=%.2f stop=%s",
                     conn_id, current_side, trail["pnl"], trail["peak_pnl"], trail["stop"],
                 )
-                exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
+                exit_price = _fast_ltp(adapter, current_symbol)
                 result = _route_order(
                     adapter, user_id, conn_id, action="EXIT", side=current_side,
                     symbol=current_symbol, qty=current_qty, price=exit_price,
@@ -1502,7 +1401,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 svc.save_trade_state(user_id, conn_id, st)
             if (dd["drift_protective_armed"] and dd["drift_protective_stop"] is not None
                     and _cs is not None and _cs >= dd["drift_protective_stop"]):
-                exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
+                exit_price = _fast_ltp(adapter, current_symbol)
                 result = _route_order(adapter, user_id, conn_id, action="EXIT",
                                       side=current_side, symbol=current_symbol,
                                       qty=current_qty, price=exit_price, dry_run=dry_run)
@@ -1514,36 +1413,67 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     svc.reset_trade_state(user_id, conn_id)
                 return
 
+    trade_date = _today_ist_iso()
     alpha_key = (alpha_bar.get("timestamp"), alpha_bar.get("alpha"))
+    if use_champion and v212_recovery:
+        # Re-evaluate when either an exact-mark alpha arrives or a new completed
+        # one-minute OHLC candle arrives. This is the paper replay's event clock.
+        alpha_key += (champion_inputs.latest_completed_ohlc_minute(trade_date),)
     if alpha_seen.get(conn_id) == alpha_key:
         return
     alpha_seen[conn_id] = alpha_key
 
     if use_champion:
-        # Replay all COMPLETED bars and reconcile to the bot's actual position.
-        # entry_spot for an ENTER comes from the replay (the champion entry bar
-        # spot), NOT the latest bar — keeps fills consistent with the engine.
-        # Alpha v2.12: the entry-spot SL + recovery run in the per-poll fast layer
-        # above (tick), NOT in the replay — so the replay runs WITHOUT recovery and
-        # only owns alpha entries/exits + trail. (Backfill/labs still use recovery
-        # in-replay; this False is the live tick split.)
+        # v2.12 uses the exact same replay flags as paper. The persisted closed
+        # count below prevents a same-side stop/re-entry from collapsing to HOLD.
+        # At the boundary immediately after a completed trigger candle, Kite
+        # historical OHLC does not yet contain the new candle. The current Kite
+        # index spot is the live executable proxy for that next-candle open.
+        live_execution_spot = _fast_spot(adapter) if v212_recovery else None
         target = champion_decider.champion_target(
-            _today_ist_iso(), now_ist=_now_ist(),
-            enable_entry_spot_recovery=False)
-        sig = champion_decider.reconcile(target, current_side if current_open else None)
+            trade_date, now_ist=_now_ist(),
+            enable_entry_spot_recovery=v212_recovery,
+            live_execution_spot=live_execution_spot)
+        target_closed_count = int((target or {}).get("n_closed") or 0)
+        target_event_id = (target or {}).get("last_closed_event_id")
+        if v212_recovery and st.get("champion_trade_date") != trade_date:
+            # First observation of a date adopts the canonical replay cursor;
+            # historical events cannot safely be sent to a broker after startup.
+            st.update({
+                "champion_trade_date": trade_date,
+                "champion_closed_count": target_closed_count,
+                "champion_last_event_id": target_event_id,
+            })
+            svc.save_trade_state(user_id, conn_id, st)
+        closed_count_seen = int(st.get("champion_closed_count") or 0)
+        if v212_recovery:
+            sig = champion_decider.reconcile_replay_event(
+                target, current_side if current_open else None,
+                closed_count_seen=closed_count_seen,
+            )
+        else:
+            sig = champion_decider.reconcile(
+                target, current_side if current_open else None
+            )
+        replay_event_pending = (
+            v212_recovery and target_closed_count > closed_count_seen
+        )
+        # If already flat, acknowledge the closed segment now; the final replay
+        # target below may immediately request its canonical recovery re-entry.
+        if replay_event_pending and not current_open:
+            st.update({
+                "champion_closed_count": target_closed_count,
+                "champion_last_event_id": target_event_id,
+            })
+            svc.save_trade_state(user_id, conn_id, st)
         champ_entry_spot = (target or {}).get("entry_spot")
         log.info("champion conn=%s ts=%s pos=%s target=%s sig=%s",
                  conn_id, alpha_bar.get("timestamp"),
                  "OPEN" if current_open else "NONE", target, sig)
-        # Recovery latch: while flat + recovery_armed the fast layer owns re-entry.
-        # If the replay (no recovery) still wants the position OPEN, suppress the
-        # champion ENTER (fast layer will re-enter on a favorable spot re-cross).
-        # If the replay has gone FLAT, the alpha thesis ended -> clear recovery.
-        if v212_recovery and not current_open and int(st.get("recovery_armed") or 0) == 1:
-            if (target or {}).get("position") in (None, "FLAT"):
-                svc.reset_trade_state(user_id, conn_id)
-            return
     else:
+        replay_event_pending = False
+        target_closed_count = 0
+        target_event_id = None
         engine = _engine_for(conn_id, signal_engines)
         sig = evaluate_signal(
             engine,
@@ -1563,7 +1493,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         side = sig["side"]
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
         symbol, price = resolve_affordable_option(
-            adapter, side, qty, trade_date=_today_ist_iso())
+            adapter, side, qty, trade_date=trade_date,
+            reference_spot=champ_entry_spot if use_champion else None)
+        if use_champion and v212_recovery:
+            # Unknown/rejected outcomes must be retried idempotently next poll.
+            alpha_seen.pop(conn_id, None)
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
                               symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                               entry_rule=sig.get("rule") or "none")
@@ -1588,11 +1522,21 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             notify_telegram(msg)
 
     elif sig["action"] == "EXIT" and current_open:
-        exit_price = _fast_ltp(adapter, current_symbol, allow_broker_fallback=True)
+        exit_price = _fast_ltp(adapter, current_symbol)
+        if use_champion and v212_recovery:
+            # On success this also permits the canonical recovery ENTER on the
+            # next poll, without waiting for another minute or alpha mark.
+            alpha_seen.pop(conn_id, None)
         result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                               symbol=current_symbol, qty=current_qty,
                               price=exit_price, dry_run=dry_run)
         if _order_applied(result.status, dry_run=dry_run):
+            if replay_event_pending:
+                st.update({
+                    "champion_closed_count": target_closed_count,
+                    "champion_last_event_id": target_event_id,
+                })
+                svc.save_trade_state(user_id, conn_id, st)
             _record_exit_result(
                 user_id,
                 conn_id,

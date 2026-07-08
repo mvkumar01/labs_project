@@ -3,12 +3,12 @@ live_executor.py — THE SINGLE ORDER CHOKEPOINT (per user / per connection).
 
 Every live order intent flows through `place_idempotent` here. This module:
   * Calls brokers/* only (never an SDK directly; never labs.engine.*).
-  * Evaluates the calling user's OWN 3-mode state machine + 6 pre-trade gates,
+  * Evaluates the calling user's OWN 3-mode state machine + 7 pre-trade gates,
     scoped to (user_id, conn_id) — one user's mode / kill / lots / armed /
     daily-loss can NEVER block or unblock another user.
   * Routes DRY_RUN to a logged-intent path (NO broker call) — writes a
     dry_run=1 ledger row and returns a synthetic OrderResult.
-  * In LIVE_ARMED, enforces ALL SIX gates immediately before any real
+  * In LIVE_ARMED, enforces ALL SEVEN gates immediately before any real
     `place_order`; if any gate fails it logs the failing gates and does NOT
     call the broker.
   * Builds + checks a user-scoped idempotency key (INSERT OR IGNORE ledger)
@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from live.brokers.base import OrderResult
 from live import live_service as svc
+from live.proxy import order_proxy_url
 
 log = logging.getLogger("live.executor")
 
@@ -106,7 +107,7 @@ def arm_dry_run(user_id: str, conn_id: str, conn=None) -> Mode:
 def arm_live(user_id: str, conn_id: str, conn=None) -> Mode:
     """DRY_RUN -> LIVE_ARMED; also sets armed=1 for this connection.
 
-    Caller (route) must have evaluated the 6 gates first (spec §11). There is
+    Caller (route) must have evaluated all 7 gates first. There is
     no DISARMED -> LIVE_ARMED edge — going live always passes through DRY_RUN.
     """
     m = set_mode(user_id, conn_id, Mode.LIVE_ARMED, conn)
@@ -122,7 +123,7 @@ def disarm(user_id: str, conn_id: str, conn=None) -> Mode:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# SIX PER-USER PRE-TRADE GATES (spec §6) — ALL must pass before any live order.
+# SEVEN PER-USER PRE-TRADE GATES — ALL must pass before any live order.
 # Evaluated for the specific (user_id, conn_id). One user's gate failure never
 # blocks another user.
 # ══════════════════════════════════════════════════════════════════════════
@@ -192,8 +193,18 @@ def gate_lots_within_cap(user_id: str, conn_id: str, conn=None) -> GateResult:
     return GateResult("lots_within_cap", ok, f"lots={lots} cap={LOTS_HARD_CAP}")
 
 
+def gate_static_order_proxy(*_args, **_kwargs) -> GateResult:
+    """7. Every real order must have an order-only static-IP route."""
+    configured = bool(order_proxy_url())
+    return GateResult(
+        "static_order_proxy",
+        configured,
+        "configured=1" if configured else "configured=0; live orders blocked",
+    )
+
+
 def evaluate_all(adapter, user_id: str, conn_id: str, conn=None) -> list:
-    """All six gates for this (user_id, conn_id)."""
+    """All seven gates for this (user_id, conn_id)."""
     return [
         gate_mode_armed(user_id, conn_id, conn),
         gate_kill_switch_clear(user_id, conn_id, conn),
@@ -201,6 +212,7 @@ def evaluate_all(adapter, user_id: str, conn_id: str, conn=None) -> list:
         gate_account_isolation(adapter, user_id, conn_id, conn),
         gate_daily_loss_ok(adapter, user_id, conn_id, conn),
         gate_lots_within_cap(user_id, conn_id, conn),
+        gate_static_order_proxy(),
     ]
 
 
@@ -377,7 +389,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
        restart re-fire / same-bar re-entry).
     3. Else if dry_run -> synthetic OrderResult(status='DRY_RUN', avg=price),
        NO broker call (logged-intent path).
-    4. Else (LIVE_ARMED real path) -> evaluate ALL 6 gates for THIS user/conn;
+    4. Else (LIVE_ARMED real path) -> evaluate all 7 gates for THIS user/conn;
        only if all pass call adapter.place_order / exit_all (itself
        NotImplementedError-guarded until Phase 1).
     5. UPDATE the ledger row with broker_order_id / status / avg_fill_price.
@@ -436,6 +448,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
             gate_kill_switch_clear(user_id, conn_id, conn),
             gate_broker_connected(adapter, user_id, conn_id, conn),
             gate_account_isolation(adapter, user_id, conn_id, conn),
+            gate_static_order_proxy(),
         ]
     else:
         gates = evaluate_all(adapter, user_id, conn_id, conn)

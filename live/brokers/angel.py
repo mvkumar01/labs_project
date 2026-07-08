@@ -8,7 +8,7 @@ CRITICAL DRY-RUN GUARD (spec §5.4, §13):
     `exit_all` raise NotImplementedError("LIVE_ARMED not enabled — Phase 1
     gated") so NO real order can fire in this build. Phase-1 enablement flips
     the flag in a deliberate, reviewed commit AND still requires LIVE_ARMED +
-    all 6 gates.
+    all 7 gates.
 
 MULTI-USER: instantiated once per (user_id, conn_id). creds is the decrypted
 blob held in-memory only — NEVER logged. The SmartApi import is deferred into
@@ -168,7 +168,7 @@ class AngelAdapter(BrokerAdapter):
                     raise
                 time.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
 
-    # ── market reads ──────────────────────────────────────────────────────
+    # ── account/order reads ───────────────────────────────────────────────
     def available_funds(self) -> float | None:
         if self._smart is None:
             return None
@@ -194,27 +194,13 @@ class AngelAdapter(BrokerAdapter):
         return None
 
     def get_spot(self) -> float:
-        return self._cached("spot", _READ_CACHE_TTL, self._get_spot_uncached)
-
-    def _get_spot_uncached(self) -> float:
-        data = self._with_backoff(
-            lambda: self._smart.ltpData("NSE", "Nifty 50", "26000"),
-            _is_transient_read)
-        return float(data["data"]["ltp"])
+        raise RuntimeError("Angel market data is disabled; use Kite")
 
     def get_ltp(self, symbol: str) -> float:
-        return self._cached(("ltp", symbol), _READ_CACHE_TTL,
-                            lambda: self._get_ltp_uncached(symbol))
-
-    def _get_ltp_uncached(self, symbol: str) -> float:
-        meta = self._resolve_symbol_meta(symbol)
-        data = self._with_backoff(
-            lambda: self._smart.ltpData(self._EXCHANGE, meta["symbol"], meta["token"]),
-            _is_transient_read)
-        return float(((data or {}).get("data") or {}).get("ltp") or 0.0)
+        raise RuntimeError("Angel market data is disabled; use Kite")
 
     def quote(self, symbols: list) -> dict:
-        return {symbol: {"ltp": self.get_ltp(symbol)} for symbol in symbols}
+        raise RuntimeError("Angel market data is disabled; use Kite")
 
     def get_position(self) -> Position:
         return self._cached("position", _READ_CACHE_TTL, self._get_position_uncached)
@@ -385,7 +371,9 @@ class AngelAdapter(BrokerAdapter):
                 "placement is disabled (Phase-0 dry-run). Enable only via the "
                 "Phase-1 enablement commit after a clean dry-run session."
             )
-        # ── real branch — reached only in Phase 1 (LIVE_ARMED + 6 gates) ──
+        if price is None or float(price) <= 0:
+            raise RuntimeError("Angel entry requires a Kite-supplied positive price")
+        # ── real branch — reached only in Phase 1 (LIVE_ARMED + 7 gates) ──
         meta = self._resolve_symbol_meta(symbol)
         order_params = {
             "variety": self._VARIETY,
@@ -476,6 +464,8 @@ class AngelAdapter(BrokerAdapter):
                     "reason": reason,
                 },
             )
+        if price is None or float(price) <= 0:
+            raise RuntimeError("Angel exit requires a Kite-supplied positive price")
         order_params = {
             "variety": self._VARIETY,
             "tradingsymbol": meta["symbol"],
@@ -485,14 +475,14 @@ class AngelAdapter(BrokerAdapter):
             "ordertype": self._ORDER_TYPE,
             "producttype": self._PRODUCT,
             "duration": "DAY",
-            # Caller-supplied marketable SELL limit (crosses the spread so a
-            # stop fills); own-LTP fallback only when the caller sent none.
-            "price": price if price and price > 0 else self.get_ltp(symbol),
+            # Caller-supplied Kite marketable SELL limit. Angel is never used
+            # to fetch market data.
+            "price": float(price),
             "quantity": qty,
             "ordertag": _angel_order_tag(idempotency_key),
         }
-        # Static IP used ONLY for the order placement; the get_ltp above and the
-        # symbol/token resolution already ran direct while building order_params.
+        # Static IP used ONLY for order placement; position and symbol/token
+        # reads above ran direct.
         with order_proxy(self._smart):
             # Retry ONLY on an explicit throttle (order was rejected, nothing
             # placed). Never retry on ambiguous/parse errors — the order may

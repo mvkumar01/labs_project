@@ -108,7 +108,7 @@ class BrokerAdapter(ABC):
         Concrete adapters implement the real broker call ONLY behind the
         `_LIVE_ORDERS_ENABLED` guard. DRY_RUN never reaches the real branch:
         `live_executor` short-circuits to a simulated OrderResult and only
-        calls this in LIVE_ARMED after all 6 gates pass.
+        calls this in LIVE_ARMED after all 7 gates pass.
         """
         ...
 

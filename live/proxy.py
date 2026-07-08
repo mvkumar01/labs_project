@@ -9,7 +9,7 @@ order-status reads) go out DIRECT and never touch the static IP. Order calls
 are wrapped transiently by order_proxy(); everything else is unproxied.
 
 This keeps proxy credentials out of tracked code and lets PythonAnywhere/local
-processes opt in via environment variables.
+processes supply the order-only proxy via environment variables.
 """
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ import contextlib
 import os
 
 _PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+
+
+class StaticOrderProxyRequired(RuntimeError):
+    """A live order was attempted without the mandatory static-IP route."""
 
 
 def _env_first(*names: str) -> str:
@@ -32,8 +36,8 @@ def order_proxy_url() -> str:
 
     Reads the same env vars the runner already provides (so no PA env change
     is needed — they are simply re-scoped to orders). An optional
-    LIVE_ORDER_PROXY_URL can override just the order path. An empty string
-    means 'no proxy' → orders go out direct, exactly like data.
+    LIVE_ORDER_PROXY_URL can override just the order path. An empty string is a
+    hard configuration error for order placement; orders never go out direct.
     """
     return _env_first(
         "LIVE_ORDER_PROXY_URL",      # explicit order-only override (optional)
@@ -57,13 +61,15 @@ def order_proxy(sdk_client=None):
          request, so this guarantees the order egresses via the static IP even
          if env-trust is disabled.
 
-    Both the env vars and the SDK attribute are restored on exit. No-op when no
-    order proxy is configured, so orders then go out direct exactly like data.
+    Both the env vars and the SDK attribute are restored on exit. Missing proxy
+    configuration fails closed before the order call is reached.
     """
     url = order_proxy_url()
     if not url:
-        yield
-        return
+        raise StaticOrderProxyRequired(
+            "LIVE_ORDER_PROXY_URL/LIVE_OUTBOUND_PROXY_URL/"
+            "QUOTAGUARDSTATIC_URL is required for every live order"
+        )
 
     proxies = {"http": url, "https": url}
     saved_env = {k: os.environ.get(k) for k in _PROXY_ENV_KEYS}
@@ -87,32 +93,10 @@ def order_proxy(sdk_client=None):
 
 
 def configure_outbound_proxy() -> str:
-    """Opt-in GLOBAL proxy — disabled by default.
+    """Legacy launcher hook retained as an intentional no-op.
 
-    Historically this routed ALL outbound traffic through the static IP, which
-    exhausted the QuotaGuard quota on data fetches. The static IP is now
-    reserved for order placement via order_proxy(). This function is therefore
-    a NO-OP unless LIVE_PROXY_ALL is truthy, in which case it restores the old
-    global-proxy behaviour (route everything through the static IP) for the
-    rare environment where even data egress must use the whitelisted IP.
-
-    Returns the proxy URL applied, or "" when no global proxy is set.
+    Data/auth/position/order-status traffic must use normal direct egress. The
+    static-IP proxy is applied only inside :func:`order_proxy`; global proxying
+    is no longer supported, even if an old ``LIVE_PROXY_ALL`` variable remains.
     """
-    if (os.environ.get("LIVE_PROXY_ALL") or "").strip().lower() not in {"1", "true", "yes"}:
-        return ""
-    proxy_url = _env_first(
-        "LIVE_OUTBOUND_PROXY_URL",
-        "QUOTAGUARDSTATIC_URL",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "https_proxy",
-        "http_proxy",
-    )
-    if not proxy_url:
-        return ""
-
-    for k in _PROXY_ENV_KEYS:
-        os.environ[k] = proxy_url
-    os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
-    os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
-    return proxy_url
+    return ""

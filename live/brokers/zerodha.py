@@ -181,7 +181,7 @@ class ZerodhaAdapter(BrokerAdapter):
                 "placement is disabled (Phase-0 dry-run). Enable only via the "
                 "Phase-1 enablement commit after a clean dry-run session."
             )
-        # ── real branch — reached only in Phase 1 (LIVE_ARMED + 6 gates) ──
+        # ── real branch — reached only in Phase 1 (LIVE_ARMED + 7 gates) ──
         # Static IP used ONLY for the order placement.
         with order_proxy(self._kite):
             order_id = self._kite.place_order(

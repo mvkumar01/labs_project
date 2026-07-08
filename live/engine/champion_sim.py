@@ -33,6 +33,7 @@ import pandas as pd
 VIX_TH = 17.0
 TRAIL_ARM = 40
 TRAIL_LOCK = 20
+EOD_EXIT_MINUTE = 15 * 60 + 25
 
 # v7.6 ALPHA_STALL (PC50 gap-UP CALL)
 ALPHA_STALL_MIN_DURATION_MIN = 45
@@ -78,6 +79,38 @@ def _bar_minutes_from_midnight(ts) -> int:
         return h * 60 + m
     except Exception:
         return 0
+
+
+def exact_mark_cutoff(trade_date: str, now_ist) -> "pd.Timestamp | None":
+    """Return the latest alpha mark eligible in a replay-to-now run.
+
+    Alpha is a point-in-time OI snapshot at each five-minute mark, not a candle
+    that must close five minutes later. Completed one-minute OHLC rows still
+    govern the v2.12 spot-stop/recovery overlay independently.
+    """
+    if trade_date != now_ist.date().isoformat():
+        return None
+    return pd.Timestamp(now_ist).floor("min")
+
+
+def _local_naive_timestamp(value) -> pd.Timestamp:
+    """Normalize mixed archived/live timestamps for safe ordering."""
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("Asia/Kolkata").tz_localize(None)
+    return ts
+
+
+def _after_minute_close(bar_start) -> pd.Timestamp:
+    """Earliest causal execution mark after a labelled one-minute candle."""
+    return pd.Timestamp(bar_start) + pd.Timedelta(minutes=1)
+
+
+def _event_is_executable_before_eod(date_str: str, event_ts) -> bool:
+    """Reject causal fills after the strategy's 15:25 square-off."""
+    event = _local_naive_timestamp(event_ts)
+    cutoff = pd.Timestamp(date_str) + pd.Timedelta(minutes=EOD_EXIT_MINUTE)
+    return event <= cutoff
 
 
 def find_wall_above(ce_at_ts, spot, max_dist=300):
@@ -156,6 +189,11 @@ class OHLC:
                 return float(self.by_minute[t][3])  # close
         return None
 
+    def get_open(self, ts):
+        """Exact labelled one-minute open; never search adjacent candles."""
+        candle = self.by_minute.get(pd.Timestamp(ts).strftime("%H:%M"))
+        return float(candle[0]) if candle is not None else None
+
     def get_1min_bars(self, bar_ts):
         base = pd.Timestamp(bar_ts)
         out = []
@@ -191,7 +229,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_v711_drift_protective=True,
              enable_entry_spot_recovery=False,
              close_eod=True, return_state=False,
-             entries_until_ts=None):
+             entries_until_ts=None, next_open_fallback=None):
     """Faithful port of v79_v281_isolation.sim() with the champion flag set.
 
     Returns (pnl_pts, trades) where each trade carries entry/exit timestamps,
@@ -212,6 +250,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     new alpha-crossover entries or alpha-based exits (which stay on the 5-min
     grid). When None (every backtest / research / EOD caller) the partial-bar
     guards are inert, so completed-day output is byte-for-byte unchanged.
+
+    `next_open_fallback` is an optional ``(timestamp, spot)`` pair used only by
+    live v2.12 when the just-started execution candle is not yet available from
+    Kite historical OHLC. Paper/history always uses that candle's recorded open.
     """
     if adf is None or len(adf) < 2:
         return (0.0, [], None) if return_state else (0.0, [])
@@ -241,6 +283,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
     pos = None
     esp = 0.0
+    fill_entry_spot = 0.0
     pnl = 0.0
     peak_pnl = 0.0
     trail_armed = False
@@ -273,6 +316,22 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     recovery_sl_override = None
     recovery_origin_ts = None
 
+    def next_open_fill(bar_start):
+        """First causal spot after a completed one-minute trigger candle."""
+        execution_ts = _after_minute_close(bar_start)
+        price = ohlc.get_open(execution_ts)
+        if price is None and next_open_fallback is not None:
+            fallback_ts, fallback_spot = next_open_fallback
+            if (
+                _local_naive_timestamp(fallback_ts).floor("min")
+                == _local_naive_timestamp(execution_ts).floor("min")
+            ):
+                try:
+                    price = float(fallback_spot)
+                except (TypeError, ValueError):
+                    price = None
+        return execution_ts, price
+
     def recovery_alpha_exit(side, alpha, sl_override):
         """Whether Alpha invalidates a flat, pending same-side recovery."""
         if tier == "PC50":
@@ -299,8 +358,11 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         # completed-bar cutoff). Spot stops + recovery re-entry fire on its 1-min
         # sub-bars; alpha entries/exits are suppressed (they stay on the 5-min
         # grid). Always False when entries_until_ts is None (all batch callers).
-        partial_bar = (entries_until_ts is not None
-                       and pd.Timestamp(c["timestamp"]) > pd.Timestamp(entries_until_ts))
+        partial_bar = (
+            entries_until_ts is not None
+            and _local_naive_timestamp(c["timestamp"])
+            > _local_naive_timestamp(entries_until_ts)
+        )
         if abs(ca) > 200:
             continue
 
@@ -348,16 +410,25 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                 continue
 
             confirmed_ts = None
+            confirmed_fill_spot = None
             for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
+                executable_ts, executable_spot = next_open_fill(bts)
+                if not _event_is_executable_before_eod(date_str, executable_ts):
+                    continue
                 if recovery_pos == "call" and bl <= recovery_level < bc:
-                    confirmed_ts = bts
+                    if executable_spot is not None:
+                        confirmed_ts = executable_ts
+                        confirmed_fill_spot = executable_spot
                     break
                 if recovery_pos == "put" and bc < recovery_level <= bh:
-                    confirmed_ts = bts
+                    if executable_spot is not None:
+                        confirmed_ts = executable_ts
+                        confirmed_fill_spot = executable_spot
                     break
             if confirmed_ts is not None:
                 pos = recovery_pos
                 esp = float(recovery_level)
+                fill_entry_spot = float(confirmed_fill_spot)
                 entry_ts = confirmed_ts
                 entry_alpha = ca
                 entry_rule = recovery_entry_rule
@@ -401,40 +472,51 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             exit_sp = None
             reason = ""
 
-            # v2.12 overlay runs before every legacy spot/trail stop. A touched
-            # original entry level triggers the stop; execution is modelled at
-            # that one-minute candle's close (not an unattainably perfect fill
-            # at the touched level), then same-side recovery is armed.
+            # v2.12 overlay runs before every legacy spot/trail stop. The
+            # completed candle detects the touch; execution uses the following
+            # one-minute candle's open. `esp` remains the strategy's original
+            # signal barrier while `fill_entry_spot` carries economic slippage.
             if enable_entry_spot_recovery:
                 stop_hits = 0
                 active_at_end = True
                 for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
+                    executable_ts, executable_spot = next_open_fill(bts)
+                    if not _event_is_executable_before_eod(date_str, executable_ts):
+                        continue
                     if active_at_end:
                         hit = (
                             (pos == "call" and bl <= esp)
                             or (pos == "put" and bh >= esp)
                         )
                         if hit:
+                            # Current-day paper waits until this open is in Kite
+                            # OHLC; live supplies the just-started candle spot.
+                            if executable_spot is None:
+                                break
                             stop_hits += 1
-                            stop_exit_spot = float(bc)
+                            stop_exit_spot = float(executable_spot)
                             stop_pnl = (
-                                stop_exit_spot - esp
+                                stop_exit_spot - fill_entry_spot
                                 if pos == "call"
-                                else esp - stop_exit_spot
+                                else fill_entry_spot - stop_exit_spot
                             )
                             pnl += stop_pnl
                             trades.append(dict(
                                 pnl=round(stop_pnl, 2), reason="ENTRY_SPOT_SL", pos=pos,
-                                entry_ts=entry_ts, exit_ts=bts,
+                                entry_ts=entry_ts,
+                                exit_ts=executable_ts,
                                 entry_alpha=entry_alpha, exit_alpha=ca,
-                                entry_spot=esp, exit_spot=stop_exit_spot,
+                                entry_spot=fill_entry_spot,
+                                signal_entry_spot=esp,
+                                exit_spot=stop_exit_spot,
                                 entry_rule=entry_rule, tier=tier,
                             ))
                             active_at_end = False
                             if ((pos == "call" and bc > esp)
                                     or (pos == "put" and bc < esp)):
                                 active_at_end = True
-                                entry_ts = bts
+                                fill_entry_spot = stop_exit_spot
+                                entry_ts = executable_ts
                                 entry_alpha = ca
                     else:
                         crossed = (
@@ -442,8 +524,11 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             or (pos == "put" and bc < esp <= bh)
                         )
                         if crossed:
+                            if executable_spot is None:
+                                break
                             active_at_end = True
-                            entry_ts = bts
+                            fill_entry_spot = float(executable_spot)
+                            entry_ts = executable_ts
                             entry_alpha = ca
 
                 if stop_hits:
@@ -470,6 +555,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                     recovery_sl_override = pos_sl_override
                     recovery_origin_ts = entry_ts
                     pos = None
+                    fill_entry_spot = 0.0
                     entry_ts = None
                     entry_alpha = None
                     pos_max_alpha = None
@@ -614,16 +700,23 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                     exit_sp = curr_spot; exited = True; reason = "ALPHA_STALL"
 
             if exited:
-                t = (exit_sp - esp) if pos == "call" else (esp - exit_sp)
+                t = (
+                    (exit_sp - fill_entry_spot)
+                    if pos == "call"
+                    else (fill_entry_spot - exit_sp)
+                )
                 pnl += t
                 trades.append(dict(
                     pnl=round(t, 2), reason=reason, pos=pos,
                     entry_ts=entry_ts, exit_ts=c["timestamp"],
                     entry_alpha=entry_alpha, exit_alpha=ca,
-                    entry_spot=esp, exit_spot=exit_sp,
+                    entry_spot=fill_entry_spot,
+                    signal_entry_spot=esp,
+                    exit_spot=exit_sp,
                     entry_rule=entry_rule, tier=tier,
                 ))
                 pos = None
+                fill_entry_spot = 0.0
                 peak_pnl = 0.0
                 trail_armed = False
                 appr_ts = None
@@ -718,6 +811,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
             if entered:
                 pos = new_pos
+                fill_entry_spot = float(esp)
                 entry_ts = c["timestamp"]
                 entry_alpha = ca
                 entry_rule = rule_tag
@@ -766,18 +860,23 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     open_state = None
     if pos and not close_eod:
         open_state = dict(
-            side="CALL" if pos == "call" else "PUT",
-            entry_ts=entry_ts, entry_spot=esp, entry_alpha=entry_alpha,
+            side="CALL" if pos == "call" else "PUT", entry_ts=entry_ts,
+            entry_spot=fill_entry_spot, signal_entry_spot=esp,
+            entry_alpha=entry_alpha,
             entry_rule=entry_rule, tier=tier, gap_direction=gap_dir)
     elif pos:
         lsp = ohlc.get_spot(adf.iloc[-1]["timestamp"]) or esp
-        t = (lsp - esp) if pos == "call" else (esp - lsp)
+        t = (
+            (lsp - fill_entry_spot)
+            if pos == "call"
+            else (fill_entry_spot - lsp)
+        )
         pnl += t
         trades.append(dict(
             pnl=round(t, 2), reason="EOD", pos=pos,
             entry_ts=entry_ts, exit_ts=adf.iloc[-1]["timestamp"],
             entry_alpha=entry_alpha, exit_alpha=None,
-            entry_spot=esp, exit_spot=lsp,
+            entry_spot=fill_entry_spot, signal_entry_spot=esp, exit_spot=lsp,
             entry_rule=entry_rule, tier=tier,
         ))
     if return_state:

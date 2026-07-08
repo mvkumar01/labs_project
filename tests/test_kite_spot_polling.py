@@ -1,6 +1,7 @@
-"""The v2.12 spot-SL sources its ~2s spot from Kite (Zerodha data feed), never
-from the Angel execution broker (2026-07-07 Angel rate-limit incident). On any
-Kite failure it falls back to the 1-min shared-store snapshot, and never raises.
+"""Legacy/strike-selection fast spot uses Kite data, never Angel execution.
+
+Canonical v2.12 stop/recovery is tested in test_v212_live_parity and runs from
+completed one-minute OHLC through champion_sim.
 """
 import live.live_runner as lr
 

@@ -1,7 +1,7 @@
 """Replay-to-now decision engine for the live runner.
 
-On every completed-bar tick the runner rebuilds the day's alpha frame from all
-COMPLETED 5-min bars and replays it through the single source of truth,
+On every new exact-mark alpha snapshot or completed one-minute spot candle the
+runner rebuilds the day's alpha frame and replays it through the source of truth,
 `champion_sim.simulate(close_eod=False)`. The resulting in-flight position is the
 *target*; `reconcile()` compares it to the bot's actual position and emits one
 ENTER / EXIT / HOLD action. This makes the live bot == the paper tracker ==
@@ -44,7 +44,8 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
 
 def champion_target(trade_date: str | None = None, now_ist: datetime | None = None,
                     override: dict | None = None,
-                    enable_entry_spot_recovery: bool = False) -> dict | None:
+                    enable_entry_spot_recovery: bool = False,
+                    live_execution_spot: float | None = None) -> dict | None:
     """Replay completed bars up to `now_ist` and return the target position.
 
     Returns:
@@ -90,14 +91,10 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     if adf is None or adf.empty:
         return None
 
-    # Completed-bar discipline for ALPHA decisions: the in-progress bucket
-    # (start + 5min > now) is kept but flagged STOPS-ONLY via `entries_until_ts`,
-    # so spot-based stops + entry-spot recovery re-entry fire on its completed
-    # 1-min sub-bars while alpha entries/exits stay on closed bars. For a past
-    # day `cutoff` is None (whole day is completed) — identical to before.
-    cutoff = None
-    if trade_date == now_ist.date().isoformat():
-        cutoff = pd.Timestamp(now_ist) - pd.Timedelta(minutes=5)
+    # OI alpha is a point snapshot at the five-minute mark; unlike OHLC it does
+    # not wait for the bucket to close. Spot stops/recoveries still use only
+    # completed one-minute OHLC rows supplied by champion_inputs.
+    cutoff = champion_sim.exact_mark_cutoff(trade_date, now_ist)
     if len(adf) < 2:
         return {"position": "FLAT", "bucket": tier, "direction": context.direction,
                 "last_closed_reason": None, "n_closed": 0}
@@ -107,17 +104,63 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
         context.sgap, tier, context.weekday, context.regime,
         day["lower"], day["upper"],
         enable_entry_spot_recovery=enable_entry_spot_recovery,
-        close_eod=False, return_state=True, entries_until_ts=cutoff)
+        close_eod=False, return_state=True, entries_until_ts=cutoff,
+        next_open_fallback=(now_ist, live_execution_spot)
+        if enable_entry_spot_recovery and live_execution_spot is not None
+        else None)
 
-    last_reason = trades[-1]["reason"] if trades else None
+    economic_trades = [
+        trade for trade in trades
+        if trade.get("reason") != "RECOVERY_CANCEL_ALPHA"
+    ]
+    last_trade = economic_trades[-1] if economic_trades else None
+    last_reason = last_trade["reason"] if last_trade else None
+    last_event_id = None
+    if last_trade is not None:
+        last_event_id = "|".join((
+            str(last_trade.get("entry_ts") or ""),
+            str(last_trade.get("exit_ts") or ""),
+            str(last_trade.get("pos") or ""),
+            str(last_reason or ""),
+        ))
+    replay_meta = {
+        "last_closed_reason": last_reason,
+        "last_closed_event_id": last_event_id,
+        "last_closed_exit_ts": (
+            str(last_trade.get("exit_ts")) if last_trade is not None else None
+        ),
+        "n_closed": len(economic_trades),
+    }
     if open_state is None:
         return {"position": "FLAT", "bucket": tier, "direction": context.direction,
-                "last_closed_reason": last_reason, "n_closed": len(trades)}
+                **replay_meta}
     return {"position": open_state["side"], "bucket": tier,
             "direction": context.direction,
             "entry_spot": open_state["entry_spot"], "entry_rule": open_state["entry_rule"],
             "tier": open_state["tier"], "gap_direction": open_state["gap_direction"],
-            "last_closed_reason": last_reason, "n_closed": len(trades)}
+            **replay_meta}
+
+
+def reconcile_replay_event(target: dict | None, current_side: str | None,
+                           closed_count_seen: int = 0) -> dict:
+    """Reconcile final position plus newly closed canonical segments.
+
+    A target-only comparison collapses a same-side stop/re-entry cycle to HOLD:
+    the replay was PUT before and after the cycle even though paper records an
+    EXIT followed by a new PUT. The persisted closed-count cursor makes that
+    transition observable and restart-safe.
+    """
+    if target and target.get("position") == "UNAVAILABLE":
+        return reconcile(target, current_side)
+    closed_count = int((target or {}).get("n_closed") or 0)
+    if current_side is not None and closed_count > int(closed_count_seen or 0):
+        return {
+            "action": "EXIT",
+            "side": None,
+            "reason": (target or {}).get("last_closed_reason") or "champion_exit",
+            "rule": None,
+        }
+    return reconcile(target, current_side)
 
 
 def reconcile(target: dict | None, current_side: str | None) -> dict:

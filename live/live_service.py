@@ -632,6 +632,9 @@ def _default_trade_state(user_id: str, conn_id: str) -> dict:
         "recovery_level": None,
         "recovery_side": None,
         "spot_stop_bar": None,
+        "champion_trade_date": None,
+        "champion_closed_count": 0,
+        "champion_last_event_id": None,
         "updated_at": None,
     }
 
@@ -673,8 +676,11 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                 "(conn_id, user_id, position, side, symbol, entry_spot, entry_time, "
                 " entry_price, qty, virtual, peak_pnl, entry_rule, max_alpha_seen, "
                 " entry_grace_until, daily_trades_date, daily_trades_by_tier, "
-                " recovery_armed, recovery_level, recovery_side, spot_stop_bar, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " recovery_armed, recovery_level, recovery_side, spot_stop_bar, "
+                " champion_trade_date, champion_closed_count, champion_last_event_id, "
+                " updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                " ?, ?, ?, ?) "
                 "ON CONFLICT(conn_id) DO UPDATE SET "
                 "position=excluded.position, side=excluded.side, symbol=excluded.symbol, "
                 "entry_spot=excluded.entry_spot, entry_time=excluded.entry_time, "
@@ -689,6 +695,9 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                 "recovery_level=excluded.recovery_level, "
                 "recovery_side=excluded.recovery_side, "
                 "spot_stop_bar=excluded.spot_stop_bar, "
+                "champion_trade_date=excluded.champion_trade_date, "
+                "champion_closed_count=excluded.champion_closed_count, "
+                "champion_last_event_id=excluded.champion_last_event_id, "
                 "updated_at=excluded.updated_at",
                 (conn_id, user_id, state.get("position", "NONE"), state.get("side"),
                  state.get("symbol"), state.get("entry_spot"), state.get("entry_time"),
@@ -698,7 +707,10 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
                  state.get("max_alpha_seen"), state.get("entry_grace_until"),
                  state.get("daily_trades_date"), by_tier or "{}",
                  int(state.get("recovery_armed", 0) or 0), state.get("recovery_level"),
-                 state.get("recovery_side"), state.get("spot_stop_bar"), _now_iso()),
+                 state.get("recovery_side"), state.get("spot_stop_bar"),
+                 state.get("champion_trade_date"),
+                 int(state.get("champion_closed_count", 0) or 0),
+                 state.get("champion_last_event_id"), _now_iso()),
             )
     finally:
         if own:
@@ -716,6 +728,11 @@ def reset_trade_state(user_id: str, conn_id: str,
         st = _default_trade_state(user_id, conn_id)
         st["daily_trades_date"] = prev.get("daily_trades_date")
         st["daily_trades_by_tier"] = prev.get("daily_trades_by_tier") or "{}"
+        st["champion_trade_date"] = prev.get("champion_trade_date")
+        st["champion_closed_count"] = int(
+            prev.get("champion_closed_count") or 0
+        )
+        st["champion_last_event_id"] = prev.get("champion_last_event_id")
         save_trade_state(user_id, conn_id, st, conn=conn)
         return st
     finally:
