@@ -16,6 +16,13 @@ from storage.live_db import init_live_db
 from labs.ui.routes import labs_bp
 from labs.ui.live_routes import live_bp
 from live.auth_gate import register_auth_gate
+from live.env_loader import load_private_env
+
+# The static_order_proxy gate is evaluated in THIS web process when the user
+# arms LIVE — it must see the same private env the runner loads (2026-07-09:
+# arming failed with configured=0 because only pa_live_runner loaded it).
+load_private_env(BASE_DIR)
+
 app = Flask(__name__)
 # 32-byte hex from PA env (LABS_SECRET_KEY); ephemeral fallback for local dev.
 app.secret_key = os.environ.get("LABS_SECRET_KEY") or secrets.token_hex(32)
