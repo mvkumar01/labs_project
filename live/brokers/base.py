@@ -88,13 +88,6 @@ class BrokerAdapter(ABC):
         """Current broker NFO MIS position for this live connection."""
         ...
 
-    def get_net_book(self) -> dict:
-        """Full NIFTY net book {tradingsymbol: signed_qty} for ALL nonzero legs,
-        used by the multi-source order manager so two books on one account
-        reconcile per-symbol. Default {} — adapters that don't override cannot
-        run order-manager mode (reconcile fails closed). zerodha/angel override."""
-        return {}
-
     @abstractmethod
     def get_order_status(self, broker_order_id: str) -> dict:
         ...

@@ -184,25 +184,6 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 updated_at           TEXT
             );
 
-            -- Multi-source order-manager ledger: per (conn, source) open long
-            -- position. The broker shows one net book per symbol; this attributes
-            -- it across sources (main/r2/...) so same-strike overlap nets safely.
-            CREATE TABLE IF NOT EXISTS live_source_ledger (
-                user_id     TEXT NOT NULL,
-                conn_id     TEXT NOT NULL,
-                source      TEXT NOT NULL,
-                symbol      TEXT,
-                side        TEXT,
-                qty         INTEGER,
-                entry_price REAL,
-                entry_spot  REAL,
-                entry_rule  TEXT,
-                entry_time  TEXT,
-                virtual     INTEGER,
-                updated_at  TEXT,
-                PRIMARY KEY (user_id, conn_id, source)
-            );
-
             -- Per-IST-date realized PnL per connection (daily-loss source of truth).
             CREATE TABLE IF NOT EXISTS live_day_pnl (
                 trade_date   TEXT NOT NULL,

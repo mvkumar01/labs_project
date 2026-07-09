@@ -52,17 +52,6 @@ CONFIG_DEFAULTS = {
     "reconcile_blocked": "0",
     "reconcile_message": "",
     "runner_owner": "",
-    # Alpha v2.10: which book this connection runs. "main" = RECO/Run-F book
-    # (default, unchanged behaviour). "r2" = R2 consistency book (wall-range
-    # @09:45 + VIX-scaled TP). A connection runs exactly one book; R2 must be a
-    # SEPARATE connection from the main book (single-net-position reconcile).
-    "book_role": "main",
-    # Execution path. "single" (default) = today's one-book-per-conn flow
-    # (incl. the book_role branch). "order_manager" = multi-source netting on
-    # ONE account (main + r2 via the order_manager + live_source_ledger).
-    "exec_mode": "single",
-    # When exec_mode=order_manager: enable the R2 source alongside main.
-    "om_r2_enabled": "0",
 }
 
 # Fernet ciphertext mirror file (gitignored). One blob per conn_id keyed inside.
@@ -333,12 +322,6 @@ def is_kill_switch_on(user_id, conn_id, conn=None) -> bool:
 
 def get_lots(user_id, conn_id, conn=None) -> int:
     return get_config_int(user_id, conn_id, "lots", conn)
-
-
-def get_book_role(user_id, conn_id, conn=None) -> str:
-    """'main' (RECO/Run-F) or 'r2' (R2 consistency book). Default 'main'."""
-    role = (get_config(user_id, conn_id, "book_role", conn) or "main").strip().lower()
-    return "r2" if role == "r2" else "main"
 
 
 def is_armed(user_id, conn_id, conn=None) -> bool:
@@ -759,83 +742,6 @@ def reset_trade_state(user_id: str, conn_id: str,
     finally:
         if own:
             conn.close()
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# live_source_ledger — multi-source order-manager per-(conn,source) positions
-# ══════════════════════════════════════════════════════════════════════════
-def get_ledger(user_id: str, conn_id: str,
-               conn: sqlite3.Connection = None) -> dict:
-    """Return {source: row-dict} for this conn's OPEN source positions
-    (qty>0). Flat sources are absent. The runner maps rows -> SourcePos."""
-    own = conn is None
-    if own:
-        conn = get_live_conn()
-    try:
-        rows = conn.execute(
-            "SELECT source, symbol, side, qty, entry_price, entry_spot, "
-            "entry_rule, entry_time, virtual FROM live_source_ledger "
-            "WHERE user_id = ? AND conn_id = ? AND qty > 0",
-            (user_id, conn_id),
-        ).fetchall()
-        return {r["source"]: dict(r) for r in rows}
-    finally:
-        if own:
-            conn.close()
-
-
-def set_source_pos(user_id: str, conn_id: str, source: str, *, symbol: str,
-                   side: str, qty: int, entry_price: float, entry_spot=None,
-                   entry_rule=None, entry_time=None, virtual: int = 0,
-                   conn: sqlite3.Connection = None) -> None:
-    """Upsert one source's open position."""
-    own = conn is None
-    if own:
-        conn = get_live_conn()
-    try:
-        with conn:
-            conn.execute(
-                "INSERT INTO live_source_ledger "
-                "(user_id, conn_id, source, symbol, side, qty, entry_price, "
-                " entry_spot, entry_rule, entry_time, virtual, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(user_id, conn_id, source) DO UPDATE SET "
-                "symbol=excluded.symbol, side=excluded.side, qty=excluded.qty, "
-                "entry_price=excluded.entry_price, entry_spot=excluded.entry_spot, "
-                "entry_rule=excluded.entry_rule, entry_time=excluded.entry_time, "
-                "virtual=excluded.virtual, updated_at=excluded.updated_at",
-                (user_id, conn_id, source, symbol, side, int(qty),
-                 float(entry_price or 0), entry_spot, entry_rule,
-                 entry_time or _now_iso(), int(virtual or 0), _now_iso()),
-            )
-    finally:
-        if own:
-            conn.close()
-
-
-def clear_source_pos(user_id: str, conn_id: str, source: str,
-                     conn: sqlite3.Connection = None) -> None:
-    """Flatten one source (delete its ledger row)."""
-    own = conn is None
-    if own:
-        conn = get_live_conn()
-    try:
-        with conn:
-            conn.execute(
-                "DELETE FROM live_source_ledger "
-                "WHERE user_id = ? AND conn_id = ? AND source = ?",
-                (user_id, conn_id, source),
-            )
-    finally:
-        if own:
-            conn.close()
-
-
-def get_exec_mode(user_id, conn_id, conn=None) -> str:
-    """'single' (default — today's one-book-per-conn path) or 'order_manager'
-    (multi-source netting on one account)."""
-    m = (get_config(user_id, conn_id, "exec_mode", conn) or "single").strip().lower()
-    return "order_manager" if m == "order_manager" else "single"
 
 
 # ══════════════════════════════════════════════════════════════════════════

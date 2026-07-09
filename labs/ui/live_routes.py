@@ -532,9 +532,6 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         lot_sizes=LOT_SIZES,
         mode=svc.get_mode(user_id, conn_id),
         kill_switch=svc.is_kill_switch_on(user_id, conn_id),
-        book_role=svc.get_book_role(user_id, conn_id),
-        exec_mode=svc.get_exec_mode(user_id, conn_id),
-        om_r2_enabled=svc.get_config_int(user_id, conn_id, "om_r2_enabled") == 1,
         strategy=_current_strategy_preset(user_id, conn_id),
         strategy_presets=STRATEGY_LABELS,
         error=error,
@@ -579,19 +576,6 @@ def configure():
         except ValueError:
             cap = 3000.0
         svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap))
-
-        # Alpha v2.10: book role for THIS connection. "r2" turns this connection
-        # into the R2 consistency book; "main" (default) is the RECO/Run-F book.
-        # A connection runs exactly one book — run R2 on a SEPARATE connection.
-        role = (request.form.get("book_role", "main") or "main").strip().lower()
-        svc.set_config(user_id, conn_id, "book_role", "r2" if role == "r2" else "main")
-
-        # Order-manager mode: run main + R2 netted on THIS one account.
-        em = (request.form.get("exec_mode", "single") or "single").strip().lower()
-        svc.set_config(user_id, conn_id, "exec_mode",
-                       "order_manager" if em == "order_manager" else "single")
-        svc.set_config(user_id, conn_id, "om_r2_enabled",
-                       1 if request.form.get("om_r2_enabled") in ("1", "on", "true") else 0)
 
         # Strategy preset -> decision_engine + strategy_version. Only applied when
         # a known preset is submitted, so an unrelated POST never clobbers it.

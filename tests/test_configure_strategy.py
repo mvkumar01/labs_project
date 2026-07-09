@@ -1,6 +1,7 @@
 """Configure-page strategy selection safety checks."""
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -56,8 +57,6 @@ def _configure(client, strategy: str, *, lots: int = 1, daily_loss_cap: int = 30
             "csrf_token": CSRF_TOKEN,
             "lots": str(lots),
             "daily_loss_cap": str(daily_loss_cap),
-            "book_role": "main",
-            "exec_mode": "single",
             "strategy": strategy,
         },
     )
@@ -82,6 +81,9 @@ def test_configure_renders_one_strategy_select_without_bot_variant(client):
     page = response.get_data(as_text=True)
     assert page.count('name="strategy"') == 1
     assert 'name="bot_variant"' not in page
+    assert 'name="book_role"' not in page
+    assert 'name="exec_mode"' not in page
+    assert 'name="om_r2_enabled"' not in page
     assert "Alpha v2.11" in page
     assert "Alpha v2.12" in page
     assert "Switch only while FLAT" in page
@@ -157,3 +159,16 @@ def test_dashboard_displays_active_strategy_label(client):
 
     assert response.status_code == 200
     assert "Alpha v2.12" in response.get_data(as_text=True)
+
+
+def test_new_live_schema_omits_retired_r2_source_ledger():
+    conn = sqlite3.connect(":memory:")
+    try:
+        live_db.init_live_db(conn)
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='live_source_ledger'"
+        ).fetchone()
+        assert table is None
+    finally:
+        conn.close()

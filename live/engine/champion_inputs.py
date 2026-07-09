@@ -86,7 +86,7 @@ def _labs_spot_ohlc(trade_date: str) -> "pd.DataFrame | None":
 # mtime/size-keyed caches (rate/CPU defense, 2026-07-08 review): the runner
 # polls latest_completed_ohlc_minute every ~2s and champion_target rebuilds
 # inputs per minute; without caching that re-parsed the full day's CSVs ~30x
-# per minute per connection on PA. Same pattern as alpha_hybrid/r2_book:
+# per minute per connection on PA. Same pattern as alpha_hybrid:
 # one parse per collector write. Only the 2 most recent dates are retained.
 _LABS_OHLC_CACHE: dict = {}      # trade_date -> (sig, DataFrame)
 _LATEST_MINUTE_CACHE: dict = {}  # (trade_date, sig) -> key | None
