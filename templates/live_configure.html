@@ -45,21 +45,13 @@
         </div>
 
         <div class="field">
-          <label for="bot_variant">Select strategy</label>
-          <select id="bot_variant" name="bot_variant">
-            <option value="hybrid_alpha_v28" {{ 'selected' if bot_variant == 'hybrid_alpha_v28' else '' }}>Hybrid Alpha v2.8 (alpha/ITM)</option>
-          </select>
-          <div class="hint">Uses the live Hybrid Alpha signal and execution stack.</div>
-        </div>
-
-        <div class="field">
           <label for="strategy">Decision strategy</label>
           <select id="strategy" name="strategy">
             {% for key, label in strategy_presets.items() %}
             <option value="{{ key }}" {{ 'selected' if strategy == key else '' }}>{{ label }}</option>
             {% endfor %}
           </select>
-          <div class="hint">v2.12 adds the entry-spot 0-pt stop + recovery re-entry on top of the champion replay. Every trade is tagged with the selected strategy so PnL can be filtered by it.</div>
+          <div class="hint">v2.12 adds the entry-spot 0-pt stop (tick-accelerated) + canonical recovery re-entry on top of the champion replay. Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
         </div>
 
         <div class="field">
