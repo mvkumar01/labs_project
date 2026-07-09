@@ -717,6 +717,27 @@ def save_trade_state(user_id: str, conn_id: str, state: dict,
             conn.close()
 
 
+def clear_v212_latches(user_id: str, conn_id: str,
+                       conn: sqlite3.Connection = None) -> dict:
+    """Clear v2.12-only recovery state without resetting replay cursor state."""
+    own = conn is None
+    if own:
+        conn = get_live_conn()
+    try:
+        state = get_trade_state(user_id, conn_id, conn=conn)
+        state.update({
+            "recovery_armed": 0,
+            "recovery_level": None,
+            "recovery_side": None,
+            "spot_stop_bar": None,
+        })
+        save_trade_state(user_id, conn_id, state, conn=conn)
+        return state
+    finally:
+        if own:
+            conn.close()
+
+
 def reset_trade_state(user_id: str, conn_id: str,
                       conn: sqlite3.Connection = None) -> dict:
     """Reset to flat, preserving the daily per-tier counters."""

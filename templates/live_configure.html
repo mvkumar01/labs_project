@@ -19,7 +19,11 @@
   </header>
   <main>
     <h1>Configure</h1>
-    <p class="sub">Set position size, bot variant, and the daily-loss cap. Lots are phase-capped (Phase 0/1 = 1 lot; hard ceiling 2).</p>
+    <p class="sub">Set position size, decision strategy, and the daily-loss cap. Lots are phase-capped (Phase 0/1 = 1 lot; hard ceiling 2).</p>
+
+    {% if error %}
+    <div class="reconcile-warning">{{ error }}</div>
+    {% endif %}
 
     <!-- Mode + armed-status banner -->
     <div id="mode-banner" class="mode-banner mode-{{ mode }}">

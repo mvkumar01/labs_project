@@ -343,8 +343,8 @@ def dashboard():
         connection=connection,
         configured=bool(connection),
         lots=svc.get_lots(user_id, conn_id),
-        bot_variant=svc.get_config(user_id, conn_id, "bot_variant"),
         daily_loss_cap=svc.get_daily_loss_cap(user_id, conn_id),
+        strategy_label=STRATEGY_LABELS[_current_strategy_preset(user_id, conn_id)],
         trade_date=svc.today_ist_iso(),
     )
 
@@ -519,8 +519,28 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# CONFIGURE — lots + bot variant + daily-loss (this user's conn)
+# CONFIGURE — lots + decision strategy + daily-loss (this user's conn)
 # ══════════════════════════════════════════════════════════════════════════
+def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
+    return render_template(
+        "live_configure.html",
+        csrf_token=issue_csrf(),
+        lots=svc.get_lots(user_id, conn_id),
+        lots_phase_cap=LOTS_PHASE_CAP,
+        lots_hard_cap=LOTS_HARD_CAP,
+        daily_loss_cap=svc.get_daily_loss_cap(user_id, conn_id),
+        lot_sizes=LOT_SIZES,
+        mode=svc.get_mode(user_id, conn_id),
+        kill_switch=svc.is_kill_switch_on(user_id, conn_id),
+        book_role=svc.get_book_role(user_id, conn_id),
+        exec_mode=svc.get_exec_mode(user_id, conn_id),
+        om_r2_enabled=svc.get_config_int(user_id, conn_id, "om_r2_enabled") == 1,
+        strategy=_current_strategy_preset(user_id, conn_id),
+        strategy_presets=STRATEGY_LABELS,
+        error=error,
+    )
+
+
 @live_bp.route("/configure", methods=["GET", "POST"])
 @csrf_protect
 def configure():
@@ -530,15 +550,29 @@ def configure():
         return redirect(url_for("live.connect"))
 
     if request.method == "POST":
+        strat = (request.form.get("strategy") or "").strip()
+        strategy_changed = (
+            strat in STRATEGY_PRESETS
+            and strat != _current_strategy_preset(user_id, conn_id)
+        )
+        if strategy_changed:
+            state = svc.get_trade_state(user_id, conn_id)
+            if (state.get("position") or "NONE").upper() == "OPEN":
+                return _render_configure(
+                    user_id,
+                    conn_id,
+                    error=(
+                        "Decision strategy cannot change while this connection "
+                        "has an open position. Close it first, then save."
+                    ),
+                )
+
         try:
             lots = int(request.form.get("lots", "1"))
         except ValueError:
             lots = 1
         lots = max(1, min(lots, LOTS_PHASE_CAP, LOTS_HARD_CAP))
         svc.set_config(user_id, conn_id, "lots", lots)
-
-        variant = request.form.get("bot_variant", "hybrid_alpha_v28").strip() or "hybrid_alpha_v28"
-        svc.set_config(user_id, conn_id, "bot_variant", variant)
 
         try:
             cap = float(request.form.get("daily_loss_cap", "3000"))
@@ -561,31 +595,15 @@ def configure():
 
         # Strategy preset -> decision_engine + strategy_version. Only applied when
         # a known preset is submitted, so an unrelated POST never clobbers it.
-        strat = (request.form.get("strategy") or "").strip()
-        if strat in STRATEGY_PRESETS:
+        if strategy_changed:
             decision_engine, strat_version = STRATEGY_PRESETS[strat]
             svc.set_config(user_id, conn_id, "decision_engine", decision_engine)
             svc.set_config(user_id, conn_id, "strategy_version", strat_version)
+            svc.clear_v212_latches(user_id, conn_id)
 
         return redirect(url_for("live.dashboard"))
 
-    return render_template(
-        "live_configure.html",
-        csrf_token=issue_csrf(),
-        lots=svc.get_lots(user_id, conn_id),
-        lots_phase_cap=LOTS_PHASE_CAP,
-        lots_hard_cap=LOTS_HARD_CAP,
-        bot_variant=svc.get_config(user_id, conn_id, "bot_variant"),
-        daily_loss_cap=svc.get_daily_loss_cap(user_id, conn_id),
-        lot_sizes=LOT_SIZES,
-        mode=svc.get_mode(user_id, conn_id),
-        kill_switch=svc.is_kill_switch_on(user_id, conn_id),
-        book_role=svc.get_book_role(user_id, conn_id),
-        exec_mode=svc.get_exec_mode(user_id, conn_id),
-        om_r2_enabled=svc.get_config_int(user_id, conn_id, "om_r2_enabled") == 1,
-        strategy=_current_strategy_preset(user_id, conn_id),
-        strategy_presets=STRATEGY_LABELS,
-    )
+    return _render_configure(user_id, conn_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════
