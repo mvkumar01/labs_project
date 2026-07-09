@@ -8,6 +8,7 @@ canonical segment ("fast out, patient back in").
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import sqlite3
 from pathlib import Path
 import sys
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 import live.live_runner as lr
 from live import live_service as svc
 from live.brokers.base import OrderResult, Position
+import storage.live_db as live_db
 from storage.live_db import init_live_db
 
 USER_ID = "user-t"
@@ -138,3 +140,111 @@ def test_fast_spot_takes_no_adapter():
     assert len(inspect.signature(lr._fast_spot).parameters) == 0
     src = inspect.getsource(lr.process_connection)
     assert "_fast_spot(adapter" not in src
+
+
+def test_stale_prior_day_state_unblocks_live_entry(monkeypatch, tmp_path):
+    """Regression for 2026-07-09: startup reconcile blocked entries because DB
+    had yesterday's OPEN state while Angel was flat. The stale-state cleanup must
+    clear reconcile_blocked before the same poll evaluates the v2.12 ENTER."""
+    monkeypatch.setenv("LIVE_ORDER_PROXY_URL", "http://static.test:1234")
+    monkeypatch.setattr(live_db, "LIVE_DB_PATH", tmp_path / "live.db")
+    init_live_db()
+
+    conn = live_db.get_live_conn()
+    svc.upsert_connection(USER_ID, CONN_ID, broker="angel", account_label="T",
+                          account_ref="angel:T", status="connected", conn=conn)
+    for k, v in (("mode", "LIVE_ARMED"), ("armed", "1"), ("kill_switch", "0"),
+                 ("lots", "1"), ("daily_loss_cap", "50000"),
+                 ("decision_engine", "champion_replay"),
+                 ("strategy_version", "v2.12")):
+        svc.set_config(USER_ID, CONN_ID, k, v, conn)
+    stale = svc.get_trade_state(USER_ID, CONN_ID, conn=conn)
+    stale.update({
+        "position": "OPEN",
+        "side": "PUT",
+        "symbol": SYMBOL,
+        "entry_time": "2026-07-08T04:05:00+00:00",
+        "entry_price": 270.0,
+        "qty": 65,
+        "virtual": 0,
+        "entry_spot": 24223.95,
+    })
+    svc.save_trade_state(USER_ID, CONN_ID, stale, conn=conn)
+    conn.close()
+
+    class FlatAdapter:
+        def __init__(self, **_kwargs):
+            self.position = Position(symbol=None, qty=0, side=None)
+
+        def connect(self):
+            return None
+
+        def is_connected(self):
+            return True
+
+        def account_ref(self):
+            return "angel:T"
+
+        def get_position(self):
+            return self.position
+
+    IST = timezone(timedelta(hours=5, minutes=30))
+    monkeypatch.setattr(lr, "_now_ist", lambda: datetime(2026, 7, 9, 9, 20, tzinfo=IST))
+    monkeypatch.setattr(lr, "_today_ist_iso", lambda: "2026-07-09")
+    monkeypatch.setattr(lr, "_now_iso", lambda: "2026-07-09T03:50:00+00:00")
+    monkeypatch.setattr(lr, "market_session_available", lambda _now: True)
+    monkeypatch.setattr(lr, "eod_watchdog", lambda _now_t: False)
+    monkeypatch.setattr(lr, "notify_telegram", lambda _msg: None)
+    monkeypatch.setattr(lr, "_fast_spot", lambda: 23996.6)
+    monkeypatch.setattr(lr, "get_latest_alpha", lambda: {
+        "timestamp": "2026-07-09T09:20:00+05:30",
+        "alpha": 40.0,
+        "spot": 23996.6,
+    })
+    monkeypatch.setattr(
+        lr.champion_inputs,
+        "latest_completed_ohlc_minute",
+        lambda _trade_date: "2026-07-09T09:20",
+    )
+    monkeypatch.setattr(lr.champion_decider, "champion_target", lambda *_a, **_k: {
+        "position": "CALL",
+        "entry_spot": 23996.6,
+        "entry_rule": "RULE1",
+        "n_closed": 0,
+        "last_closed_event_id": None,
+    })
+    monkeypatch.setattr(
+        lr,
+        "resolve_affordable_option",
+        lambda *_a, **_k: ("NIFTY2671423800CE", 274.5),
+    )
+    routed = []
+
+    def fake_route(*_args, **kwargs):
+        routed.append(kwargs)
+        return OrderResult(
+            broker_order_id="OID1",
+            status="PLACED",
+            avg_fill_price=274.5,
+            raw={},
+        )
+
+    monkeypatch.setattr(lr, "_route_order", fake_route)
+
+    lr.process_connection(
+        USER_ID,
+        CONN_ID,
+        adapters={},
+        reconciled=set(),
+        task_id="test-runner",
+        signal_engines={},
+        alpha_seen={},
+        adapter_factory=FlatAdapter,
+    )
+
+    conn = live_db.get_live_conn()
+    try:
+        assert svc.get_config(USER_ID, CONN_ID, "reconcile_blocked", conn) == "0"
+        assert routed and routed[0]["action"] == "ENTER"
+    finally:
+        conn.close()

@@ -1262,6 +1262,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 entry_date, conn_id, st.get("symbol"),
             )
             svc.reset_trade_state(user_id, conn_id)
+            svc.set_config(user_id, conn_id, "reconcile_blocked", "0")
             svc.set_config(
                 user_id, conn_id, "reconcile_message",
                 f"stale {entry_date} position state cleared at startup — no PnL recorded",
