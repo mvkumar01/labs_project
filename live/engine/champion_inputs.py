@@ -388,6 +388,7 @@ def resolve_vix_open(
     supplied_vix=None,
     *,
     supplied_source: str = "supplied",
+    validate_exact: bool = True,
 ) -> tuple[float | None, str]:
     """Resolve VIX without ever borrowing a different date's row."""
     exact_value = None
@@ -416,6 +417,8 @@ def resolve_vix_open(
                 f"Implausible VIX for {trade_date}: {supplied_vix!r}"
             )
         if (
+            validate_exact
+            and
             exact_value is not None
             and abs(valid - exact_value) > VIX_CONTEXT_TOLERANCE
         ):
@@ -593,7 +596,10 @@ def resolve_day_context(
             f"prev_close={pc:.2f} ({previous_date})"
         )
     resolved_vix, resolved_vix_source = resolve_vix_open(
-        trade_date, vix, supplied_source=vix_source
+        trade_date,
+        vix,
+        supplied_source=vix_source,
+        validate_exact=validate_shared_context,
     )
     weekday = pd.Timestamp(trade_date).strftime("%a")  # Mon..Fri
     use_trail = resolved_vix is None or resolved_vix < VIX_TRAIL_CUTOFF
