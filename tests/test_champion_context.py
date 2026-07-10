@@ -96,6 +96,37 @@ def test_previous_close_fails_closed_when_shared_session_missing(
         champion_inputs.previous_session_close(DATE)
 
 
+def test_trusted_historical_context_skips_mutable_shared_baseline(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        champion_inputs,
+        "previous_session_close",
+        lambda *_args, **_kwargs: pytest.fail("mutable baseline was consulted"),
+    )
+    monkeypatch.setattr(
+        champion_inputs, "verified_session_open", lambda *_args: None
+    )
+    ohlc = champion_sim.OHLC({"09:15": (100.0, 100.0, 100.0, 100.0)})
+
+    context = champion_inputs.resolve_day_context(
+        "2026-06-01",
+        ohlc,
+        "UP",
+        16.18,
+        previous_session_date="2026-05-29",
+        prev_close=99.0,
+        prev_close_source="audited_manifest",
+        open_spot=100.0,
+        open_spot_source="audited_manifest",
+        validate_shared_context=False,
+    )
+
+    assert context.prev_close == 99.0
+    assert context.open_spot == 100.0
+    assert context.direction == "UP"
+
+
 def test_vix_fallback_requires_exact_trade_date(
     monkeypatch, tmp_path: Path
 ) -> None:

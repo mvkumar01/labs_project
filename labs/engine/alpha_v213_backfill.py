@@ -10,6 +10,10 @@ while ``remaining`` > 0, exactly like the Baskets tab.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+from labs.engine.alpha_v212_backfill import _override_from_context
 from labs.engine.alpha_v212_backfill import _stored_context_ranges
 from labs.engine.alpha_v213_tracker import _ensure_tables, run_day
 from storage.db import get_conn
@@ -36,11 +40,41 @@ def _self_resolve_override(override: dict) -> dict:
     return {k: v for k, v in override.items() if k not in _DROP_FOR_SELF_RESOLVE}
 
 
+def _historical_ranges(start_date: str, end_date: str | None) -> dict:
+    """Use audited June ranges, then complete later v2.11 paper contexts."""
+    manifest = json.loads(
+        Path(__file__).with_name("june_champion_ranges.json").read_text(
+            encoding="utf-8")
+    )
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT trade_date,context_json FROM paper_strategy_daily "
+            "WHERE context_json IS NOT NULL AND trade_date>=? "
+            "AND (? IS NULL OR trade_date<=?) ORDER BY trade_date",
+            (start_date, end_date, end_date),
+        ).fetchall()
+    finally:
+        conn.close()
+    ranges = {
+        row[0]: _override_from_context(json.loads(row[1])) for row in rows
+    }
+    for date, override in manifest.items():
+        if date >= start_date and (end_date is None or date <= end_date):
+            ranges[date] = dict(override)
+    if not ranges:
+        ranges = _stored_context_ranges(start_date, end_date)
+    return {
+        date: {**override, "_trust_historical_context": True}
+        for date, override in ranges.items()
+    }
+
+
 def _pending(start_date: str, end_date: str | None, conn) -> tuple[list, dict]:
     """(v2.11-dated days in range with a stored v2.12 context but no v2.13 row,
     oldest first; the full range->override map)."""
     _ensure_tables(conn)
-    ranges = _stored_context_ranges(start_date, end_date)
+    ranges = _historical_ranges(start_date, end_date)
     done = {
         row[0] for row in conn.execute("SELECT trade_date FROM alpha_v213_daily")
     }
@@ -50,7 +84,7 @@ def _pending(start_date: str, end_date: str | None, conn) -> tuple[list, dict]:
 
 def run_backfill(
     *, start_date: str = DEFAULT_START, end_date: str | None = None,
-    limit: int = 5,
+    limit: int = 5, rebuild: bool = False,
 ) -> dict:
     """Replay up to ``limit`` pending days. A day that fails (e.g. an
     unavailable quote) is reported in ``errors`` and left pending; the caller
@@ -60,17 +94,32 @@ def run_backfill(
         pending, ranges = _pending(start_date, end_date, conn)
     finally:
         conn.close()
+    if rebuild:
+        pending = sorted(ranges)
 
     done: list[str] = []
     errors: dict[str, str] = {}
-    for trade_date in pending[: max(1, limit)]:
-        try:
-            run_day(trade_date,
-                    override=_self_resolve_override(ranges[trade_date]),
-                    require_all_quotes=True)
+    batch = pending[: max(1, limit)]
+    conn = get_conn()
+    _ensure_tables(conn)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for trade_date in batch:
+            run_day(
+                trade_date,
+                override=ranges[trade_date],
+                require_all_quotes=True,
+                connection=conn,
+                commit=False,
+            )
             done.append(trade_date)
-        except Exception as exc:  # per-day isolation; surface, keep going
-            errors[trade_date] = f"{type(exc).__name__}: {exc}"
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        done.clear()
+        errors["batch"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        conn.close()
 
     conn = get_conn()
     try:

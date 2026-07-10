@@ -510,6 +510,7 @@ def resolve_day_context(
     prev_close_source: str | None = None,
     open_spot: float | None = None,
     open_spot_source: str | None = None,
+    validate_shared_context: bool = True,
 ) -> ResolvedDayContext:
     """Resolve and validate immutable session context for a replay."""
     has_explicit_previous = previous_session_date is not None or prev_close is not None
@@ -534,17 +535,20 @@ def resolve_day_context(
         pc_source = str(prev_close_source or "audited_override").strip()
         if not pc_source:
             raise ContextInputError("Explicit previous close requires provenance")
-        observed_date, observed_pc, observed_source = previous_session_close(trade_date)
-        if (
-            previous_date != observed_date
-            or abs(pc - observed_pc) > SPOT_CONTEXT_TOLERANCE
-        ):
-            raise ContextInputError(
-                f"Previous-session mismatch for {trade_date}: "
-                f"supplied={previous_date} close={pc:.2f}, "
-                f"shared_store={observed_date} close={observed_pc:.2f} "
-                f"({observed_source})"
+        if validate_shared_context:
+            observed_date, observed_pc, observed_source = previous_session_close(
+                trade_date
             )
+            if (
+                previous_date != observed_date
+                or abs(pc - observed_pc) > SPOT_CONTEXT_TOLERANCE
+            ):
+                raise ContextInputError(
+                    f"Previous-session mismatch for {trade_date}: "
+                    f"supplied={previous_date} close={pc:.2f}, "
+                    f"shared_store={observed_date} close={observed_pc:.2f} "
+                    f"({observed_source})"
+                )
     else:
         previous_date, pc, pc_source = previous_session_close(trade_date)
     has_explicit_open = open_spot is not None or open_spot_source is not None
@@ -571,7 +575,8 @@ def resolve_day_context(
         verified_open[1] if verified_open is not None else "session_ohlc_09:15"
     )
     if (
-        has_explicit_open
+        validate_shared_context
+        and has_explicit_open
         and abs(day_open - observed_open) > SPOT_CONTEXT_TOLERANCE
     ):
         raise ContextInputError(

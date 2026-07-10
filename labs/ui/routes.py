@@ -676,7 +676,12 @@ def alpha_v213_backfill():
     start = request.args.get("start") or DEFAULT_START
     end = request.args.get("end") or None
     try:
-        result = run_backfill(start_date=start, end_date=end, limit=limit)
+        result = run_backfill(
+            start_date=start,
+            end_date=end,
+            limit=limit,
+            rebuild=request.args.get("rebuild") == "1",
+        )
         return jsonify({
             "ok": True,
             "done": len(result["done"]),
