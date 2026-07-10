@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
-from live.engine import champion_inputs, champion_sim
+from live.engine import champion_inputs, champion_sim, champion_v213
 from live.engine.alpha_hybrid import _read_locked_hybrid_state
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -45,6 +45,7 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
 def champion_target(trade_date: str | None = None, now_ist: datetime | None = None,
                     override: dict | None = None,
                     enable_entry_spot_recovery: bool = False,
+                    enable_v211_risk_authority: bool = False,
                     live_execution_spot: float | None = None) -> dict | None:
     """Replay completed bars up to `now_ist` and return the target position.
 
@@ -113,15 +114,28 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
         return {"position": "FLAT", "bucket": tier, "direction": context.direction,
                 "last_closed_reason": None, "n_closed": 0}
 
-    _, trades, open_state = champion_sim.simulate(
-        adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
-        context.sgap, tier, context.weekday, context.regime,
-        day["lower"], day["upper"],
-        enable_entry_spot_recovery=enable_entry_spot_recovery,
-        close_eod=False, return_state=True, entries_until_ts=cutoff,
-        next_open_fallback=(now_ist, live_execution_spot)
-        if enable_entry_spot_recovery and live_execution_spot is not None
-        else None)
+    next_open_fallback = (
+        (now_ist, live_execution_spot)
+        if (
+            (enable_entry_spot_recovery or enable_v211_risk_authority)
+            and live_execution_spot is not None
+        )
+        else None
+    )
+    if enable_v211_risk_authority:
+        _, trades, open_state = champion_v213.simulate(
+            adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
+            context.sgap, tier, context.weekday, context.regime,
+            day["lower"], day["upper"], close_eod=False, return_state=True,
+            entries_until_ts=cutoff, next_open_fallback=next_open_fallback)
+    else:
+        _, trades, open_state = champion_sim.simulate(
+            adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
+            context.sgap, tier, context.weekday, context.regime,
+            day["lower"], day["upper"],
+            enable_entry_spot_recovery=enable_entry_spot_recovery,
+            close_eod=False, return_state=True, entries_until_ts=cutoff,
+            next_open_fallback=next_open_fallback)
 
     economic_trades = [
         trade for trade in trades
@@ -145,11 +159,18 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     if open_state is None:
         return {"position": "FLAT", "bucket": tier, "direction": context.direction,
                 **replay_meta}
-    return {"position": open_state["side"], "bucket": tier,
-            "direction": context.direction,
-            "entry_spot": open_state["entry_spot"], "entry_rule": open_state["entry_rule"],
-            "tier": open_state["tier"], "gap_direction": open_state["gap_direction"],
-            **replay_meta}
+    entry_spot = open_state["entry_spot"]
+    target = {"position": open_state["side"], "bucket": tier,
+              "direction": context.direction,
+              "entry_spot": entry_spot, "entry_rule": open_state["entry_rule"],
+              "tier": open_state["tier"], "gap_direction": open_state["gap_direction"],
+              **replay_meta}
+    if enable_v211_risk_authority:
+        # v2.13 keeps the original v2.11 signal spot as the stop barrier while
+        # using the causal recovery fill spot for option contract selection.
+        target["entry_spot"] = open_state.get("signal_entry_spot", entry_spot)
+        target["execution_entry_spot"] = entry_spot
+    return target
 
 
 def reconcile_replay_event(target: dict | None, current_side: str | None,

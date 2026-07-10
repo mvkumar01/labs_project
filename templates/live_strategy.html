@@ -45,7 +45,8 @@
     <div class="live-tabs">
       <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
       <a href="/labs/live?tab=alpha_v212" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
-      <a href="/labs/live?tab=baskets" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">Baskets</a>
+      <a href="/labs/live?tab=alpha_v213" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
+      <a href="/labs/live?tab=baskets" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
       <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="/labs/live?tab=sensex_alpha_inverted" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
       <a href="/labs/live?tab=sensex_v211" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
@@ -61,47 +62,48 @@
       <span id="df-count" class="muted"></span>
     </div>
 
-    {% if active_live_tab == 'alpha_v212' %}
-    <h1>Alpha v2.12 — entry-spot recovery (paper)</h1>
-    <p class="sub">Alpha v2.11 signals plus an original-entry-spot stop and same-side recovery.
+    {% if active_live_tab in ['alpha_v212', 'alpha_v213'] %}
+    {% set is_v213 = active_live_tab == 'alpha_v213' %}
+    <h1>Alpha {{ overlay_version }} — {{ 'v2.11 risk authority + recovery overlay' if is_v213 else 'entry-spot recovery' }} (paper)</h1>
+    <p class="sub">{{ 'The complete Alpha v2.11 lifecycle stays authoritative while' if is_v213 else 'Alpha v2.11 signals plus' }} an original-entry-spot stop and same-side recovery.
       One nearest-expiry NIFTY ITM-200 option lot, priced at <b>exact-minute ask in / bid out</b>.
       Net P&amp;L includes charges.</p>
 
-    {% if v212_stats.get('error') %}
-      <p class="empty">Alpha v2.12 unavailable ({{ v212_stats.error }}).</p>
-    {% elif not v212_rows %}
-      <p class="empty">No Alpha v2.12 paper sessions recorded yet. The guarded June backfill populates this tab.</p>
+    {% if overlay_stats.get('error') %}
+      <p class="empty">Alpha {{ overlay_version }} unavailable ({{ overlay_stats.error }}).</p>
+    {% elif not overlay_rows %}
+      <p class="empty">No Alpha {{ overlay_version }} paper sessions recorded yet. The live paper loop will populate this tab.</p>
     {% else %}
-      {% set v = v212_stats.latest %}
+      {% set v = overlay_stats.latest %}
       <div class="cards">
         <div class="card"><div class="k">Net P&amp;L</div>
-          <div class="v {{ 'green' if v212_stats.net_total>0 else ('red' if v212_stats.net_total<0 else '') }}">₹{{ "{:,.2f}".format(v212_stats.net_total) }}</div>
-          <div class="sub-k">after ₹{{ "{:,.2f}".format(v212_stats.charges_total) }} charges</div></div>
+          <div class="v {{ 'green' if overlay_stats.net_total>0 else ('red' if overlay_stats.net_total<0 else '') }}">₹{{ "{:,.2f}".format(overlay_stats.net_total) }}</div>
+          <div class="sub-k">after ₹{{ "{:,.2f}".format(overlay_stats.charges_total) }} charges</div></div>
         <div class="card"><div class="k">Gross executable P&amp;L</div>
-          <div class="v {{ 'green' if v212_stats.gross_total>0 else ('red' if v212_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(v212_stats.gross_total) }}</div>
+          <div class="v {{ 'green' if overlay_stats.gross_total>0 else ('red' if overlay_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(overlay_stats.gross_total) }}</div>
           <div class="sub-k">ask entry · bid exit · one 65-unit lot</div></div>
         <div class="card"><div class="k">Coverage</div>
-          <div class="v" style="font-size:20px">{{ v212_stats.first_date }} → {{ v212_stats.last_date }}</div>
-          <div class="sub-k">{{ v212_stats.days }} recorded sessions · archive + live</div></div>
+          <div class="v" style="font-size:20px">{{ overlay_stats.first_date }} → {{ overlay_stats.last_date }}</div>
+          <div class="sub-k">{{ overlay_stats.days }} recorded sessions · archive + live</div></div>
         <div class="card"><div class="k">Segments / quotes</div>
-          <div class="v">{{ v212_stats.priced_segments }}/{{ v212_stats.segments }}</div>
-          <div class="sub-k">{{ v212_stats.coverage_pct }}% priced · {{ v212_stats.unavailable_segments }} unavailable</div></div>
+          <div class="v">{{ overlay_stats.priced_segments }}/{{ overlay_stats.segments }}</div>
+          <div class="sub-k">{{ overlay_stats.coverage_pct }}% priced · {{ overlay_stats.unavailable_segments }} unavailable</div></div>
         <div class="card"><div class="k">Win days</div>
-          <div class="v">{{ v212_stats.win_pct }}%</div>
-          <div class="sub-k">{{ v212_stats.win_days }}/{{ v212_stats.active_days }} completed active days</div></div>
+          <div class="v">{{ overlay_stats.win_pct }}%</div>
+          <div class="sub-k">{{ overlay_stats.win_days }}/{{ overlay_stats.active_days }} completed active days</div></div>
         <div class="card"><div class="k">Spot strategy P&amp;L</div>
-          <div class="v {{ 'green' if v212_stats.spot_total>0 else ('red' if v212_stats.spot_total<0 else '') }}">{{ "%+.2f"|format(v212_stats.spot_total) }} pts</div>
+          <div class="v {{ 'green' if overlay_stats.spot_total>0 else ('red' if overlay_stats.spot_total<0 else '') }}">{{ "%+.2f"|format(overlay_stats.spot_total) }} pts</div>
           <div class="sub-k">before option pricing and costs</div></div>
       </div>
 
-      {% if v212_trades %}
+      {% if overlay_trades %}
       <h2 style="margin-top:24px">Latest available session — {{ v.trade_date }}</h2>
       <table class="perf">
         <thead><tr><th>#</th><th>Side</th><th>ITM-200</th><th>Entry / Exit</th>
           <th>Spot in/out</th><th>Spot pts</th><th>Ask in / Bid out</th><th>Gross ₹</th>
           <th>Charges</th><th>Net ₹</th><th>Exit</th></tr></thead>
         <tbody>
-        {% for t in v212_trades %}
+        {% for t in overlay_trades %}
           <tr>
             <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }} {{ 'CE' if t.side == 'CALL' else 'PE' }}</td>
             <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] }}</td>
@@ -127,7 +129,7 @@
         <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th>
           <th>Segments</th><th>Quotes</th><th>Spot pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
         <tbody>
-        {% for r in v212_rows %}
+        {% for r in overlay_rows %}
           <tr>
             <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
             <td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
@@ -141,11 +143,15 @@
       </table>
 
       <p class="note">
+        {% if is_v213 %}
+        v2.13 keeps a shadow v2.11 lifecycle authoritative. The entry-spot overlay may exit and recover only while that lifecycle remains active; a v2.11 trail, Alpha exit, target, wall, drift stop, or EOD exit closes the active overlay segment and cancels pending recovery.
+        {% else %}
         v2.12 changes only risk handling: every original signal-entry spot is the stop. A touch triggers an exit
         valued at that one-minute candle's close, then arms same-side recovery at the original level; re-entry requires a one-minute touch and
         a close back on the favourable side. Normal Alpha stop/target invalidation cancels a pending recovery.
         All v2.11 range, signal, trail and target rules remain unchanged. The full research comparison was
         +10,170.3 spot points versus v2.11's +7,948.8 (+2,221.4), MaxDD 150 versus 170, and 12/12 positive months.
+        {% endif %}
         This page's executable sample is limited to the recorded archive/live sessions shown above.
         Paper only — never places real orders.
       </p>
@@ -323,7 +329,7 @@
     {% endif %}
 
     {% elif active_live_tab == 'baskets' %}
-    <h1>Baskets — v2.11 signals as multi-leg structures (paper)</h1>
+    <h1>v2.11 Baskets — signals as multi-leg structures (paper)</h1>
     <p class="sub">Every recorded v2.11 signal trade re-priced as alternative option baskets —
       pick structures under CALL and PUT separately and compare. Legs fill at <b>exact-minute
       ask (buy) / bid (sell)</b>, charges per leg, one 65-unit lot per leg. Missing quotes are

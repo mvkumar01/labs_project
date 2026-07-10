@@ -55,7 +55,7 @@
             <option value="{{ key }}" {{ 'selected' if strategy == key else '' }}>{{ label }}</option>
             {% endfor %}
           </select>
-          <div class="hint">v2.12 adds the entry-spot 0-pt stop (tick-accelerated) + canonical recovery re-entry on top of the champion replay. Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
+          <div class="hint">v2.12 runs the recovery overlay independently. v2.13 keeps the complete v2.11 risk lifecycle authoritative while allowing overlay exits and re-entries inside it. Both use the tick-accelerated entry-spot stop. Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
         </div>
 
         <div class="field">

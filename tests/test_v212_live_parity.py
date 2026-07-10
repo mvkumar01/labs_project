@@ -98,6 +98,7 @@ def test_replay_cursor_survives_trade_state_reset() -> None:
         "position": "OPEN",
         "side": "PUT",
         "champion_trade_date": DATE,
+        "champion_strategy_version": "v2.13",
         "champion_closed_count": 3,
         "champion_last_event_id": "event-3",
     })
@@ -107,8 +108,69 @@ def test_replay_cursor_survives_trade_state_reset() -> None:
 
     assert reset["position"] == "NONE"
     assert reset["champion_trade_date"] == DATE
+    assert reset["champion_strategy_version"] == "v2.13"
     assert reset["champion_closed_count"] == 3
     assert reset["champion_last_event_id"] == "event-3"
+
+
+def test_open_legacy_cursor_is_version_stamped_without_adopting(monkeypatch) -> None:
+    saved = []
+    monkeypatch.setattr(
+        live_runner,
+        "_advance_champion_cursor",
+        lambda *_a, **kwargs: saved.append(kwargs),
+    )
+    state = {
+        "position": "OPEN",
+        "champion_trade_date": DATE,
+        "champion_strategy_version": None,
+        "champion_closed_count": 2,
+        "champion_last_event_id": "event-2",
+    }
+
+    live_runner._scope_champion_cursor(
+        "user",
+        "conn",
+        state,
+        trade_date=DATE,
+        strategy_version="v2.12",
+        target_count=3,
+        target_event_id="event-3",
+    )
+
+    assert saved[0]["count"] == 2
+    assert saved[0]["event_id"] == "event-2"
+    assert saved[0]["strategy_version"] == "v2.12"
+
+
+def test_flat_strategy_change_adopts_new_replay_cursor(monkeypatch) -> None:
+    saved = []
+    monkeypatch.setattr(
+        live_runner,
+        "_advance_champion_cursor",
+        lambda *_a, **kwargs: saved.append(kwargs),
+    )
+    state = {
+        "position": "NONE",
+        "champion_trade_date": DATE,
+        "champion_strategy_version": "v2.12",
+        "champion_closed_count": 2,
+        "champion_last_event_id": "event-2",
+    }
+
+    live_runner._scope_champion_cursor(
+        "user",
+        "conn",
+        state,
+        trade_date=DATE,
+        strategy_version="v2.13",
+        target_count=4,
+        target_event_id="event-4",
+    )
+
+    assert saved[0]["count"] == 4
+    assert saved[0]["event_id"] == "event-4"
+    assert saved[0]["strategy_version"] == "v2.13"
 
 
 def test_champion_contract_uses_replay_entry_spot(monkeypatch) -> None:

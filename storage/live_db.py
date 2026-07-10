@@ -179,6 +179,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 recovery_side        TEXT,
                 spot_stop_bar        TEXT,
                 champion_trade_date  TEXT,
+                champion_strategy_version TEXT,
                 champion_closed_count INTEGER DEFAULT 0,
                 champion_last_event_id TEXT,
                 updated_at           TEXT
@@ -310,6 +311,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
         state_cols = _cols("live_trade_state")
         for col, decl in (
             ("champion_trade_date", "TEXT"),
+            ("champion_strategy_version", "TEXT"),
             ("champion_closed_count", "INTEGER DEFAULT 0"),
             ("champion_last_event_id", "TEXT"),
         ):

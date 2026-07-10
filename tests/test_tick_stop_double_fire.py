@@ -37,7 +37,7 @@ def test_overlay_gated_on_db_open_not_broker_open():
     overlay_idx = src.index("ENTRY_SPOT_SL_TICK")
     gate_idx = src.index('_db_open = (st.get("position") or "NONE").upper() == "OPEN"')
     assert gate_idx < overlay_idx
-    assert "if current_open and _db_open and use_champion and v212_recovery:" in src
+    assert "if current_open and _db_open and use_champion and recovery_replay:" in src
 
 
 def test_anchor_self_heal_requires_db_open():

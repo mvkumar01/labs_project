@@ -18,7 +18,8 @@ def _render(**ctx):
         comparison_variant_totals={}, comparison_by_date={},
         sensex_rows=[], sensex_trades=[], sensex_stats={},
         sensex_v211_rows=[], sensex_v211_trades=[], sensex_v211_stats={},
-        v212_rows=[], v212_trades=[], v212_stats={},
+        overlay_rows=[], overlay_trades=[], overlay_stats={},
+        overlay_version="v2.12",
     )
     base.update(ctx)
     with app.app_context():
@@ -27,7 +28,7 @@ def _render(**ctx):
 
 def test_baskets_tab_renders_empty_state():
     html = _render()
-    assert "Baskets — v2.11 signals as multi-leg structures" in html
+    assert "v2.11 Baskets — signals as multi-leg structures" in html
     assert "No basket rows yet" in html
 
 

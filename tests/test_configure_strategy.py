@@ -86,6 +86,7 @@ def test_configure_renders_one_strategy_select_without_bot_variant(client):
     assert 'name="om_r2_enabled"' not in page
     assert "Alpha v2.11" in page
     assert "Alpha v2.12" in page
+    assert "Alpha v2.13" in page
     assert "Switch only while FLAT" in page
 
 
@@ -130,6 +131,15 @@ def test_open_position_rejects_strategy_change_without_mutating_config(client):
     assert svc.get_lots(USER_ID, CONN_ID) == 1
 
 
+def test_flat_strategy_change_supports_v213(client):
+    _set_strategy("champion_replay", "v2.12")
+
+    response = _configure(client, "champion_v213")
+
+    assert response.status_code == 302
+    assert _strategy_pair() == ("champion_replay", "v2.13")
+
+
 def test_open_position_allows_same_strategy_to_save_other_configuration(client):
     _set_strategy("champion_replay", "v2.11")
     state = svc.get_trade_state(USER_ID, CONN_ID)
@@ -153,12 +163,12 @@ def test_unknown_strategy_does_not_change_existing_config(client):
 
 
 def test_dashboard_displays_active_strategy_label(client):
-    _set_strategy("champion_replay", "v2.12")
+    _set_strategy("champion_replay", "v2.13")
 
     response = client.get("/live/")
 
     assert response.status_code == 200
-    assert "Alpha v2.12" in response.get_data(as_text=True)
+    assert "Alpha v2.13" in response.get_data(as_text=True)
 
 
 def test_new_live_schema_omits_retired_r2_source_ledger():

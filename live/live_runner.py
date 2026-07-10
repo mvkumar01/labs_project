@@ -240,16 +240,47 @@ def _freshly_applied(result, *, dry_run: bool) -> bool:
 
 
 def _advance_champion_cursor(user_id: str, conn_id: str, st: dict, *,
-                             count: int, event_id, trade_date: str | None = None
-                             ) -> None:
-    """Single writer for the v2.12 replay cursor. Every path that consumes a
-    canonical closed event MUST advance through here — divergent hand-rolled
-    writes are how a stop gets re-emitted or dropped after a restart."""
+                             count: int, event_id, trade_date: str | None = None,
+                             strategy_version: str | None = None) -> None:
+    """Single writer for the overlay replay cursor. Every consumed canonical
+    closed event MUST advance through here; divergent hand-rolled writes are
+    how a stop gets re-emitted or dropped after a restart."""
     update = {"champion_closed_count": count, "champion_last_event_id": event_id}
     if trade_date is not None:
         update["champion_trade_date"] = trade_date
+    if strategy_version is not None:
+        update["champion_strategy_version"] = strategy_version
     st.update(update)
     svc.save_trade_state(user_id, conn_id, st)
+
+
+def _scope_champion_cursor(user_id: str, conn_id: str, st: dict, *,
+                           trade_date: str, strategy_version: str,
+                           target_count: int, target_event_id) -> None:
+    """Scope a replay cursor without swallowing an event on schema upgrade."""
+    cursor_date = st.get("champion_trade_date")
+    cursor_version = st.get("champion_strategy_version")
+    if cursor_date == trade_date and cursor_version == strategy_version:
+        return
+    db_open = (st.get("position") or "NONE").upper() == "OPEN"
+    legacy_open = (
+        cursor_date == trade_date and cursor_version is None and db_open
+    )
+    if legacy_open:
+        # The version column was added after v2.12 went live. Stamping an open
+        # legacy row must retain its existing event cursor; adopting the replay
+        # target here could acknowledge a stop before its broker exit runs.
+        target_count = int(st.get("champion_closed_count") or 0)
+        target_event_id = st.get("champion_last_event_id")
+    _advance_champion_cursor(
+        user_id,
+        conn_id,
+        st,
+        count=target_count,
+        event_id=target_event_id,
+        trade_date=trade_date,
+        strategy_version=strategy_version,
+    )
 
 
 # Marketable-limit buffer (D1). Entries/exits are placed as LIMIT at the current
@@ -1127,7 +1158,10 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # In champion mode the trail + v7.11 exits live INSIDE the replay, so the
     # standalone trail/drift blocks below are skipped to avoid double exits.
     use_champion = svc.get_config(user_id, conn_id, "decision_engine") == "champion_replay"
-    v212_recovery = svc.get_config(user_id, conn_id, "strategy_version") == "v2.12"
+    strategy_version = svc.get_config(user_id, conn_id, "strategy_version")
+    v212_recovery = strategy_version == "v2.12"
+    v213_additive = strategy_version == "v2.13"
+    recovery_replay = v212_recovery or v213_additive
 
     # v2.12 decisions are canonical (the recovery-enabled replay below); the
     # tick overlay further down only ACCELERATES the stop's execution.
@@ -1212,7 +1246,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # recorded exit the broker book can lag a few seconds, and a broker-open/
     # DB-flat window must never re-fire the overlay (2026-07-10 incident).
     _db_open = (st.get("position") or "NONE").upper() == "OPEN"
-    if current_open and _db_open and use_champion and v212_recovery:
+    if current_open and _db_open and use_champion and recovery_replay:
         _anchor = _as_float(st.get("entry_spot"))
         _tick = _as_float(_fast_spot())
         _side_u = (current_side or "").upper()
@@ -1234,13 +1268,13 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 # stop event acks while flat instead of re-exiting.
                 svc.reset_trade_state(user_id, conn_id)
                 log.info(
-                    "v2.12 tick stop conn=%s side=%s anchor=%.2f spot=%.2f",
-                    conn_id, _side_u, _anchor, _tick)
+                    "%s tick stop conn=%s side=%s anchor=%.2f spot=%.2f",
+                    strategy_version, conn_id, _side_u, _anchor, _tick)
             return
 
     trade_date = _today_ist_iso()
     alpha_key = (alpha_bar.get("timestamp"), alpha_bar.get("alpha"))
-    if use_champion and v212_recovery:
+    if use_champion and recovery_replay:
         # Re-evaluate when either an exact-mark alpha arrives or a new completed
         # one-minute OHLC candle arrives. This is the paper replay's event clock.
         alpha_key += (champion_inputs.latest_completed_ohlc_minute(trade_date),)
@@ -1254,21 +1288,28 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # At the boundary immediately after a completed trigger candle, Kite
         # historical OHLC does not yet contain the new candle. The current Kite
         # index spot is the live executable proxy for that next-candle open.
-        live_execution_spot = _fast_spot() if v212_recovery else None
+        live_execution_spot = _fast_spot() if recovery_replay else None
         target = champion_decider.champion_target(
             trade_date, now_ist=_now_ist(),
             enable_entry_spot_recovery=v212_recovery,
+            enable_v211_risk_authority=v213_additive,
             live_execution_spot=live_execution_spot)
         target_closed_count = int((target or {}).get("n_closed") or 0)
         target_event_id = (target or {}).get("last_closed_event_id")
-        if v212_recovery and st.get("champion_trade_date") != trade_date:
+        if recovery_replay and (
+                st.get("champion_trade_date") != trade_date
+                or st.get("champion_strategy_version") != strategy_version):
             # First observation of a date adopts the canonical replay cursor;
             # historical events cannot safely be sent to a broker after startup.
-            _advance_champion_cursor(
-                user_id, conn_id, st, count=target_closed_count,
-                event_id=target_event_id, trade_date=trade_date)
+            # An open legacy v2.12 row is only version-stamped, preserving its
+            # cursor so a pending event is still reconciled after this deploy.
+            _scope_champion_cursor(
+                user_id, conn_id, st, trade_date=trade_date,
+                strategy_version=strategy_version,
+                target_count=target_closed_count,
+                target_event_id=target_event_id)
         closed_count_seen = int(st.get("champion_closed_count") or 0)
-        if v212_recovery:
+        if recovery_replay:
             sig = champion_decider.reconcile_replay_event(
                 target, current_side if current_open else None,
                 closed_count_seen=closed_count_seen,
@@ -1278,7 +1319,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 target, current_side if current_open else None
             )
         replay_event_pending = (
-            v212_recovery and target_closed_count > closed_count_seen
+            recovery_replay and target_closed_count > closed_count_seen
         )
         # If already flat, acknowledge the closed segment now; the final replay
         # target below may immediately request its canonical recovery re-entry.
@@ -1292,7 +1333,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # persisted anchor (which drives the tick overlay above) follows it —
         # 2026-07-08: a 3-pt live-vs-paper anchor gap held a stop 8 minutes
         # past paper's exit and cost -29 premium points.
-        if (v212_recovery and current_open
+        if (recovery_replay and current_open
                 and (st.get("position") or "NONE").upper() == "OPEN"
                 and champ_entry_spot is not None
                 and (target or {}).get("position") == (current_side or "").upper()):
@@ -1303,8 +1344,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     and _as_float(st.get("entry_spot")) != _canon_anchor):
                 st["entry_spot"] = _canon_anchor
                 svc.save_trade_state(user_id, conn_id, st)
-                log.info("v2.12 anchor synced to replay conn=%s entry_spot=%.2f",
-                         conn_id, _canon_anchor)
+                log.info("%s anchor synced to replay conn=%s entry_spot=%.2f",
+                         strategy_version, conn_id, _canon_anchor)
         log.info("champion conn=%s ts=%s pos=%s target=%s sig=%s",
                  conn_id, alpha_bar.get("timestamp"),
                  "OPEN" if current_open else "NONE", target, sig)
@@ -1330,10 +1371,14 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
         qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        contract_spot = (
+            (target or {}).get("execution_entry_spot", champ_entry_spot)
+            if use_champion else None
+        )
         symbol, price = resolve_affordable_option(
             adapter, side, qty, trade_date=trade_date,
-            reference_spot=champ_entry_spot if use_champion else None)
-        if use_champion and v212_recovery:
+            reference_spot=contract_spot)
+        if use_champion and recovery_replay:
             # Unknown/rejected outcomes must be retried idempotently next poll.
             alpha_seen.pop(conn_id, None)
         result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
@@ -1361,7 +1406,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
 
     elif sig["action"] == "EXIT" and current_open:
         exit_price = _fast_ltp(adapter, current_symbol)
-        if use_champion and v212_recovery:
+        if use_champion and recovery_replay:
             # On success this also permits the canonical recovery ENTER on the
             # next poll, without waiting for another minute or alpha mark.
             alpha_seen.pop(conn_id, None)
