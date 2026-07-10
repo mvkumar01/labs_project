@@ -224,6 +224,21 @@ def _order_applied(status: str, *, dry_run: bool) -> bool:
     return status.upper() in {"COMPLETE", "COMPLETED", "FILLED", "EXECUTED"}
 
 
+def _freshly_applied(result, *, dry_run: bool) -> bool:
+    """True only for an order THIS call actually placed and filled.
+
+    An idempotent SKIP echoes a PREVIOUS order's terminal status; treating it
+    as applied books the same broker fill twice and resets state without any
+    new order reaching the broker (2026-07-10: two tick stops in one minute
+    collided on the minute-granular idem key -> phantom trade rows with
+    entry_price=0 and an untracked live position for ~1 minute). A skipped
+    EXIT simply retries next poll and executes when the minute rolls over to
+    a fresh idempotency key."""
+    if (result.raw or {}).get("idempotent_skip"):
+        return False
+    return _order_applied(result.status, dry_run=dry_run)
+
+
 def _advance_champion_cursor(user_id: str, conn_id: str, st: dict, *,
                              count: int, event_id, trade_date: str | None = None
                              ) -> None:
@@ -1193,7 +1208,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # branch consumes that event, so live and paper record the SAME canonical
     # segment. Re-entry is never taken here — it stays canonical. A missing
     # tick spot or anchor skips silently (never a spurious stop).
-    if current_open and use_champion and v212_recovery:
+    # Gate on the DB state being OPEN too (not broker truth alone): after a
+    # recorded exit the broker book can lag a few seconds, and a broker-open/
+    # DB-flat window must never re-fire the overlay (2026-07-10 incident).
+    _db_open = (st.get("position") or "NONE").upper() == "OPEN"
+    if current_open and _db_open and use_champion and v212_recovery:
         _anchor = _as_float(st.get("entry_spot"))
         _tick = _as_float(_fast_spot())
         _side_u = (current_side or "").upper()
@@ -1205,7 +1224,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 adapter, user_id, conn_id, action="EXIT", side=current_side,
                 symbol=current_symbol, qty=current_qty, price=exit_price,
                 dry_run=dry_run)
-            if _order_applied(result.status, dry_run=dry_run):
+            if _freshly_applied(result, dry_run=dry_run):
                 _record_exit_result(
                     user_id, conn_id, st,
                     exit_price=result.avg_fill_price or exit_price,
@@ -1273,8 +1292,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # persisted anchor (which drives the tick overlay above) follows it —
         # 2026-07-08: a 3-pt live-vs-paper anchor gap held a stop 8 minutes
         # past paper's exit and cost -29 premium points.
-        if (v212_recovery and current_open and champ_entry_spot is not None
+        if (v212_recovery and current_open
+                and (st.get("position") or "NONE").upper() == "OPEN"
+                and champ_entry_spot is not None
                 and (target or {}).get("position") == (current_side or "").upper()):
+            # DB-open required: healing entry_spot onto a flat state row would
+            # re-arm the tick overlay during a broker-lag window (2026-07-10).
             _canon_anchor = _as_float(champ_entry_spot)
             if (_canon_anchor is not None
                     and _as_float(st.get("entry_spot")) != _canon_anchor):
@@ -1345,20 +1368,35 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         result = _route_order(adapter, user_id, conn_id, action="EXIT", side=current_side,
                               symbol=current_symbol, qty=current_qty,
                               price=exit_price, dry_run=dry_run)
-        if _order_applied(result.status, dry_run=dry_run):
+        if _freshly_applied(result, dry_run=dry_run):
             if replay_event_pending:
                 _advance_champion_cursor(
                     user_id, conn_id, st, count=target_closed_count,
                     event_id=target_event_id)
-            _record_exit_result(
-                user_id,
-                conn_id,
-                st,
-                exit_price=result.avg_fill_price or exit_price,
-                qty=current_qty,
-                reason=sig.get("reason") or "signal_exit",
-                dry_run=dry_run,
-            )
+            if _as_float(st.get("entry_price")) is not None:
+                _record_exit_result(
+                    user_id,
+                    conn_id,
+                    st,
+                    exit_price=result.avg_fill_price or exit_price,
+                    qty=current_qty,
+                    reason=sig.get("reason") or "signal_exit",
+                    dry_run=dry_run,
+                )
+            else:
+                # Flattening a broker position the DB never tracked (orphan
+                # after a state desync) is the right ORDER, but booking P&L
+                # from an empty state fabricates profit (2026-07-10: two
+                # phantom rows, +34k fake). Log loudly instead.
+                log.warning(
+                    "orphan broker position flattened without ledger entry | "
+                    "conn=%s %s %s x%s @ %s — no trade recorded, verify at broker",
+                    conn_id, current_side, current_symbol, current_qty,
+                    result.avg_fill_price or exit_price)
+                notify_telegram(
+                    f"⚠️ Orphan {current_side} {current_symbol} flattened @ "
+                    f"{result.avg_fill_price or exit_price} — no ledger entry; "
+                    "verify at broker")
             svc.reset_trade_state(user_id, conn_id)
 
 
