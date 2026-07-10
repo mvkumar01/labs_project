@@ -660,3 +660,29 @@ def baskets_refresh():
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@labs_bp.route("/api/alpha_v213/backfill", methods=["POST"])
+def alpha_v213_backfill():
+    """Replay up to `limit` pending Alpha v2.13 days (default from 2026-06-01)
+    into alpha_v213_daily/_trades, reusing v2.12's per-day champion ranges.
+    Bounded per call so a PA web request never runs long; keep calling while
+    `remaining` > 0. Paper data only — no orders."""
+    from labs.engine.alpha_v213_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(int(request.args.get("limit", 5)), 10)
+    except (TypeError, ValueError):
+        limit = 5
+    start = request.args.get("start") or DEFAULT_START
+    end = request.args.get("end") or None
+    try:
+        result = run_backfill(start_date=start, end_date=end, limit=limit)
+        return jsonify({
+            "ok": True,
+            "done": len(result["done"]),
+            "dates": result["done"],
+            "remaining": result["remaining"],
+            "errors": result["errors"],
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
