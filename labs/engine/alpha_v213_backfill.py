@@ -16,6 +16,19 @@ from storage.db import get_conn
 
 DEFAULT_START = "2026-06-01"
 
+# The stored v2.12 context carries the prev-session date/close as they were
+# when v2.12 was published. The shared store's June baselines were later
+# corrected, so those stored closes now differ by a few points and fail
+# resolve_day_context's strict prev-close match. Dropping them makes v2.13
+# SELF-RESOLVE prev_close from the current (authoritative) shared store —
+# exactly what the live daily loop does (it passes no override at all). The
+# historical champion RANGE (lower/upper/bucket/direction/vix/open) is kept.
+_DROP_FOR_SELF_RESOLVE = ("previous_session_date", "prev_close", "prev_close_source")
+
+
+def _self_resolve_override(override: dict) -> dict:
+    return {k: v for k, v in override.items() if k not in _DROP_FOR_SELF_RESOLVE}
+
 
 def _pending(start_date: str, end_date: str | None, conn) -> tuple[list, dict]:
     """(v2.11-dated days in range with a stored v2.12 context but no v2.13 row,
@@ -46,7 +59,8 @@ def run_backfill(
     errors: dict[str, str] = {}
     for trade_date in pending[: max(1, limit)]:
         try:
-            run_day(trade_date, override=ranges[trade_date],
+            run_day(trade_date,
+                    override=_self_resolve_override(ranges[trade_date]),
                     require_all_quotes=True)
             done.append(trade_date)
         except Exception as exc:  # per-day isolation; surface, keep going
