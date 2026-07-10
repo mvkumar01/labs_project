@@ -22,8 +22,14 @@ DEFAULT_START = "2026-06-01"
 # resolve_day_context's strict prev-close match. Dropping them makes v2.13
 # SELF-RESOLVE prev_close from the current (authoritative) shared store —
 # exactly what the live daily loop does (it passes no override at all). The
-# historical champion RANGE (lower/upper/bucket/direction/vix/open) is kept.
-_DROP_FOR_SELF_RESOLVE = ("previous_session_date", "prev_close", "prev_close_source")
+# stored open_spot drifts the same way (Kite 09:15 correction), so it is
+# dropped too. The historical champion RANGE (lower/upper/bucket/direction/
+# vix) IS kept — a day whose corrected gap now flips direction then surfaces
+# as an error (not a silent re-route under a different strategy cell).
+_DROP_FOR_SELF_RESOLVE = (
+    "previous_session_date", "prev_close", "prev_close_source",
+    "open_spot", "open_spot_source",
+)
 
 
 def _self_resolve_override(override: dict) -> dict:
