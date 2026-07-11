@@ -55,6 +55,15 @@ PC400_TRAIL_ARM_PNL = 40.0
 PC400_TRAIL_DRAWDOWN = 20.0
 PC400_TRAIL_VIX_CUTOFF = 17.0
 _SPOT_TRAIL_CACHE = {}
+# Entry-spot stop overlay tuning (2026-07-11, tick-vs-paper study):
+#  v2.13 -> fast tick stop with a noise buffer: fire on any 2s tick that
+#           breaches the anchor by >= ENTRY_SPOT_TICK_BUFFER points (filters the
+#           intra-candle whipsaw that halved live's edge vs paper on 07-10).
+#  v2.12 -> paper-timed: evaluate only at the first poll of each new minute (the
+#           just-completed candle's close, from our own 2s feed — no wait for
+#           Kite OHLC). At most one stop per candle == paper's cadence.
+ENTRY_SPOT_TICK_BUFFER = 5.0
+_OVERLAY_MIN_SEEN: dict = {}   # conn_id -> last naive-IST minute the overlay saw
 IST = timezone(timedelta(hours=5, minutes=30))
 UNDERLYING = "NIFTY"
 
@@ -328,7 +337,22 @@ def _order_accepted(result, *, dry_run: bool) -> bool:
 
 def _record_exit_result(user_id: str, conn_id: str, position: dict, *, exit_price: float,
                         qty: int, reason: str, dry_run: bool) -> None:
-    entry_price = float(position.get("entry_price") or 0.0)
+    entry_price = _as_float(position.get("entry_price"))
+    if entry_price is None or entry_price <= 0.0:
+        # Uncaptured entry (entry fill never recorded): pricing an exit off a
+        # zero cost basis fabricates P&L — the 2026-07-10 +Rs34k phantom that
+        # then blinded the daily-loss guard (realized_pnl read +29,923 vs a
+        # real -1,669). Flatten WITHOUT writing a ledger row or moving
+        # realized_pnl; the caller still resets the trade state.
+        log.error(
+            "phantom exit suppressed: no captured entry_price conn=%s sym=%s "
+            "reason=%s exit=%s", conn_id, position.get("symbol"), reason,
+            exit_price)
+        notify_telegram(
+            "phantom exit suppressed (entry_price missing) "
+            f"{position.get('symbol')} reason={reason}")
+        return
+    entry_price = float(entry_price)
     qty = abs(int(qty or 0))
     pnl_info = svc.calc_net_option_pnl(entry_price, float(exit_price), qty)
     gross_pnl = float(pnl_info["gross_pnl"])
@@ -649,6 +673,40 @@ def _to_ist_minute_naive(value):
         return dt.astimezone(IST).replace(second=0, microsecond=0, tzinfo=None)
     except Exception:
         return None
+
+
+def _entry_spot_stop_hit(*, side, anchor, tick, v213_additive, conn_id,
+                         entry_time, now) -> bool:
+    """Whether the entry-spot stop overlay should fire on this poll.
+
+    v2.13 -> fast tick stop past a noise buffer: the live spot must breach the
+             anchor by >= ENTRY_SPOT_TICK_BUFFER points (CALL: down, PUT: up).
+    v2.12 -> paper cadence: only at the first poll of a NEW minute (the just-
+             completed candle's close, our own feed), and only AFTER the entry
+             candle; the boundary spot (close) must breach the anchor.
+    Updates ``_OVERLAY_MIN_SEEN`` as a side effect (v2.12 boundary tracking).
+    A missing anchor/tick never fires.
+    """
+    if anchor is None or tick is None:
+        return False
+    side_u = (side or "").upper()
+    if v213_additive:
+        return (
+            (side_u == "CALL" and tick <= anchor - ENTRY_SPOT_TICK_BUFFER)
+            or (side_u == "PUT" and tick >= anchor + ENTRY_SPOT_TICK_BUFFER)
+        )
+    cur_min = now.replace(second=0, microsecond=0, tzinfo=None)
+    prev_min = _OVERLAY_MIN_SEEN.get(conn_id)
+    _OVERLAY_MIN_SEEN[conn_id] = cur_min
+    ent_min = _to_ist_minute_naive(entry_time)
+    boundary = (
+        prev_min is not None and prev_min != cur_min
+        and (ent_min is None or cur_min > ent_min)
+    )
+    return boundary and (
+        (side_u == "CALL" and tick <= anchor)
+        or (side_u == "PUT" and tick >= anchor)
+    )
 
 
 def _csv_ts_to_ist_naive(value):
@@ -1231,17 +1289,22 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                     svc.reset_trade_state(user_id, conn_id)
                 return
 
-    # ── v2.12 tick-stop overlay (fast out, patient back in) ──────────────
+    # ── entry-spot stop overlay (per-strategy trigger) ───────────────────
     # The decision stream stays canonical (the recovery-enabled replay below);
-    # this overlay only ACCELERATES the entry-spot stop's execution. When the
-    # live Kite spot crosses the replay's anchored barrier intra-candle, exit
-    # at market NOW instead of waiting for the candle to complete (up to ~59s
-    # earlier — the tail-cutting that is v2.12's measured edge). The champion
-    # cursor is deliberately NOT advanced here: the replay books the same stop
-    # at the candle close, and the already-flat acknowledgement in the champion
-    # branch consumes that event, so live and paper record the SAME canonical
-    # segment. Re-entry is never taken here — it stays canonical. A missing
-    # tick spot or anchor skips silently (never a spurious stop).
+    # this overlay only controls WHEN the entry-spot stop executes.
+    #   v2.13 -> fast tick stop past a noise buffer (ENTRY_SPOT_TICK_BUFFER):
+    #            exit the instant the live spot breaches the anchor by >=5 pts.
+    #   v2.12 -> paper cadence: evaluate only at the first poll of a NEW minute
+    #            (the just-completed candle's close, from our own 2s feed — no
+    #            wait for Kite OHLC), and only after the entry candle. At most
+    #            one stop per candle, valued at that boundary close. A dip that
+    #            recovers by the close is intentionally held (paper's same-close
+    #            scalp is a telescoping wash that would only burn spread live).
+    # Re-entry is never taken here — it stays canonical. The champion cursor is
+    # deliberately NOT advanced: the replay books the same stop at the candle
+    # close and the already-flat acknowledgement consumes that event, so live
+    # and paper record the SAME canonical segment. A missing spot/anchor skips
+    # silently (never a spurious stop).
     # Gate on the DB state being OPEN too (not broker truth alone): after a
     # recorded exit the broker book can lag a few seconds, and a broker-open/
     # DB-flat window must never re-fire the overlay (2026-07-10 incident).
@@ -1250,9 +1313,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         _anchor = _as_float(st.get("entry_spot"))
         _tick = _as_float(_fast_spot())
         _side_u = (current_side or "").upper()
-        if _anchor is not None and _tick is not None and (
-                (_side_u == "CALL" and _tick <= _anchor)
-                or (_side_u == "PUT" and _tick >= _anchor)):
+        _hit = _entry_spot_stop_hit(
+            side=current_side, anchor=_anchor, tick=_tick,
+            v213_additive=v213_additive, conn_id=conn_id,
+            entry_time=st.get("entry_time"), now=_now_ist())
+        if _hit:
             exit_price = _fast_ltp(adapter, current_symbol)
             result = _route_order(
                 adapter, user_id, conn_id, action="EXIT", side=current_side,
