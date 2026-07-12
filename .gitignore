@@ -23,3 +23,6 @@ __pycache__/
 *.pyo
 .env
 *.log
+
+# graphify knowledge graph — generated (~12MB), refreshed by the daily scheduled task; do not track
+graphify-out/
