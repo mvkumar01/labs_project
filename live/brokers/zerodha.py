@@ -178,6 +178,10 @@ class ZerodhaAdapter(BrokerAdapter):
                 quantity=qty,
                 product=self._kite.PRODUCT_MIS,
                 order_type=self._kite.ORDER_TYPE_LIMIT,
+                # IOC, not the kite default DAY: an entry limit must not rest
+                # into a later bar and fill stale (see angel.place_order note —
+                # 2026-07-14 phantom-lot incident). Exits stay DAY (exit_all).
+                validity=self._kite.VALIDITY_IOC,
                 price=price,
                 tag=idempotency_key[:20],  # Zerodha tag max 20 chars
             )

@@ -370,7 +370,14 @@ class AngelAdapter(BrokerAdapter):
             "exchange": self._EXCHANGE,
             "ordertype": self._ORDER_TYPE,
             "producttype": self._PRODUCT,
-            "duration": "DAY",
+            # IOC (immediate-or-cancel), NOT DAY: an entry signal is for THIS
+            # bar only. A resting DAY limit that fills minutes later (2026-07-14:
+            # a 181.9 buy filled long after the bar) creates a broker long the
+            # DB never recorded → phantom P&L AND, via live_runner current_open=
+            # broker_open, makes the runner think it already holds a position so
+            # it stops re-entering. IOC fills what it can now, else cancels — the
+            # per-bar loop retries next bar. Exits stay DAY (see exit_all).
+            "duration": "IOC",
             "price": price,
             "quantity": qty,
             "ordertag": _angel_order_tag(idempotency_key),
@@ -461,6 +468,12 @@ class AngelAdapter(BrokerAdapter):
             "exchange": self._EXCHANGE,
             "ordertype": self._ORDER_TYPE,
             "producttype": self._PRODUCT,
+            # DAY (deliberately NOT IOC): an exit is risk-off and must fill. A
+            # cancelled IOC exit is not in _RETRIABLE_EXIT_STATUSES, so it would
+            # NOT be retried and would strand a live long. The caller's SELL
+            # limit is already marketable-adjusted, so DAY fills at once in the
+            # normal case and only rests if the market gaps away — acceptable
+            # for a square-off. Entries use IOC (see place_order).
             "duration": "DAY",
             # Caller-supplied Kite marketable SELL limit. Angel is never used
             # to fetch market data.
