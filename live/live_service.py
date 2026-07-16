@@ -565,8 +565,15 @@ def recent_orders(user_id: str, conn_id: str, limit: int = 20,
         # Attach realized PnL to EXIT rows. live_orders has no PnL of its own;
         # the round-trip result lives in live_trades, recorded in the same exit
         # cycle (both timestamps are _now_iso() UTC). Match on the natural key
-        # (conn/symbol/side/dry_run) and pick the trade whose exit_time is
-        # closest to this order's created_at (guards re-entries on one symbol).
+        # (conn/symbol/side/dry_run) within a 60s window of the order's
+        # created_at, then take the most-recent matching exit.
+        # NOTE: the subquery ORDER BY must use a LOCAL column (t.exit_time), NOT
+        # the outer o.created_at — SQLite cannot resolve an outer-scope column
+        # in a subquery's ORDER BY and raises a misleading "no such column:
+        # o.created_at", which 500'd the whole /live/status poll so the orders
+        # panel (and every polled field) went blank. An outer ref in the
+        # subquery WHERE is fine; only the ORDER BY is scoped out. For the
+        # normal one-trade-per-window case this is identical to "closest".
         # ENTER rows and any unmatched EXIT get NULL. Read-only — the order
         # write path is untouched.
         rows = conn.execute(
@@ -577,7 +584,7 @@ def recent_orders(user_id: str, conn_id: str, limit: int = 20,
             "    AND t.symbol = o.symbol AND t.side = o.side "
             "    AND t.dry_run = o.dry_run "
             "    AND ABS(julianday(t.exit_time) - julianday(o.created_at)) < (60.0 / 86400.0) "
-            "  ORDER BY ABS(julianday(t.exit_time) - julianday(o.created_at)) ASC "
+            "  ORDER BY t.exit_time DESC "
             "  LIMIT 1"
             ") AS net_pnl "
             "FROM live_orders o WHERE o.user_id = ? AND o.conn_id = ? "
