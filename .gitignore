@@ -5,6 +5,9 @@ storage/live.db
 storage/live.db-*
 storage/state/
 storage/state/creds_enc.json
+storage/calibration_center_state.json
+storage/calibration_center_audit.jsonl
+storage/calibration_reports/
 config/zerodha_token.json
 config/zerodha_creds.json
 config/telegram.json

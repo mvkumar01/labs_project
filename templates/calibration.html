@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Calibration Center — Labs</title>
+  <link rel="stylesheet" href="/static/labs.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    <nav>
+      <a href="/labs">Dashboard</a>
+      <a href="/labs/backtest">Backtest</a>
+      <a href="/labs/live">Live</a>
+      <a href="/labs/calibration" class="active">Calibration</a>
+      <a href="/live/login">Login</a>
+    </nav>
+  </header>
+
+  <main class="calibration-main">
+    <div class="detail-header">
+      <div>
+        <h1>OI Market Read Calibration Center</h1>
+        <p class="meta">Versioned threshold research, walk-forward checks, shadow comparison, approval and rollback audit.</p>
+      </div>
+      <span class="badge badge-{{ 'active' if config.operating_mode == 'automatic_promotion' else 'paused' }}">
+        {{ config.operating_mode.replace('_', ' ') }}
+      </span>
+    </div>
+
+    {% if message %}<div class="cal-alert cal-alert-success">{{ message }}</div>{% endif %}
+    {% if error %}<div class="cal-alert cal-alert-error">{{ error }}</div>{% endif %}
+
+    <section class="cal-selector">
+      <div class="cal-tabs" aria-label="Calibration index">
+        {% for item in calibration_symbols %}
+          <a class="{{ 'active' if item == symbol else '' }}" href="/labs/calibration?symbol={{ item }}&interval={{ interval_minutes }}">{{ item }}</a>
+        {% endfor %}
+      </div>
+      <div class="cal-tabs" aria-label="Calibration interval">
+        {% for item in calibration_intervals %}
+          <a class="{{ 'active' if item == interval_minutes else '' }}" href="/labs/calibration?symbol={{ symbol }}&interval={{ item }}">{{ item }} Minute</a>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="cal-summary-grid">
+      <div class="cal-summary-card"><span>Current Version</span><strong>{{ current.version }}</strong><small>{{ current.deployment_status }}</small></div>
+      <div class="cal-summary-card"><span>Candidate Version</span><strong>{{ candidate.candidate_version if candidate else 'Not calculated' }}</strong><small>{{ candidate.status if candidate else '—' }}</small></div>
+      <div class="cal-summary-card cal-reco-{{ candidate.recommendation|lower if candidate else 'amber' }}"><span>Recommendation</span><strong>{{ candidate.recommendation if candidate else 'AMBER' }}</strong><small>{{ 'Run recalculation' if not candidate else 'Configured production gates' }}</small></div>
+      <div class="cal-summary-card"><span>Confidence</span><strong>{% if candidate %}{{ candidate.confidence }}%{% else %}—{% endif %}</strong><small>Gate pass share</small></div>
+      <div class="cal-summary-card"><span>Dataset</span><strong>{{ candidate.metrics.candidate.sessions if candidate else current.sessions }} sessions</strong><small>{% if candidate %}{{ candidate.dataset.first_date or '—' }} → {{ candidate.dataset.last_date or '—' }}{% else %}{{ current.dataset_period }}{% endif %}</small></div>
+      <div class="cal-summary-card"><span>Walk Forward</span><strong>{{ candidate.walk_forward_status if candidate else 'NOT RUN' }}</strong><small>{% if candidate %}{{ '%.0f'|format(candidate.metrics.candidate.walk_forward.pass_pct) }}% windows passed{% else %}—{% endif %}</small></div>
+      <div class="cal-summary-card"><span>Shadow Mode</span><strong>{{ candidate.shadow_status if candidate else 'NOT RUN' }}</strong><small>Identical timestamps required</small></div>
+      <div class="cal-summary-card"><span>Automatic Promotion</span><strong>{{ 'ENABLED' if config.automatic_promotion_enabled else 'DISABLED' }}</strong><small>Fail-closed</small></div>
+    </section>
+
+    {% if candidate %}
+    <section class="cal-panel">
+      <h2>Recommendation explained</h2>
+      <ul class="cal-explanation">{% for line in candidate.explanation %}<li>{{ line }}</li>{% endfor %}</ul>
+      <div class="cal-gates">
+        {% for gate, passed in candidate.gate_checks.items() %}
+          <span class="cal-gate {{ 'pass' if passed else 'fail' }}">{{ '✓' if passed else '×' }} {{ gate.replace('_', ' ') }}</span>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="cal-panel">
+      <div class="cal-panel-head"><h2>Current vs Candidate</h2><span>Difference = candidate − current</span></div>
+      <div class="table-wrap"><table class="data-table cal-comparison-table">
+        <thead><tr><th>Metric</th><th>Current</th><th>Candidate</th><th>Difference</th></tr></thead>
+        <tbody>{% for row in candidate.comparison %}
+          <tr><td>{{ row.metric.replace('_', ' ').title() }}</td>
+            <td>{{ '—' if row.current is none else '%.2f'|format(row.current) }}</td>
+            <td>{{ '—' if row.candidate is none else '%.2f'|format(row.candidate) }}</td>
+            <td class="{{ 'green' if row.difference is not none and row.difference > 0 else ('red' if row.difference is not none and row.difference < 0 else '') }}">{{ '—' if row.difference is none else '%+.2f'|format(row.difference) }}</td></tr>
+        {% endfor %}</tbody>
+      </table></div>
+    </section>
+
+    <section class="cal-panel">
+      <div class="cal-panel-head">
+        <h2>Calibration charts</h2>
+        <div class="cal-range"><label>From <input type="date" id="calChartFrom"></label><label>To <input type="date" id="calChartTo"></label><button class="btn-secondary btn-small" id="calResetZoom">Reset zoom</button></div>
+      </div>
+      <div class="cal-chart-grid">
+        <div><canvas id="calAccuracyChart"></canvas></div><div><canvas id="calCoverageChart"></canvas></div>
+        <div><canvas id="calFlipChart"></canvas></div><div><canvas id="calRatioChart"></canvas></div>
+        <div><canvas id="calFlatChart"></canvas></div><div><canvas id="calExcursionChart"></canvas></div>
+        <div class="cal-chart-wide"><canvas id="calComparisonChart"></canvas></div>
+      </div>
+    </section>
+    {% endif %}
+
+    <section class="cal-panel">
+      <h2>Threshold comparison</h2>
+      <form method="post" action="/labs/calibration/recalculate" class="cal-threshold-form">
+        <input type="hidden" name="symbol" value="{{ symbol }}"><input type="hidden" name="interval" value="{{ interval_minutes }}">
+        <div class="cal-threshold-head"><span>Threshold</span><span>Current</span><span>Candidate</span></div>
+        {% for field in threshold_fields %}
+          {% set current_value = current.thresholds[field] %}
+          {% set candidate_value = candidate.candidate_thresholds[field] if candidate else current_value %}
+          <label class="cal-threshold-row {{ 'changed' if candidate and candidate_value != current_value else '' }}">
+            <span>{{ field.replace('_', ' ') }}</span><code>{{ current_value }}</code>
+            <input type="number" step="any" name="threshold_{{ field }}" value="{{ candidate_value }}" required>
+          </label>
+        {% endfor %}
+        <div class="cal-form-note">Meaningful Move threshold: {% set move = config.meaningful_move[symbol][interval_minutes|string] %}{{ move.points|string + ' points (provisional)' if move.enabled else 'disabled until calibrated' }}.</div>
+        <button class="btn-primary" type="submit">Recalculate Candidate</button>
+      </form>
+    </section>
+
+    <section class="cal-panel">
+      <h2>Approval workflow</h2>
+      <div class="cal-actions">
+        <form method="post" action="/labs/calibration/action"><input type="hidden" name="symbol" value="{{ symbol }}"><input type="hidden" name="interval" value="{{ interval_minutes }}"><button class="btn-secondary" name="action" value="shadow">Shadow Test Again</button></form>
+        <form method="post" action="/labs/calibration/action"><input type="hidden" name="symbol" value="{{ symbol }}"><input type="hidden" name="interval" value="{{ interval_minutes }}"><button class="btn-primary" name="action" value="approve" {{ 'disabled' if not candidate or candidate.recommendation != 'GREEN' or candidate.shadow_status != 'PASS' else '' }}>Approve</button></form>
+        <form method="post" action="/labs/calibration/action"><input type="hidden" name="symbol" value="{{ symbol }}"><input type="hidden" name="interval" value="{{ interval_minutes }}"><button class="btn-danger" name="action" value="reject" {{ 'disabled' if not candidate else '' }}>Reject</button></form>
+        <form method="post" action="/labs/calibration/action"><input type="hidden" name="symbol" value="{{ symbol }}"><input type="hidden" name="interval" value="{{ interval_minutes }}"><button class="btn-secondary" name="action" value="rollback" {{ 'disabled' if versions|length < 2 else '' }}>Rollback</button></form>
+      </div>
+      <p class="meta">Approval records an approved deployment candidate. It does not bypass Local → Git → PythonAnywhere. Automatic promotion remains disabled unless explicitly enabled and every gate passes.</p>
+    </section>
+
+    {% if candidate %}<section class="cal-panel"><h2>Historical reports</h2><div class="cal-downloads">
+      <a class="btn-secondary" target="_blank" href="/labs/calibration/download/markdown?symbol={{ symbol }}&interval={{ interval_minutes }}">Open Markdown</a>
+      <a class="btn-secondary" href="/labs/calibration/download/csv?symbol={{ symbol }}&interval={{ interval_minutes }}">Download CSV</a>
+      <a class="btn-secondary" href="/labs/calibration/download/calibration?symbol={{ symbol }}&interval={{ interval_minutes }}">Download Calibration</a>
+      <a class="btn-secondary" href="/labs/calibration/download/audit?symbol={{ symbol }}&interval={{ interval_minutes }}">Download Audit</a>
+    </div></section>{% endif %}
+
+    <section class="cal-panel"><h2>Version history</h2><div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Version</th><th>Effective</th><th>Calibration</th><th>Dataset</th><th>Sessions</th><th>Commit</th><th>Status</th><th>Rollback</th></tr></thead>
+      <tbody>{% for version in versions %}<tr><td>{{ version.version }}</td><td>{{ version.effective_from }}</td><td>{{ version.calibration_date or '—' }}</td><td>{{ version.dataset_period }}</td><td>{{ version.sessions }}</td><td><code>{{ version.commit_hash }}</code></td><td>{{ version.deployment_status }}</td><td>{{ version.rollback_version or '—' }}</td></tr>{% endfor %}</tbody>
+    </table></div></section>
+
+    {% if workflow_history %}<section class="cal-panel"><h2>Workflow audit</h2><div class="table-wrap"><table class="data-table"><thead><tr><th>At</th><th>Candidate</th><th>Action</th><th>Status</th></tr></thead><tbody>{% for row in workflow_history %}<tr><td>{{ row.at }}</td><td>{{ row.candidate_version }}</td><td>{{ row.action }}</td><td>{{ row.status or row.recommendation or '—' }}</td></tr>{% endfor %}</tbody></table></div></section>{% endif %}
+  </main>
+</div>
+<script>window.CALIBRATION_DATA = {{ candidate|tojson if candidate else 'null' }};</script>
+<script src="/static/calibration.js"></script>
+</body>
+</html>

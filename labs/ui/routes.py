@@ -3,7 +3,7 @@ Flask Blueprint for all /labs routes.
 """
 import json
 
-from flask import Blueprint, render_template, request, redirect, url_for, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, jsonify, send_file
 
 from config.labs_config import UNDERLYINGS, STRATEGY_TYPES, EXPIRY_MODES, STRIKE_MODES
 from labs.services.bot_service import (
@@ -15,6 +15,15 @@ from labs.services.metrics_service import (
     get_equity_curve, get_performance_stats, get_open_position,
 )
 from labs.engine.backtest import get_backtest_bots, scan_data_ranges, run_backtest
+from labs.services.calibration_service import (
+    SYMBOLS as CALIBRATION_SYMBOLS,
+    INTERVALS as CALIBRATION_INTERVALS,
+    artifact_path,
+    calibration_context,
+    candidate_action,
+    recalculate,
+    shadow_test,
+)
 
 labs_bp = Blueprint("labs", __name__, url_prefix="/labs")
 
@@ -41,6 +50,78 @@ def backtest_page():
         bots=get_backtest_bots(),
         underlyings=list(UNDERLYINGS.keys()),
     )
+
+
+# ── OI Market Read Calibration Center ────────────────────────────────────────
+
+@labs_bp.route("/calibration")
+def calibration_page():
+    symbol = (request.args.get("symbol") or "NIFTY").upper()
+    try:
+        interval = int(request.args.get("interval") or 5)
+        context = calibration_context(symbol, interval)
+    except (ValueError, FileNotFoundError) as exc:
+        return str(exc), 400
+    return render_template(
+        "calibration.html", **context,
+        calibration_symbols=CALIBRATION_SYMBOLS,
+        calibration_intervals=CALIBRATION_INTERVALS,
+        message=request.args.get("message"),
+        error=request.args.get("error"),
+    )
+
+
+@labs_bp.route("/calibration/recalculate", methods=["POST"])
+def calibration_recalculate():
+    symbol = (request.form.get("symbol") or "NIFTY").upper()
+    interval = int(request.form.get("interval") or 5)
+    thresholds = {
+        key.removeprefix("threshold_"): value
+        for key, value in request.form.items()
+        if key.startswith("threshold_")
+    }
+    try:
+        candidate = recalculate(symbol, interval, thresholds)
+        message = f"{candidate['candidate_version']} recalculated: {candidate['recommendation']}"
+        return redirect(url_for("labs.calibration_page", symbol=symbol, interval=interval, message=message))
+    except Exception as exc:
+        return redirect(url_for("labs.calibration_page", symbol=symbol, interval=interval, error=str(exc)))
+
+
+@labs_bp.route("/calibration/action", methods=["POST"])
+def calibration_action():
+    symbol = (request.form.get("symbol") or "NIFTY").upper()
+    interval = int(request.form.get("interval") or 5)
+    action = request.form.get("action") or ""
+    try:
+        candidate = shadow_test(symbol, interval) if action == "shadow" else candidate_action(symbol, interval, action)
+        message = f"{action.replace('_', ' ').title()}: {candidate.get('status', candidate.get('shadow_status'))}"
+        return redirect(url_for("labs.calibration_page", symbol=symbol, interval=interval, message=message))
+    except Exception as exc:
+        return redirect(url_for("labs.calibration_page", symbol=symbol, interval=interval, error=str(exc)))
+
+
+@labs_bp.route("/calibration/download/<artifact>")
+def calibration_download(artifact):
+    symbol = (request.args.get("symbol") or "NIFTY").upper()
+    interval = int(request.args.get("interval") or 5)
+    try:
+        path = artifact_path(symbol, interval, artifact)
+    except (ValueError, FileNotFoundError) as exc:
+        return str(exc), 404
+    if not path.is_file():
+        return "Artifact not found", 404
+    return send_file(path, as_attachment=artifact != "markdown", download_name=path.name)
+
+
+@labs_bp.route("/api/calibration")
+def api_calibration():
+    symbol = (request.args.get("symbol") or "NIFTY").upper()
+    interval = int(request.args.get("interval") or 5)
+    try:
+        return jsonify(calibration_context(symbol, interval))
+    except (ValueError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 # ── Create ───────────────────────────────────────────────────────────────────

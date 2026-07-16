@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "operating_mode": "recommendation_only",
+  "automatic_promotion_enabled": false,
+  "max_sessions": 30,
+  "holdout_fraction": 0.2,
+  "walk_forward_windows": 5,
+  "production_gates": {
+    "minimum_sessions": 20,
+    "minimum_coverage_pct": 45.0,
+    "minimum_balanced_next_accuracy_pct": 50.0,
+    "minimum_holdout_accuracy_pct": 50.0,
+    "minimum_walk_forward_pass_pct": 60.0,
+    "maximum_flip_pct": 35.0,
+    "minimum_median_signal_minutes": 10.0,
+    "maximum_one_strike_dominance_pct": 30.0,
+    "minimum_mfe_mae_ratio": 1.0
+  },
+  "shadow": {
+    "minimum_completed_timestamps": 25,
+    "minimum_sessions": 3
+  },
+  "meaningful_move": {
+    "NIFTY": {"5": {"enabled": false, "points": null}, "15": {"enabled": false, "points": null}},
+    "SENSEX": {"5": {"enabled": false, "points": null}, "15": {"enabled": false, "points": null}},
+    "BANKNIFTY": {"5": {"enabled": false, "points": null}, "15": {"enabled": false, "points": null}}
+  }
+}
