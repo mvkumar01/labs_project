@@ -305,13 +305,14 @@ def _parse_legs(form) -> list[dict]:
 # ── Live (persistent paper strategy tracker) ─────────────────────────────────
 @labs_bp.route("/live")
 def live_strategy():
-    """Daily PAPER performance of the live Alpha champion (v2.11). Read-only,
+    """Daily PAPER performance of Alpha champion books. Read-only,
     no login — populated EOD by pa_paper_tracker.py. Net PnL includes charges."""
     from storage.db import get_conn
     from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
     active_live_tab = request.args.get("tab", "nifty")
     if active_live_tab not in {
-        "nifty", "alpha_v212", "alpha_v213", "sensex_alpha", "sensex_alpha_inverted",
+        "nifty", "alpha_v211a", "alpha_v212", "alpha_v213",
+        "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
         active_live_tab = "nifty"
@@ -321,7 +322,11 @@ def live_strategy():
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
     sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
-    overlay_version = "v2.13" if active_live_tab == "alpha_v213" else "v2.12"
+    overlay_version = {
+        "alpha_v211a": "v2.11A",
+        "alpha_v212": "v2.12",
+        "alpha_v213": "v2.13",
+    }.get(active_live_tab, "")
     basket_defs, basket_totals, basket_by_date = {}, {}, {}
     basket_pending, basket_error = 0, None
     try:
@@ -410,9 +415,9 @@ def live_strategy():
             comparison_variant_totals = {}
             comparison_by_date = {}
 
-        # v2.12 and v2.13 are separate paper ledgers backed by their respective
+        # v2.11A, v2.12 and v2.13 are separate paper ledgers backed by their respective
         # canonical replay engines. Only load the selected tab's tables.
-        if active_live_tab in {"alpha_v212", "alpha_v213"}:
+        if active_live_tab in {"alpha_v211a", "alpha_v212", "alpha_v213"}:
             overlay_prefix = active_live_tab
             try:
                 overlay_cur = conn.execute(

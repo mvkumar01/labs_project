@@ -305,7 +305,10 @@ def _resolve_replay_context(trade_date: str, day: dict):
 
 
 def replay_champion_signals(
-    trade_date: str, override: dict | None = None,
+    trade_date: str,
+    override: dict | None = None,
+    *,
+    enable_v211a: bool = False,
 ) -> dict:
     """Build v2.11 trades once, before any option-contract pricing.
 
@@ -355,16 +358,24 @@ def replay_champion_signals(
             "existing rows retained"
         )
 
+    v211a_low_vix = (
+        enable_v211a
+        and context.vix_open is not None
+        and float(context.vix_open) < champion_inputs.VIX_TRAIL_CUTOFF
+    )
     _, sim_trades = champion_sim.simulate(
         adf, ce_map, pe_map, ohlc, trade_date, context.use_trail,
         context.sgap, tier, context.weekday, context.regime,
-        day["lower"], day["upper"])
+        day["lower"], day["upper"],
+        enable_v211a_low_vix_dn_put_trail=v211a_low_vix,
+    )
     return {
         "tier": tier,
         "direction": context.direction,
         "sim_trades": sim_trades,
         "session_done": _session_over(trade_date),
         "context": provenance,
+        "v211a_low_vix_trail_enabled": v211a_low_vix,
     }
 
 

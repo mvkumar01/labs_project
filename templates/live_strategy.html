@@ -45,6 +45,7 @@
   <main>
     <div class="live-tabs">
       <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
+      <a href="/labs/live?tab=alpha_v211a" class="{{ 'active' if active_live_tab == 'alpha_v211a' else '' }}">Alpha v2.11A</a>
       <a href="/labs/live?tab=alpha_v212" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
       <a href="/labs/live?tab=alpha_v213" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
       <a href="/labs/live?tab=baskets" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
@@ -63,10 +64,11 @@
       <span id="df-count" class="muted"></span>
     </div>
 
-    {% if active_live_tab in ['alpha_v212', 'alpha_v213'] %}
+    {% if active_live_tab in ['alpha_v211a', 'alpha_v212', 'alpha_v213'] %}
+    {% set is_v211a = active_live_tab == 'alpha_v211a' %}
     {% set is_v213 = active_live_tab == 'alpha_v213' %}
-    <h1>Alpha {{ overlay_version }} — {{ 'v2.11 risk authority + recovery overlay' if is_v213 else 'entry-spot recovery' }} (paper)</h1>
-    <p class="sub">{{ 'The complete Alpha v2.11 lifecycle stays authoritative while' if is_v213 else 'Alpha v2.11 signals plus' }} an original-entry-spot stop and same-side recovery.
+    <h1>Alpha {{ overlay_version }} — {{ 'low-VIX PC400/DOWN PUT trail' if is_v211a else ('v2.11 risk authority + recovery overlay' if is_v213 else 'entry-spot recovery') }} (paper)</h1>
+    <p class="sub">{% if is_v211a %}Alpha v2.11 with one isolated exit overlay: when opening VIX is below 17, PC400 gap-DOWN PUT arms a NIFTY spot trail at +30 points and exits after a 20-point retrace.{% else %}{{ 'The complete Alpha v2.11 lifecycle stays authoritative while' if is_v213 else 'Alpha v2.11 signals plus' }} an original-entry-spot stop and same-side recovery.{% endif %}
       One nearest-expiry NIFTY ITM-200 option lot, priced at <b>exact-minute ask in / bid out</b>.
       Net P&amp;L includes charges.</p>
 
@@ -144,7 +146,9 @@
       </table>
 
       <p class="note">
-        {% if is_v213 %}
+        {% if is_v211a %}
+        v2.11A changes only low-VIX PC400 gap-DOWN PUT exits: arm after 30 favourable NIFTY spot points, then trail 20 points from the best spot. Missing VIX, VIX at or above 17, and every other tier/direction/side retain the original v2.11 exits. The original Alpha exit remains the control book in the Alpha v2.11 tab.
+        {% elif is_v213 %}
         v2.13 keeps a shadow v2.11 lifecycle authoritative. The entry-spot overlay may exit and recover only while that lifecycle remains active; a v2.11 trail, Alpha exit, target, wall, drift stop, or EOD exit closes the active overlay segment and cancels pending recovery.
         {% else %}
         v2.12 changes only risk handling: every original signal-entry spot is the stop. A touch triggers an exit

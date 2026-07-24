@@ -33,6 +33,8 @@ import pandas as pd
 VIX_TH = 17.0
 TRAIL_ARM = 40
 TRAIL_LOCK = 20
+V211A_DN_PUT_TRAIL_ARM = 30
+V211A_DN_PUT_TRAIL_RETRACE = 20
 EOD_EXIT_MINUTE = 15 * 60 + 25
 
 # v7.6 ALPHA_STALL (PC50 gap-UP CALL)
@@ -227,6 +229,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_v79_d2=True,
              enable_rule3_dn_put=True,
              enable_v711_drift_protective=True,
+             enable_v211a_low_vix_dn_put_trail=False,
              enable_entry_spot_recovery=False,
              close_eod=True, return_state=False,
              entries_until_ts=None, next_open_fallback=None):
@@ -254,6 +257,11 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     `next_open_fallback` is an optional ``(timestamp, spot)`` pair used only by
     live v2.12 when the just-started execution candle is not yet available from
     Kite historical OHLC. Paper/history always uses that candle's recorded open.
+
+    `enable_v211a_low_vix_dn_put_trail` is an isolated Alpha v2.11A paper
+    overlay. Its caller enables it only when the resolved opening VIX is present
+    and below 17. It changes PC400 gap-DOWN PUT exits from Alpha-only to a
+    30-point arm with a 20-point retrace; every other v2.11 rule is unchanged.
     """
     if adf is None or len(adf) < 2:
         return (0.0, [], None) if return_state else (0.0, [])
@@ -451,7 +459,13 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                         else:
                             pos_arm, pos_lock, pos_wall_active = TRAIL_ARM, TRAIL_LOCK, False
                     else:
-                        pos_arm, pos_lock, pos_wall_active = None, None, False
+                        if enable_v211a_low_vix_dn_put_trail:
+                            pos_arm = V211A_DN_PUT_TRAIL_ARM
+                            pos_lock = V211A_DN_PUT_TRAIL_RETRACE
+                        else:
+                            pos_arm = None
+                            pos_lock = None
+                        pos_wall_active = False
                 else:
                     pos_arm, pos_lock, pos_wall_active = None, None, False
                 peak_pnl = 0.0
@@ -851,7 +865,13 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             else:
                                 pos_arm = None; pos_lock = None; pos_wall_active = True
                     else:  # PC400 PUT × gap-DN
-                        pos_arm = None; pos_lock = None; pos_wall_active = False
+                        if enable_v211a_low_vix_dn_put_trail:
+                            pos_arm = V211A_DN_PUT_TRAIL_ARM
+                            pos_lock = V211A_DN_PUT_TRAIL_RETRACE
+                        else:
+                            pos_arm = None
+                            pos_lock = None
+                        pos_wall_active = False
                 else:
                     pos_arm = None; pos_lock = None; pos_wall_active = False
                 peak_pnl = 0.0

@@ -2,7 +2,7 @@
 
 Real-money NIFTY/BANKNIFTY/SENSEX options trading + paper-research platform.
 Companion to the research repo `alphaIMB` (which this repo **reads data from**;
-see "Cross-repo"). Last reviewed 2026-07-12.
+see "Cross-repo"). Last reviewed 2026-07-22.
 
 > Orientation tip: `graphify query "<question>"` (v0.9.2) is current in this repo
 > and indexes ~1.8k nodes. Use it to locate code; it does **not** replace reading
@@ -88,6 +88,32 @@ paper engine (spec §1.4). Broker SDKs are imported lazily inside `connect()`.
 them head-to-head requires putting all on one basis.
 
 ---
+
+### Alpha v2.11A paper book
+
+`labs/engine/alpha_v211a_tracker.py` is a separate NIFTY paper ledger shown at
+`/labs/live?tab=alpha_v211a`. It keeps every v2.11 entry/range/filter/exit rule
+except one: PC400 gap-DOWN PUT with an exact resolved opening VIX below 17 uses
+a spot trail armed at +30 favourable NIFTY points with a 20-point retrace.
+Missing VIX does not qualify. The base v2.11 ledger remains the control.
+
+Persistence uses `alpha_v211a_daily` and `alpha_v211a_trades`. Execution is
+nearest-weekly NIFTY ITM-200 at first executable ask-in / bid-out plus charges.
+The existing paper loop runs both v2.11 and v2.11A independently.
+
+v2.11A data-source contract:
+
+- one-minute spot OHLC: Labs `data/live` / tar archive first; legacy alphaIMB
+  OHLC gap-fill second; shared-store flat spot only as the last fallback;
+- OI and executable option quotes: shared market store, live then compressed
+  archive through `market_data.shared_store`;
+- verified 09:15 open and exact-date VIX: audited alphaIMB analytics inputs or
+  an explicitly supplied locked-state/backfill value;
+- previous close: immediately preceding shared-store session;
+- range/bucket: locked hybrid range state or audited backfill override.
+
+Exact provenance and the enabled 30/20 gate are saved in
+`alpha_v211a_daily.context_json`. See `docs/LIVE_V211A_RUNBOOK.md`.
 
 ## 4. Data flow
 
