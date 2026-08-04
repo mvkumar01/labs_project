@@ -1,15 +1,13 @@
-"""Entry-spot stop overlay rules (2026-07-11 tick-vs-paper study).
+"""Live-only overlay and canonical v2.12 policy regression tests.
 
-v2.13 -> fast tick stop past a 5-pt noise buffer.
-v2.12 -> paper cadence: fire once per completed candle (first poll of a new
-         minute, after the entry candle), boundary close vs anchor.
+v2.13 -> fast tick stop past a 5-pt noise buffer and next-open fallback.
+v2.12 -> no live-only authority; completed one-minute replay owns every event.
 Plus the phantom-P&L guard: an exit with no captured entry_price must NOT book
 a trade or move realized_pnl (2026-07-10 +Rs34k phantom that blinded the
 daily-loss kill-switch).
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -18,83 +16,44 @@ sys.path.insert(0, str(ROOT))
 
 import live.live_runner as lr
 
-IST = timezone(timedelta(hours=5, minutes=30))
 CONN = "user-x:angel"
-ENTRY_TS = "2026-07-10T11:30:00+05:30"  # entry candle = 11:30 IST
 
 
 def _hit(**kw):
-    base = dict(conn_id=CONN, entry_time=ENTRY_TS)
-    base.update(kw)
-    return lr._entry_spot_stop_hit(**base)
+    return lr._entry_spot_stop_hit(**kw)
 
 
 # ── v2.13: 5-pt buffer ────────────────────────────────────────────────────
 def test_v213_call_within_buffer_does_not_fire():
     # anchor 24160, buffer 5 -> a 3-pt dip must NOT stop.
-    assert _hit(side="CALL", anchor=24160.0, tick=24157.0,
-                v213_additive=True, now=datetime(2026, 7, 10, 11, 31, tzinfo=IST)) is False
+    assert _hit(side="CALL", anchor=24160.0, tick=24157.0) is False
 
 
 def test_v213_call_beyond_buffer_fires():
-    assert _hit(side="CALL", anchor=24160.0, tick=24155.0,
-                v213_additive=True, now=datetime(2026, 7, 10, 11, 31, tzinfo=IST)) is True
+    assert _hit(side="CALL", anchor=24160.0, tick=24155.0) is True
 
 
 def test_v213_put_buffer_symmetry():
-    now = datetime(2026, 7, 10, 11, 31, tzinfo=IST)
-    assert _hit(side="PUT", anchor=24160.0, tick=24163.0, v213_additive=True, now=now) is False
-    assert _hit(side="PUT", anchor=24160.0, tick=24165.0, v213_additive=True, now=now) is True
+    assert _hit(side="PUT", anchor=24160.0, tick=24163.0) is False
+    assert _hit(side="PUT", anchor=24160.0, tick=24165.0) is True
 
 
 def test_missing_anchor_or_tick_never_fires():
-    now = datetime(2026, 7, 10, 11, 31, tzinfo=IST)
-    assert _hit(side="CALL", anchor=None, tick=24100.0, v213_additive=True, now=now) is False
-    assert _hit(side="CALL", anchor=24160.0, tick=None, v213_additive=True, now=now) is False
+    assert _hit(side="CALL", anchor=None, tick=24100.0) is False
+    assert _hit(side="CALL", anchor=24160.0, tick=None) is False
 
 
 # ── v2.12: minute-boundary close-check ────────────────────────────────────
-def _seed(prev_minute):
-    lr._OVERLAY_MIN_SEEN.clear()
-    if prev_minute is not None:
-        lr._OVERLAY_MIN_SEEN[CONN] = prev_minute
+def test_v212_has_no_live_only_execution_authority():
+    policy = lr.champion_live_policy("v2.12")
+    assert policy.fast_stop_overlay is False
+    assert policy.next_open_fallback is False
 
 
-def test_v212_fires_at_minute_rollover_after_entry():
-    _seed(datetime(2026, 7, 10, 11, 30))          # last seen 11:30
-    # first poll of 11:31, spot below anchor -> completed candle stop
-    assert _hit(side="CALL", anchor=24160.0, tick=24155.0, v213_additive=False,
-                now=datetime(2026, 7, 10, 11, 31, tzinfo=IST)) is True
-
-
-def test_v212_no_refire_within_same_minute():
-    _seed(datetime(2026, 7, 10, 11, 31))          # already saw 11:31
-    # same minute again, still breached -> must NOT re-fire (paper cadence)
-    assert _hit(side="CALL", anchor=24160.0, tick=24150.0, v213_additive=False,
-                now=datetime(2026, 7, 10, 11, 31, tzinfo=IST)) is False
-
-
-def test_v212_first_poll_of_position_syncs_without_firing():
-    _seed(None)                                    # no prior minute recorded
-    assert _hit(side="CALL", anchor=24160.0, tick=24150.0, v213_additive=False,
-                now=datetime(2026, 7, 10, 11, 31, tzinfo=IST)) is False
-    # ... and the sync means the NEXT rollover fires
-    assert _hit(side="CALL", anchor=24160.0, tick=24150.0, v213_additive=False,
-                now=datetime(2026, 7, 10, 11, 32, tzinfo=IST)) is True
-
-
-def test_v212_entry_candle_is_suppressed():
-    _seed(datetime(2026, 7, 10, 11, 29))          # rollover INTO the entry minute
-    # cur minute == entry minute (11:30) -> paper only evaluates completed
-    # candles, so the entry candle must not stop.
-    assert _hit(side="CALL", anchor=24160.0, tick=24150.0, v213_additive=False,
-                now=datetime(2026, 7, 10, 11, 30, tzinfo=IST)) is False
-
-
-def test_v212_boundary_but_not_breached_does_not_fire():
-    _seed(datetime(2026, 7, 10, 11, 30))
-    assert _hit(side="CALL", anchor=24160.0, tick=24162.0, v213_additive=False,
-                now=datetime(2026, 7, 10, 11, 31, tzinfo=IST)) is False
+def test_v213_retains_explicit_additive_risk_authority():
+    policy = lr.champion_live_policy("v2.13")
+    assert policy.fast_stop_overlay is True
+    assert policy.next_open_fallback is True
 
 
 # ── phantom-P&L guard ─────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ order is placed; even in LIVE_ARMED every adapter's place_order/exit_all raises
 NotImplementedError until a deliberate Phase-1 enablement commit.
 """
 import logging
+import os
 import re
 import sys
 import time
@@ -55,19 +56,32 @@ PC400_TRAIL_ARM_PNL = 40.0
 PC400_TRAIL_DRAWDOWN = 20.0
 PC400_TRAIL_VIX_CUTOFF = 17.0
 _SPOT_TRAIL_CACHE = {}
-# Entry-spot stop overlay tuning (2026-07-11, tick-vs-paper study):
-#  v2.13 -> fast tick stop with a noise buffer: fire on any 2s tick that
-#           breaches the anchor by >= ENTRY_SPOT_TICK_BUFFER points (filters the
-#           intra-candle whipsaw that halved live's edge vs paper on 07-10).
-#  v2.12 -> paper-timed: evaluate only at the first poll of each new minute (the
-#           just-completed candle's close, from our own 2s feed — no wait for
-#           Kite OHLC). At most one stop per candle == paper's cadence.
+# v2.13-only tick stop. v2.12 has no live-only stop path.
 ENTRY_SPOT_TICK_BUFFER = 5.0
-_OVERLAY_MIN_SEEN: dict = {}   # conn_id -> last naive-IST minute the overlay saw
 IST = timezone(timedelta(hours=5, minutes=30))
 UNDERLYING = "NIFTY"
 
 _ADAPTERS = {"angel": AngelAdapter, "zerodha": ZerodhaAdapter}
+
+
+@dataclass(frozen=True)
+class ChampionLivePolicy:
+    fast_stop_overlay: bool
+    next_open_fallback: bool
+
+
+def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
+    """Return live-only authority layered on the canonical replay.
+
+    v2.12 has no live-only authority and consumes the exact completed
+    one-minute event stream used by paper. v2.13 is the explicit additive-risk
+    variant and retains its buffered tick stop and next-open fallback.
+    """
+    additive = strategy_version == "v2.13"
+    return ChampionLivePolicy(
+        fast_stop_overlay=additive,
+        next_open_fallback=additive,
+    )
 
 
 def _now_iso() -> str:
@@ -675,37 +689,14 @@ def _to_ist_minute_naive(value):
         return None
 
 
-def _entry_spot_stop_hit(*, side, anchor, tick, v213_additive, conn_id,
-                         entry_time, now) -> bool:
-    """Whether the entry-spot stop overlay should fire on this poll.
-
-    v2.13 -> fast tick stop past a noise buffer: the live spot must breach the
-             anchor by >= ENTRY_SPOT_TICK_BUFFER points (CALL: down, PUT: up).
-    v2.12 -> paper cadence: only at the first poll of a NEW minute (the just-
-             completed candle's close, our own feed), and only AFTER the entry
-             candle; the boundary spot (close) must breach the anchor.
-    Updates ``_OVERLAY_MIN_SEEN`` as a side effect (v2.12 boundary tracking).
-    A missing anchor/tick never fires.
-    """
+def _entry_spot_stop_hit(*, side, anchor, tick) -> bool:
+    """Whether v2.13's buffered live tick stop should fire on this poll."""
     if anchor is None or tick is None:
         return False
     side_u = (side or "").upper()
-    if v213_additive:
-        return (
-            (side_u == "CALL" and tick <= anchor - ENTRY_SPOT_TICK_BUFFER)
-            or (side_u == "PUT" and tick >= anchor + ENTRY_SPOT_TICK_BUFFER)
-        )
-    cur_min = now.replace(second=0, microsecond=0, tzinfo=None)
-    prev_min = _OVERLAY_MIN_SEEN.get(conn_id)
-    _OVERLAY_MIN_SEEN[conn_id] = cur_min
-    ent_min = _to_ist_minute_naive(entry_time)
-    boundary = (
-        prev_min is not None and prev_min != cur_min
-        and (ent_min is None or cur_min > ent_min)
-    )
-    return boundary and (
-        (side_u == "CALL" and tick <= anchor)
-        or (side_u == "PUT" and tick >= anchor)
+    return (
+        (side_u == "CALL" and tick <= anchor - ENTRY_SPOT_TICK_BUFFER)
+        or (side_u == "PUT" and tick >= anchor + ENTRY_SPOT_TICK_BUFFER)
     )
 
 
@@ -1027,9 +1018,46 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # Single-flight: only the owning runner process drives this connection.
     if not claim_runner_owner(user_id, conn_id, task_id):
         return
+    # Published every poll, including while disarmed. The web/order gates use
+    # this to reject a stale process left running across a source deployment.
+    svc.set_config(
+        user_id, conn_id, "runner_decision_abi", ex.LIVE_DECISION_ABI
+    )
+    svc.set_config(user_id, conn_id, "runner_decision_owner", task_id)
 
     mode = ex.get_mode(user_id, conn_id)
     if mode == ex.Mode.DISARMED:
+        # A kill/disarm followed by a manual broker exit must not leave a
+        # phantom OPEN row that blocks the next session. Reconcile read-only;
+        # this branch can never route an order.
+        st = svc.get_trade_state(user_id, conn_id)
+        if (st.get("position") or "NONE").upper() == "OPEN" and not int(
+            st.get("virtual") or 0
+        ):
+            adapter = _ensure_connected_adapter(
+                user_id, conn_id, adapters=adapters,
+                adapter_factory=adapter_factory,
+            )
+            if adapter is not None:
+                try:
+                    pos = adapter.get_position()
+                except Exception as exc:
+                    log.warning(
+                        "disarmed position reconcile failed conn=%s: %s",
+                        conn_id, type(exc).__name__,
+                    )
+                else:
+                    if int(pos.qty or 0) == 0:
+                        svc.reset_trade_state(user_id, conn_id)
+                        svc.set_config(user_id, conn_id, "reconcile_blocked", "0")
+                        svc.set_config(
+                            user_id, conn_id, "reconcile_message",
+                            "DB open state cleared while disarmed because broker is flat",
+                        )
+                        log.warning(
+                            "disarmed manual-exit reconcile cleared DB state conn=%s sym=%s",
+                            conn_id, st.get("symbol"),
+                        )
         return  # idle for this conn — evaluate nothing, place nothing
 
     if not market_session_available(_now_ist()):
@@ -1219,10 +1247,10 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     strategy_version = svc.get_config(user_id, conn_id, "strategy_version")
     v212_recovery = strategy_version == "v2.12"
     v213_additive = strategy_version == "v2.13"
+    live_policy = champion_live_policy(strategy_version)
     recovery_replay = v212_recovery or v213_additive
 
-    # v2.12 decisions are canonical (the recovery-enabled replay below); the
-    # tick overlay further down only ACCELERATES the stop's execution.
+    # v2.12 decisions are canonical and have no live-only timing overlay.
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
     # Run it before alpha_seen de-duplication so repeated polls can arm/fire it.
     if current_open and not use_champion:
@@ -1294,12 +1322,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # this overlay only controls WHEN the entry-spot stop executes.
     #   v2.13 -> fast tick stop past a noise buffer (ENTRY_SPOT_TICK_BUFFER):
     #            exit the instant the live spot breaches the anchor by >=5 pts.
-    #   v2.12 -> paper cadence: evaluate only at the first poll of a NEW minute
-    #            (the just-completed candle's close, from our own 2s feed — no
-    #            wait for Kite OHLC), and only after the entry candle. At most
-    #            one stop per candle, valued at that boundary close. A dip that
-    #            recovers by the close is intentionally held (paper's same-close
-    #            scalp is a telescoping wash that would only burn spread live).
+    #   v2.12 -> never enters this block; completed replay owns the stop.
     # Re-entry is never taken here — it stays canonical. The champion cursor is
     # deliberately NOT advanced: the replay books the same stop at the candle
     # close and the already-flat acknowledgement consumes that event, so live
@@ -1309,14 +1332,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     # recorded exit the broker book can lag a few seconds, and a broker-open/
     # DB-flat window must never re-fire the overlay (2026-07-10 incident).
     _db_open = (st.get("position") or "NONE").upper() == "OPEN"
-    if current_open and _db_open and use_champion and recovery_replay:
+    if current_open and _db_open and use_champion and live_policy.fast_stop_overlay:
         _anchor = _as_float(st.get("entry_spot"))
         _tick = _as_float(_fast_spot())
         _side_u = (current_side or "").upper()
         _hit = _entry_spot_stop_hit(
-            side=current_side, anchor=_anchor, tick=_tick,
-            v213_additive=v213_additive, conn_id=conn_id,
-            entry_time=st.get("entry_time"), now=_now_ist())
+            side=current_side, anchor=_anchor, tick=_tick)
         if _hit:
             exit_price = _fast_ltp(adapter, current_symbol)
             result = _route_order(
@@ -1353,7 +1374,13 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # At the boundary immediately after a completed trigger candle, Kite
         # historical OHLC does not yet contain the new candle. The current Kite
         # index spot is the live executable proxy for that next-candle open.
-        live_execution_spot = _fast_spot() if recovery_replay else None
+        # v2.12 must remain byte-for-byte event aligned with paper: both wait
+        # for the same completed one-minute OHLC and never substitute a current
+        # Kite tick for a future candle open. v2.13 retains its explicit fast
+        # risk-authority path.
+        live_execution_spot = (
+            _fast_spot() if live_policy.next_open_fallback else None
+        )
         target = champion_decider.champion_target(
             trade_date, now_ist=_now_ist(),
             enable_entry_spot_recovery=v212_recovery,
@@ -1513,11 +1540,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
 # ══════════════════════════════════════════════════════════════════════════
 # Main loop — iterate ALL active connections
 # ══════════════════════════════════════════════════════════════════════════
-def run(task_id: str = "live_runner", max_cycles: int = None,
+def run(task_id: str = None, max_cycles: int = None,
         adapter_factory=None) -> None:
     """PA always-on entry. Boots the live schema, then loops forever (or
     `max_cycles` for tests), each pass iterating EVERY active connection and
     processing it independently. `adapter_factory` is injectable for tests."""
+    task_id = task_id or f"live_runner:{os.getpid()}"
     init_live_db()
     log.info("live_runner boot | task=%s", task_id)
 
@@ -1528,7 +1556,7 @@ def run(task_id: str = "live_runner", max_cycles: int = None,
     cycles = 0
     while True:
         try:
-            for (user_id, conn_id) in svc.active_connections():
+            for (user_id, conn_id) in svc.runner_connections():
                 try:
                     process_connection(
                         user_id, conn_id, adapters=adapters,

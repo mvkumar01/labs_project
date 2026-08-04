@@ -52,6 +52,8 @@ CONFIG_DEFAULTS = {
     "reconcile_blocked": "0",
     "reconcile_message": "",
     "runner_owner": "",
+    "runner_decision_abi": "",
+    "runner_decision_owner": "",
 }
 
 # Fernet ciphertext mirror file (gitignored). One blob per conn_id keyed inside.
@@ -470,6 +472,37 @@ def active_connections(conn: sqlite3.Connection = None) -> list:
             if (r["value"] or "DISARMED") != "DISARMED":
                 out.append((r["user_id"], r["conn_id"]))
         return out
+    finally:
+        if own:
+            conn.close()
+
+
+def runner_connections(conn: sqlite3.Connection = None) -> list:
+    """Return active connections plus disarmed real OPEN states.
+
+    The latter remain visible only so a manual broker exit can clear stale DB
+    state. The disarmed runner branch never evaluates signals or routes orders.
+    """
+    own = conn is None
+    if own:
+        conn = get_live_conn()
+    try:
+        rows = conn.execute(
+            "SELECT c.user_id, c.conn_id, COALESCE(m.value, 'DISARMED') AS mode, "
+            "COALESCE(t.position, 'NONE') AS position, "
+            "COALESCE(t.virtual, 0) AS virtual "
+            "FROM live_broker_connections c "
+            "LEFT JOIN live_config m ON m.conn_id = c.conn_id "
+            "AND m.user_id = c.user_id AND m.key = 'mode' "
+            "LEFT JOIN live_trade_state t ON t.conn_id = c.conn_id "
+            "AND t.user_id = c.user_id"
+        ).fetchall()
+        return [
+            (row["user_id"], row["conn_id"])
+            for row in rows
+            if row["mode"] != "DISARMED"
+            or (row["position"] == "OPEN" and int(row["virtual"] or 0) == 0)
+        ]
     finally:
         if own:
             conn.close()

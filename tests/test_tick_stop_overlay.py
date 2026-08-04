@@ -1,4 +1,4 @@
-"""v2.12 tick-stop overlay: canonical decisions, accelerated stop execution.
+"""v2.13 tick-stop overlay: canonical decisions, accelerated stop execution.
 
 The recovery-enabled replay owns the trade stream and the anchored barrier;
 the overlay only exits EARLIER (per ~2s Kite tick) when spot crosses that
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import live.live_runner as lr
+from live import live_executor as ex
 from live import live_service as svc
 from live.brokers.base import OrderResult, Position
 import storage.live_db as live_db
@@ -60,8 +61,21 @@ def _mkconn(monkeypatch):
     for k, v in (("mode", "LIVE_ARMED"), ("armed", "1"), ("kill_switch", "0"),
                  ("lots", "1"), ("daily_loss_cap", "50000"),
                  ("decision_engine", "champion_replay"),
-                 ("strategy_version", "v2.12")):
+                 ("strategy_version", "v2.13")):
         svc.set_config(USER_ID, CONN_ID, k, v, conn)
+    svc.set_config(
+        USER_ID, CONN_ID, "runner_decision_abi", ex.LIVE_DECISION_ABI, conn
+    )
+    svc.set_config(
+        USER_ID,
+        CONN_ID,
+        "runner_owner",
+        f"test-runner@{datetime.now(timezone.utc).isoformat()}",
+        conn,
+    )
+    svc.set_config(
+        USER_ID, CONN_ID, "runner_decision_owner", "test-runner", conn
+    )
     return conn
 
 
@@ -82,14 +96,10 @@ def _run_overlay(monkeypatch, conn, adapter, tick):
     monkeypatch.setattr(lr, "_fast_spot", lambda: tick)
     monkeypatch.setattr(lr, "_fast_ltp", lambda a, s: 265.0)
     monkeypatch.setattr(lr, "notify_telegram", lambda m: None)
-    # inline reimplementation guard: call the real overlay through
-    # process_connection would need full alpha plumbing; instead assert the
-    # decision inputs directly the way the runner evaluates them.
     anchor = lr._as_float(st.get("entry_spot"))
-    side_u = (st.get("side") or "").upper()
-    crossed = anchor is not None and tick is not None and (
-        (side_u == "CALL" and tick <= anchor)
-        or (side_u == "PUT" and tick >= anchor))
+    crossed = lr._entry_spot_stop_hit(
+        side=st.get("side"), anchor=anchor, tick=tick
+    )
     if crossed:
         result = lr._route_order(
             adapter, USER_ID, CONN_ID, action="EXIT", side=st.get("side"),
@@ -106,7 +116,7 @@ def test_put_tick_cross_exits_and_preserves_cursor(monkeypatch):
     _open_put_state(conn, anchor=24223.95)
     adapter = _Adapter()
 
-    assert _run_overlay(monkeypatch, conn, adapter, tick=24224.10) is True
+    assert _run_overlay(monkeypatch, conn, adapter, tick=24229.10) is True
     assert adapter.exits == 1
     st = svc.get_trade_state(USER_ID, CONN_ID, conn=conn)
     assert st.get("position") in (None, "NONE")

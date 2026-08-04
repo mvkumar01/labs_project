@@ -8,7 +8,7 @@ Every live order intent flows through `place_idempotent` here. This module:
     daily-loss can NEVER block or unblock another user.
   * Routes DRY_RUN to a logged-intent path (NO broker call) — writes a
     dry_run=1 ledger row and returns a synthetic OrderResult.
-  * In LIVE_ARMED, enforces ALL SEVEN gates immediately before any real
+  * In LIVE_ARMED, enforces every gate immediately before any real
     `place_order`; if any gate fails it logs the failing gates and does NOT
     call the broker.
   * Builds + checks a user-scoped idempotency key (INSERT OR IGNORE ledger)
@@ -47,6 +47,8 @@ log = logging.getLogger("live.executor")
 
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
+LIVE_DECISION_ABI = "cas-v2.12-canonical-completed1m-v1"
+RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
 def _now_iso() -> str:
@@ -123,7 +125,7 @@ def disarm(user_id: str, conn_id: str, conn=None) -> Mode:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# SEVEN PER-USER PRE-TRADE GATES — ALL must pass before any live order.
+# PER-USER PRE-TRADE GATES — ALL must pass before any live order.
 # Evaluated for the specific (user_id, conn_id). One user's gate failure never
 # blocks another user.
 # ══════════════════════════════════════════════════════════════════════════
@@ -203,8 +205,42 @@ def gate_static_order_proxy(*_args, **_kwargs) -> GateResult:
     )
 
 
+def gate_runner_decision_abi(user_id: str, conn_id: str, conn=None) -> GateResult:
+    """The active runner must have loaded the same decision contract as web.
+
+    A Git pull changes files on disk but not an already-running Python process.
+    This gate prevents arming after a strategy deployment until the runner has
+    restarted and published a fresh, matching ABI heartbeat.
+    """
+    actual = svc.get_config(user_id, conn_id, "runner_decision_abi", conn) or ""
+    published_owner = (
+        svc.get_config(user_id, conn_id, "runner_decision_owner", conn) or ""
+    )
+    owner = svc.get_config(user_id, conn_id, "runner_owner", conn) or ""
+    owner_task = owner.rsplit("@", 1)[0] if "@" in owner else ""
+    heartbeat = owner.rsplit("@", 1)[-1] if "@" in owner else ""
+    age = None
+    try:
+        parsed = datetime.fromisoformat(heartbeat.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age = max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        pass
+    fresh = age is not None and age <= RUNNER_HEARTBEAT_MAX_AGE_SECONDS
+    owner_matches = bool(owner_task) and published_owner == owner_task
+    ok = actual == LIVE_DECISION_ABI and fresh and owner_matches
+    age_text = "missing" if age is None else f"{age:.1f}s"
+    return GateResult(
+        "runner_decision_abi",
+        ok,
+        f"loaded={actual or 'missing'} expected={LIVE_DECISION_ABI} "
+        f"owner_match={int(owner_matches)} heartbeat_age={age_text}",
+    )
+
+
 def evaluate_all(adapter, user_id: str, conn_id: str, conn=None) -> list:
-    """All seven gates for this (user_id, conn_id)."""
+    """All gates for this (user_id, conn_id)."""
     return [
         gate_mode_armed(user_id, conn_id, conn),
         gate_kill_switch_clear(user_id, conn_id, conn),
@@ -213,6 +249,7 @@ def evaluate_all(adapter, user_id: str, conn_id: str, conn=None) -> list:
         gate_daily_loss_ok(adapter, user_id, conn_id, conn),
         gate_lots_within_cap(user_id, conn_id, conn),
         gate_static_order_proxy(),
+        gate_runner_decision_abi(user_id, conn_id, conn),
     ]
 
 
