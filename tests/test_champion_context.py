@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from live.engine import champion_decider, champion_inputs, champion_sim
+from labs.engine import paper_strategy_tracker
 
 
 DATE = "2026-06-11"
@@ -94,6 +95,108 @@ def test_previous_close_fails_closed_when_shared_session_missing(
         champion_inputs.ContextInputError, match="No preceding non-frozen"
     ):
         champion_inputs.previous_session_close(DATE)
+
+
+def test_cas_previous_close_requires_canonical_alpha_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    analytics = tmp_path / "analytics"
+    analytics.mkdir()
+    (analytics / "nifty_daily_ohlc.json").write_text(
+        json.dumps(
+            {
+                "2026-08-03": {
+                    "close": 24577.29,
+                    "close_method": "option_parity_cas_v1",
+                    "source": "kite_minute_aggregated_option_parity_close",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    frame = _prior_frame().assign(
+        timestamp=["2026-08-03 09:15:00", "2026-08-03 15:29:00"],
+        spot=[24568.0, 24774.30],
+    )
+    monkeypatch.setattr(champion_inputs, "ALPHA_DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        champion_inputs, "_previous_trading_days", lambda *_: ["2026-08-03"]
+    )
+    monkeypatch.setattr(
+        champion_inputs, "load_options_frame", lambda *_args, **_kwargs: frame
+    )
+    champion_inputs._PREV_CLOSE_CACHE.clear()
+
+    date, close, source = champion_inputs.previous_session_close("2026-08-04")
+
+    assert date == "2026-08-03"
+    assert close == pytest.approx(24577.29)
+    assert "option_parity_cas_v1" in source
+
+
+def test_cas_previous_close_rejects_unmarked_daily_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
+    analytics = tmp_path / "analytics"
+    analytics.mkdir()
+    (analytics / "nifty_daily_ohlc.json").write_text(
+        json.dumps(
+            {
+                "2026-08-03": {
+                    "close": 24774.30,
+                    "source": "kite_minute_aggregated",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    frame = _prior_frame().assign(
+        timestamp=["2026-08-03 09:15:00", "2026-08-03 15:29:00"],
+        spot=[24568.0, 24774.30],
+    )
+    monkeypatch.setattr(champion_inputs, "ALPHA_DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        champion_inputs, "_previous_trading_days", lambda *_: ["2026-08-03"]
+    )
+    monkeypatch.setattr(
+        champion_inputs, "load_options_frame", lambda *_args, **_kwargs: frame
+    )
+    champion_inputs._PREV_CLOSE_CACHE.clear()
+
+    with pytest.raises(champion_inputs.ContextInputError, match="CAS-safe"):
+        champion_inputs.previous_session_close("2026-08-04")
+
+
+def test_locked_state_context_is_shared_by_live_and_paper(monkeypatch) -> None:
+    state = {
+        "trade_date": "2026-08-04",
+        "locked": True,
+        "verified_open_locked": True,
+        "bucket": "PC50",
+        "direction": "DOWN",
+        "lower": 24500,
+        "upper": 24600,
+        "prev_close": 24577.29,
+        "prev_close_ref_date": "2026-08-03",
+        "prev_close_source": "option_parity",
+        "verified_open": 24530.0,
+        "verified_open_source": "kite_historical_verified",
+        "vix_at_open": 13.0,
+    }
+    monkeypatch.setattr(champion_decider, "_read_locked_hybrid_state", lambda *_: state)
+    monkeypatch.setattr(
+        paper_strategy_tracker, "_read_locked_hybrid_state", lambda *_: state
+    )
+
+    live_day = champion_decider._resolve_day("2026-08-04", None)
+    paper_day = paper_strategy_tracker._resolve_day("2026-08-04", None)
+
+    for day in (live_day, paper_day):
+        assert day["previous_session_date"] == "2026-08-03"
+        assert day["prev_close"] == pytest.approx(24577.29)
+        assert day["prev_close_source"] == "option_parity"
+        assert day["open_spot"] == pytest.approx(24530.0)
+        assert day["validate_shared_context"] is False
 
 
 def test_trusted_historical_context_skips_mutable_shared_baseline(

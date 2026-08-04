@@ -32,6 +32,14 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
         return {"lower": float(override["lower"]), "upper": float(override["upper"]),
                 "bucket": override["bucket"], "direction": override["direction"],
                 "vix": override.get("vix"), "vix_source": "backfill_override",
+                "previous_session_date": override.get("previous_session_date"),
+                "prev_close": override.get("prev_close"),
+                "prev_close_source": override.get("prev_close_source"),
+                "open_spot": override.get("open_spot"),
+                "open_spot_source": override.get("open_spot_source"),
+                "validate_shared_context": not bool(
+                    override.get("_trust_historical_context")
+                ),
                 "biggap": bool(override.get("pc400_v210_biggap"))}
     state = _read_locked_hybrid_state(trade_date)
     if state is None:
@@ -39,6 +47,12 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
     return {"lower": float(state["lower"]), "upper": float(state["upper"]),
             "bucket": state.get("bucket") or "PC50", "direction": state.get("direction"),
             "vix": state.get("vix_at_open"), "vix_source": "locked_hybrid_state",
+            "previous_session_date": state.get("prev_close_ref_date"),
+            "prev_close": state.get("prev_close"),
+            "prev_close_source": state.get("prev_close_source"),
+            "open_spot": state.get("verified_open"),
+            "open_spot_source": state.get("verified_open_source"),
+            "validate_shared_context": False,
             "biggap": bool(state.get("pc400_v210_biggap"))}
 
 
@@ -74,6 +88,12 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
             day["direction"],
             day["vix"],
             vix_source=day.get("vix_source", "supplied"),
+            previous_session_date=day.get("previous_session_date"),
+            prev_close=day.get("prev_close"),
+            prev_close_source=day.get("prev_close_source"),
+            open_spot=day.get("open_spot"),
+            open_spot_source=day.get("open_spot_source"),
+            validate_shared_context=day.get("validate_shared_context", True),
         )
     except champion_inputs.ContextInputError as exc:
         return {

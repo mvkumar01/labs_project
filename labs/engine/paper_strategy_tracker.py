@@ -259,6 +259,12 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
     return {"lower": float(state["lower"]), "upper": float(state["upper"]),
             "bucket": state.get("bucket") or "PC50", "direction": state.get("direction"),
             "vix": state.get("vix_at_open"), "vix_source": "locked_hybrid_state",
+            "previous_session_date": state.get("prev_close_ref_date"),
+            "prev_close": state.get("prev_close"),
+            "prev_close_source": state.get("prev_close_source"),
+            "open_spot": state.get("verified_open"),
+            "open_spot_source": state.get("verified_open_source"),
+            "validate_shared_context": False,
             "biggap": bool(state.get("pc400_v210_biggap"))}
 
 

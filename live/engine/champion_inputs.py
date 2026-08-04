@@ -13,6 +13,7 @@ no order placement, no labs imports.
 """
 from __future__ import annotations
 
+import json
 import tarfile
 from dataclasses import asdict, dataclass
 
@@ -39,6 +40,11 @@ PC400_VIX_BAND_LO = 16.0
 PC400_VIX_BAND_HI = 20.0
 PC400_SGAP_UP_THRESHOLD = 100.0
 PC400_SGAP_DOWN_THRESHOLD = -200.0
+CAS_START = "2026-08-03"
+CAS_CLOSE_METHODS = {
+    "option_parity_cas_v1",
+    "kite_minute_15_14_fallback_v1",
+}
 
 
 def pc400_in_carve_out(vix, sgap) -> bool:
@@ -306,6 +312,30 @@ class ContextInputError(RuntimeError):
     """The session context is missing, stale, contradictory, or implausible."""
 
 
+def _canonical_cas_close(session_date: str) -> tuple[float, str] | None:
+    """Read a CAS-safe close persisted by AlphaIMB's daily cache task."""
+    path = ALPHA_DATA_DIR / "analytics" / "nifty_daily_ohlc.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        row = payload.get(session_date)
+        if not isinstance(row, dict):
+            return None
+        method = str(row.get("close_method") or "").strip()
+        source = str(row.get("source") or "").strip()
+        source_is_safe_override = source.startswith("option_parity_cas_override")
+        if method not in CAS_CLOSE_METHODS and not source_is_safe_override:
+            return None
+        value = float(row.get("close"))
+        if not pd.notna(value) or value <= 0:
+            return None
+        provenance = method or source
+        return value, f"alpha_daily_close:{provenance}:{session_date}"
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 @dataclass(frozen=True)
 class ResolvedDayContext:
     sgap: float
@@ -354,6 +384,18 @@ def previous_session_close(trade_date: str) -> tuple[str, float, str]:
             spots = prior.groupby("timestamp")["spot"].first().sort_index()
             # Frozen single-print files are not valid market sessions.
             if len(spots) >= 2 and spots.nunique() >= 2:
+                if pday >= CAS_START:
+                    canonical = _canonical_cas_close(pday)
+                    if canonical is None:
+                        raise ContextInputError(
+                            f"CAS-safe previous close missing for {pday}; "
+                            "AlphaIMB option-parity/15:14 cache is required"
+                        )
+                    close_value, source = canonical
+                    result = (pday, close_value, source)
+                    _PREV_CLOSE_CACHE[trade_date] = result
+                    _prune_date_cache(_PREV_CLOSE_CACHE)
+                    return result
                 source = str(prior.attrs.get("source_path") or "shared_store")
                 result = (pday, float(spots.iloc[-1]), source)
                 # Prior-session closes are immutable intraday; failures are
@@ -361,6 +403,8 @@ def previous_session_close(trade_date: str) -> tuple[str, float, str]:
                 _PREV_CLOSE_CACHE[trade_date] = result
                 _prune_date_cache(_PREV_CLOSE_CACHE)
                 return result
+        except ContextInputError:
+            raise
         except Exception:
             continue
     raise ContextInputError(
