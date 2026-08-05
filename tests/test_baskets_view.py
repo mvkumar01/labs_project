@@ -10,6 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _render(**ctx):
     app = Flask(__name__, template_folder=str(ROOT / "templates"))
+    app.add_url_rule(
+        "/labs/live", endpoint="labs.live_strategy", view_func=lambda: ""
+    )
     base = dict(
         active_live_tab="baskets",
         basket_defs={}, basket_totals={}, basket_by_date={},
@@ -20,9 +23,10 @@ def _render(**ctx):
         sensex_v211_rows=[], sensex_v211_trades=[], sensex_v211_stats={},
         overlay_rows=[], overlay_trades=[], overlay_stats={},
         overlay_version="v2.12",
+        date_from=None, date_to=None,
     )
     base.update(ctx)
-    with app.app_context():
+    with app.test_request_context():
         return render_template("live_strategy.html", **base)
 
 

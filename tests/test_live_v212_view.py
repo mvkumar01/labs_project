@@ -12,8 +12,13 @@ def test_v212_live_view_is_not_frozen_at_june() -> None:
 
     assert 'active_live_tab in {"alpha_v211a", "alpha_v212", "alpha_v213"}' in routes
     assert 'f"FROM {overlay_prefix}_daily WHERE trade_date >= \'2026-06-01\' "' in routes
-    assert "tab=alpha_v213" in template
-    assert "tab=alpha_v211a" in template
+    assert "date_clause" in routes
+    assert 'name="date_from"' in template
+    assert 'name="date_to"' in template
+    assert "Summary and history use this range" in template
+    assert "df-from" not in template
+    assert "tab='alpha_v213'" in template
+    assert "tab='alpha_v211a'" in template
     assert "Alpha v2.11A" in template
     assert "Champion 2" not in template
     assert "trade_date < '2026-07-01'" not in routes
