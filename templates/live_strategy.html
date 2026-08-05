@@ -44,25 +44,26 @@
 
   <main>
     <div class="live-tabs">
-      <a href="/labs/live" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
-      <a href="/labs/live?tab=alpha_v211a" class="{{ 'active' if active_live_tab == 'alpha_v211a' else '' }}">Alpha v2.11A</a>
-      <a href="/labs/live?tab=alpha_v212" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
-      <a href="/labs/live?tab=alpha_v213" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
-      <a href="/labs/live?tab=baskets" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
-      <a href="/labs/live?tab=sensex_alpha" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
-      <a href="/labs/live?tab=sensex_alpha_inverted" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
-      <a href="/labs/live?tab=sensex_v211" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
-      <a href="/labs/live?tab=sensex_v211_inverted" class="{{ 'active' if active_live_tab == 'sensex_v211_inverted' else '' }}">Alpha v2.11 inverted</a>
+      <a href="{{ url_for('labs.live_strategy', tab='nifty', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
+      <a href="{{ url_for('labs.live_strategy', tab='alpha_v211a', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v211a' else '' }}">Alpha v2.11A</a>
+      <a href="{{ url_for('labs.live_strategy', tab='alpha_v212', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
+      <a href="{{ url_for('labs.live_strategy', tab='alpha_v213', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
+      <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
+      <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
+      <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
+      <a href="{{ url_for('labs.live_strategy', tab='sensex_v211', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
+      <a href="{{ url_for('labs.live_strategy', tab='sensex_v211_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_v211_inverted' else '' }}">Alpha v2.11 inverted</a>
     </div>
 
-    <div class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
+    <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
+      <input type="hidden" name="tab" value="{{ active_live_tab }}">
       <strong>Date filter</strong>
-      <label>From <input type="date" id="df-from"></label>
-      <label>To <input type="date" id="df-to"></label>
-      <button type="button" id="df-apply">Apply</button>
-      <button type="button" id="df-reset">Reset</button>
-      <span id="df-count" class="muted"></span>
-    </div>
+      <label>From <input type="date" name="date_from" value="{{ date_from or '' }}"></label>
+      <label>To <input type="date" name="date_to" value="{{ date_to or '' }}"></label>
+      <button type="submit">Apply</button>
+      <a href="{{ url_for('labs.live_strategy', tab=active_live_tab) }}" class="btn-secondary">Reset</a>
+      {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
+    </form>
 
     {% if active_live_tab in ['alpha_v211a', 'alpha_v212', 'alpha_v213'] %}
     {% set is_v211a = active_live_tab == 'alpha_v211a' %}
@@ -598,31 +599,6 @@
     {% endif %}
   </main>
 </div>
-<script>
-  (function(){
-    function apply(){
-      var f=(document.getElementById('df-from')||{}).value||'';
-      var t=(document.getElementById('df-to')||{}).value||'';
-      var shown=0,total=0;
-      document.querySelectorAll('table.perf tbody tr').forEach(function(tr){
-        var c=tr.querySelector('td'); if(!c) return;
-        var d=(c.textContent||'').trim().slice(0,10);
-        if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;   // only date-keyed (daily) rows
-        total++;
-        var ok=(!f||d>=f)&&(!t||d<=t);
-        tr.style.display=ok?'':'none'; if(ok) shown++;
-      });
-      var cnt=document.getElementById('df-count');
-      if(cnt) cnt.textContent=(f||t)?(shown+' / '+total+' days'):'';
-    }
-    var a=document.getElementById('df-apply'),r=document.getElementById('df-reset');
-    if(a) a.addEventListener('click',apply);
-    if(r) r.addEventListener('click',function(){
-      var f=document.getElementById('df-from'),t=document.getElementById('df-to');
-      if(f)f.value='';if(t)t.value='';apply();
-    });
-  })();
-</script>
 {% if stats.get('curve') %}
 <script>
   const curve = {{ stats.curve | tojson }};

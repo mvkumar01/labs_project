@@ -2,6 +2,7 @@
 Flask Blueprint for all /labs routes.
 """
 import json
+from datetime import datetime
 
 from flask import Blueprint, render_template, request, redirect, url_for, jsonify, send_file
 
@@ -34,6 +35,35 @@ _FORM_DEFAULTS = dict(
     strike_modes=STRIKE_MODES,
     leg_codes=LEG_CODES,
 )
+
+
+def _live_date_range() -> tuple[str | None, str | None]:
+    """Return a validated inclusive date range from the live dashboard query."""
+    values = []
+    for key in ("date_from", "date_to"):
+        raw = (request.args.get(key) or "").strip()
+        try:
+            values.append(datetime.strptime(raw, "%Y-%m-%d").date().isoformat())
+        except ValueError:
+            values.append(None)
+    date_from, date_to = values
+    if date_from and date_to and date_to < date_from:
+        date_from, date_to = date_to, date_from
+    return date_from, date_to
+
+
+def _live_date_clause(
+    date_from: str | None, date_to: str | None, *, column: str = "trade_date"
+) -> tuple[str, list[str]]:
+    clauses = []
+    params = []
+    if date_from:
+        clauses.append(f"{column} >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append(f"{column} <= ?")
+        params.append(date_to)
+    return (" AND " + " AND ".join(clauses) if clauses else ""), params
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
@@ -309,6 +339,8 @@ def live_strategy():
     no login — populated EOD by pa_paper_tracker.py. Net PnL includes charges."""
     from storage.db import get_conn
     from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
+    date_from, date_to = _live_date_range()
+    date_clause, date_params = _live_date_clause(date_from, date_to)
     active_live_tab = request.args.get("tab", "nifty")
     if active_live_tab not in {
         "nifty", "alpha_v211a", "alpha_v212", "alpha_v213",
@@ -333,7 +365,10 @@ def live_strategy():
         conn = get_conn()
         cur = conn.execute(
             "SELECT trade_date, status, tier, gap_dir, n_trades, pnl_pts, gross_rs, "
-            "charges_rs, net_rs FROM paper_strategy_daily ORDER BY trade_date DESC LIMIT 120")
+            "charges_rs, net_rs FROM paper_strategy_daily WHERE 1=1 "
+            f"{date_clause} ORDER BY trade_date DESC LIMIT 120",
+            date_params,
+        )
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         if rows:
@@ -425,7 +460,8 @@ def live_strategy():
                     "priced_segments,unavailable_segments,spot_pnl_pts,gross_rs,"
                     "charges_rs,net_rs,strategy_version,updated_at "
                     f"FROM {overlay_prefix}_daily WHERE trade_date >= '2026-06-01' "
-                    "ORDER BY trade_date DESC"
+                    f"{date_clause} ORDER BY trade_date DESC",
+                    date_params,
                 )
                 overlay_cols = [column[0] for column in overlay_cur.description]
                 overlay_rows = [
@@ -537,7 +573,8 @@ def live_strategy():
                 "expiry_code,baseline_date,liquidity_mode,liquidity_mark,"
                 "selected_expiry_type,weekly_expiry_code,monthly_expiry_code,"
                 f"weekly_in_band_oi,monthly_in_band_oi FROM {sx_daily_table} "
-                "ORDER BY trade_date DESC LIMIT 120"
+                f"WHERE 1=1 {date_clause} ORDER BY trade_date DESC LIMIT 120",
+                date_params,
             )
             sx_cols = [column[0] for column in sx_cur.description]
             sensex_rows = [dict(zip(sx_cols, row)) for row in sx_cur.fetchall()]
@@ -604,7 +641,9 @@ def live_strategy():
             sv_cur = conn.execute(
                 "SELECT trade_date,status,tier,gap_dir,expiry_code,n_trades,"
                 "option_gross_rs,option_priced_trades,option_unavailable_trades "
-                f"FROM {sv_daily_table} ORDER BY trade_date DESC LIMIT 120"
+                f"FROM {sv_daily_table} WHERE 1=1 {date_clause} "
+                "ORDER BY trade_date DESC LIMIT 120",
+                date_params,
             )
             sv_cols = [column[0] for column in sv_cur.description]
             sensex_v211_rows = [dict(zip(sv_cols, row)) for row in sv_cur.fetchall()]
@@ -661,7 +700,8 @@ def live_strategy():
             bk_cur = conn.execute(
                 "SELECT trade_date,side,basket,expiry_code,n_trades,priced,"
                 "unavailable,gross_rs,charges_rs,net_rs FROM basket_daily "
-                "ORDER BY trade_date DESC"
+                f"WHERE 1=1 {date_clause} ORDER BY trade_date DESC",
+                date_params,
             )
             bk_cols = [column[0] for column in bk_cur.description]
             bk_rows = [dict(zip(bk_cols, row)) for row in bk_cur.fetchall()]
@@ -723,6 +763,8 @@ def live_strategy():
         overlay_trades=overlay_trades,
         overlay_stats=overlay_stats,
         overlay_version=overlay_version,
+        date_from=date_from,
+        date_to=date_to,
     )
 
 
