@@ -33,6 +33,7 @@ def main() -> None:
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
     from labs.engine.sensex_v211_inverted_tracker import run_day as run_sensex_v211_inverted_day
+    from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
         "nifty": None,
@@ -43,6 +44,7 @@ def main() -> None:
         "sensex_alpha_inverted": None,
         "sensex_v211": None,
         "sensex_v211_inverted": None,
+        "alpha_cpr": None,
     }
     while True:
         now = datetime.now(IST)
@@ -56,6 +58,7 @@ def main() -> None:
                 ("sensex_alpha_inverted", run_sensex_inverted_day),
                 ("sensex_v211", run_sensex_v211_day),
                 ("sensex_v211_inverted", run_sensex_v211_inverted_day),
+                ("alpha_cpr", run_cpr_day),
             ):
                 try:
                     res = runner(now.date().isoformat())

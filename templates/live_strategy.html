@@ -48,6 +48,7 @@
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v211a', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v211a' else '' }}">Alpha v2.11A</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v212', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v213', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
+      <a href="{{ url_for('labs.live_strategy', tab='alpha_cpr', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_cpr' else '' }}">Alpha CPR</a>
       <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
@@ -65,13 +66,29 @@
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
 
-    {% if active_live_tab in ['alpha_v211a', 'alpha_v212', 'alpha_v213'] %}
+    {% if active_live_tab in ['alpha_v211a', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
     {% set is_v211a = active_live_tab == 'alpha_v211a' %}
     {% set is_v213 = active_live_tab == 'alpha_v213' %}
+    {% set is_cpr = active_live_tab == 'alpha_cpr' %}
+    {% if is_cpr %}
+    <h1>Alpha CPR — alpha entries, CPR structural exits (paper)</h1>
+    <p class="sub">Alpha v2.11 fires the entry and then has no further say: every alpha exit
+      (tier SL/TP, stall) and every v2.11 spot exit (trail, wall, PC250 spot TP/SL, drift) is off.
+      A position leaves only on the previous day's CPR/pivot level above or below its entry spot,
+      or at EOD. Levels closer than 20 points are walked out to the next one.
+      <b>Lots vary</b> so rupee risk per trade is near-constant
+      (Rs 9,750 target, 1-15 lots) — a wider stop takes fewer lots.
+      Nearest-expiry NIFTY ITM-200, priced at <b>exact-minute ask in / bid out</b>.
+      Net P&amp;L includes charges.
+      <br><em>Paper-trade candidate.</em> Research profit factor is ~1.2 on a points basis; most of
+      the rupee edge came from the sizing overlay, so treat this tab as the out-of-sample test of
+      whether that survives.</p>
+    {% else %}
     <h1>Alpha {{ overlay_version }} — {{ 'low-VIX PC400/DOWN PUT trail' if is_v211a else ('v2.11 risk authority + recovery overlay' if is_v213 else 'entry-spot recovery') }} (paper)</h1>
     <p class="sub">{% if is_v211a %}Alpha v2.11 with one isolated exit overlay: when opening VIX is below 17, PC400 gap-DOWN PUT arms a NIFTY spot trail at +30 points and exits after a 20-point retrace.{% else %}{{ 'The complete Alpha v2.11 lifecycle stays authoritative while' if is_v213 else 'Alpha v2.11 signals plus' }} an original-entry-spot stop and same-side recovery.{% endif %}
       One nearest-expiry NIFTY ITM-200 option lot, priced at <b>exact-minute ask in / bid out</b>.
       Net P&amp;L includes charges.</p>
+    {% endif %}
 
     {% if overlay_stats.get('error') %}
       <p class="empty">Alpha {{ overlay_version }} unavailable ({{ overlay_stats.error }}).</p>

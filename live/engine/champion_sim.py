@@ -231,6 +231,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_v711_drift_protective=True,
              enable_v211a_low_vix_dn_put_trail=False,
              enable_entry_spot_recovery=False,
+             # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
+             no_alpha_exits=False,
+             cpr_levels=None,
+             enable_cpr_sl=False,
+             enable_cpr_tp=False,
+             cpr_min_dist=0.0,
              close_eod=True, return_state=False,
              entries_until_ts=None, next_open_fallback=None):
     """Faithful port of v79_v281_isolation.sim() with the champion flag set.
@@ -262,6 +268,22 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     overlay. Its caller enables it only when the resolved opening VIX is present
     and below 17. It changes PC400 gap-DOWN PUT exits from Alpha-only to a
     30-point arm with a 20-point retrace; every other v2.11 rule is unchanged.
+
+    Alpha-CPR paper overlay (all flags default OFF — v2.11 / v2.12 / v2.13 and
+    the live runner are byte-for-byte unchanged when they are not passed):
+      `no_alpha_exits`  alpha becomes an ENTRY TRIGGER ONLY. Drops the tier
+                        alpha SL/TP and ALPHA_STALL, so with the CPR flags the
+                        only exits left are the CPR levels and the EOD close.
+                        Also drops TRAIL / WALL_REJ / PC250 spot TP-SL / v7.11
+                        drift, which are non-alpha exits from v2.11's stack.
+      `cpr_levels`      sorted prev-day CPR + floor-pivot spot levels for the
+                        day. At entry the nearest level below the entry spot
+                        becomes the stop (mirrored for puts), nearest above the
+                        target.
+      `cpr_min_dist`    ignore levels closer than this many spot points and walk
+                        out to the next one — a 13-point spot stop is ~8 premium
+                        points on a 350 option, inside spread plus noise.
+    Research reference: alphaIMB `research/experiments/2026-08-06_cpr_sl_lot_sizing`.
     """
     if adf is None or len(adf) < 2:
         return (0.0, [], None) if return_state else (0.0, [])
@@ -291,6 +313,9 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
     pos = None
     esp = 0.0
+    # Alpha-CPR overlay — per-trade structural levels, resolved at entry.
+    cpr_sl_level = None
+    cpr_tp_level = None
     fill_entry_spot = 0.0
     pnl = 0.0
     peak_pnl = 0.0
@@ -579,7 +604,34 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                     pos_max_alpha = None
                     continue
 
-            if (enable_v711_drift_protective and pos == "put"
+            # ── Alpha-CPR structural stop / target ───────────────────────────
+            # Hard intra-bar levels resolved at entry, evaluated on the 1-min
+            # sub-bars BEFORE every other exit. TP wins ties within a sub-bar
+            # (repo convention, cf. PC250 / v2.9.1 spot exits).
+            if (not exited and (enable_cpr_sl or enable_cpr_tp)
+                    and (cpr_sl_level is not None or cpr_tp_level is not None)):
+                for (bh, bl) in ohlc.get_1min_bars(c["timestamp"]):
+                    if pos == "call":
+                        if (enable_cpr_tp and cpr_tp_level is not None
+                                and bh >= cpr_tp_level):
+                            exit_sp = cpr_tp_level; exited = True
+                            reason = "CPR_TP"; break
+                        if (enable_cpr_sl and cpr_sl_level is not None
+                                and bl <= cpr_sl_level):
+                            exit_sp = cpr_sl_level; exited = True
+                            reason = "CPR_SL"; break
+                    else:
+                        if (enable_cpr_tp and cpr_tp_level is not None
+                                and bl <= cpr_tp_level):
+                            exit_sp = cpr_tp_level; exited = True
+                            reason = "CPR_TP"; break
+                        if (enable_cpr_sl and cpr_sl_level is not None
+                                and bh >= cpr_sl_level):
+                            exit_sp = cpr_sl_level; exited = True
+                            reason = "CPR_SL"; break
+
+            if (not exited and not no_alpha_exits
+                    and enable_v711_drift_protective and pos == "put"
                     and tier == "PC400" and not is_up):
                 if (not drift_armed and not drift_confirmation
                         and ca >= V711_DRIFT_ALPHA):
@@ -594,7 +646,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             break
 
             # PC400 + non-PC50 trail
-            if pos_arm is not None and not exited and tier != "PC50":
+            if (pos_arm is not None and not exited and tier != "PC50"
+                    and not no_alpha_exits):
                 for (bh, bl) in ohlc.get_1min_bars(c["timestamp"]):
                     if pos == "call":
                         bp2 = bh - esp
@@ -633,7 +686,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                         peak_pnl = cp
 
             # Wall rejection — PC400 gap-UP CALL × WALL only
-            if (not exited and pos_wall_active and peak_pnl >= 40
+            if (not exited and not no_alpha_exits
+                    and pos_wall_active and peak_pnl >= 40
                     and pos == "call"):
                 ce_at = ce_map.get(c["timestamp"], {})
                 wall_s, wall_oi = find_wall_above(ce_at, curr_spot)
@@ -659,7 +713,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             # Tier-specific alpha exits. Alpha-based exits stay on the 5-min grid
             # (suppressed on a stops-only partial bar); spot exits (PC250 TP/SL)
             # below still fire intra-bar.
-            if not exited:
+            if not exited and not no_alpha_exits:
                 if tier == "PC50":
                     sl_th = pos_sl_override if pos_sl_override is not None else sl_th_default
                     if not partial_bar:
@@ -708,7 +762,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
             # v7.6 ALPHA_STALL: PC50 UP CALL only (alpha-based -> 5-min grid)
             if (enable_v76_alpha_stall and not exited and not partial_bar
-                    and tier == "PC50"
+                    and not no_alpha_exits and tier == "PC50"
                     and pos == "call" and is_up
                     and pos_max_alpha is not None and entry_ts is not None):
                 trade_minutes = (pd.Timestamp(c["timestamp"]) - pd.Timestamp(entry_ts)).total_seconds() / 60
@@ -732,7 +786,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                     signal_entry_spot=esp,
                     exit_spot=exit_sp,
                     entry_rule=entry_rule, tier=tier,
+                    cpr_sl=cpr_sl_level, cpr_tp=cpr_tp_level,
                 ))
+                cpr_sl_level = None
+                cpr_tp_level = None
                 pos = None
                 fill_entry_spot = 0.0
                 peak_pnl = 0.0
@@ -833,6 +890,20 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                 entry_ts = c["timestamp"]
                 entry_alpha = ca
                 entry_rule = rule_tag
+                # Alpha-CPR overlay — resolve structural levels off the entry
+                # spot. CALL: stop = nearest level below, target = nearest
+                # above; PUT mirrors. None when the entry spot sits outside the
+                # level stack on that side (that exit simply cannot fire).
+                cpr_sl_level = cpr_tp_level = None
+                if cpr_levels:
+                    below = [v for v in cpr_levels if v < esp - cpr_min_dist]
+                    above = [v for v in cpr_levels if v > esp + cpr_min_dist]
+                    if pos == "call":
+                        cpr_sl_level = max(below) if below else None
+                        cpr_tp_level = min(above) if above else None
+                    else:
+                        cpr_sl_level = min(above) if above else None
+                        cpr_tp_level = max(below) if below else None
                 pos_max_alpha = ca
                 if tier == "PC50":
                     if rule_tag in ("RULE2", "RULE3"):
@@ -902,6 +973,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             entry_alpha=entry_alpha, exit_alpha=None,
             entry_spot=fill_entry_spot, signal_entry_spot=esp, exit_spot=lsp,
             entry_rule=entry_rule, tier=tier,
+            cpr_sl=cpr_sl_level, cpr_tp=cpr_tp_level,
         ))
     if return_state:
         return round(pnl, 2), trades, open_state

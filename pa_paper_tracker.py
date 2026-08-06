@@ -18,8 +18,9 @@ if __name__ == "__main__":
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
     from labs.engine.sensex_v211_inverted_tracker import run_day as run_sensex_v211_inverted_day
+    from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    print({
+    results = {
         "nifty": run_nifty_day(arg),
         "alpha_v211a": run_v211a_day(arg),
         "alpha_v212": run_v212_day(arg),
@@ -28,4 +29,12 @@ if __name__ == "__main__":
         "sensex_alpha_inverted": run_sensex_inverted_day(arg),
         "sensex_v211": run_sensex_v211_day(arg),
         "sensex_v211_inverted": run_sensex_v211_inverted_day(arg),
-    })
+    }
+    # Alpha-CPR is an unproven paper candidate and runs LAST behind a guard:
+    # a missing CPR prev-session or quote must never abort the established
+    # books above, which have already persisted by this point.
+    try:
+        results["alpha_cpr"] = run_cpr_day(arg)
+    except Exception as exc:
+        results["alpha_cpr"] = f"{type(exc).__name__}: {exc}"
+    print(results)

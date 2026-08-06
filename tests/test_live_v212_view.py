@@ -10,7 +10,12 @@ def test_v212_live_view_is_not_frozen_at_june() -> None:
         encoding="utf-8"
     )
 
-    assert 'active_live_tab in {"alpha_v211a", "alpha_v212", "alpha_v213"}' in routes
+    # The overlay tabs share one generic {prefix}_daily/_trades read path.
+    # Assert the membership, not the literal formatting of the set, so adding
+    # another overlay book (e.g. alpha_cpr) cannot fail this guard spuriously.
+    assert "overlay_prefix = active_live_tab" in routes
+    for tab in ('"alpha_v211a"', '"alpha_v212"', '"alpha_v213"'):
+        assert tab in routes, tab
     assert 'f"FROM {overlay_prefix}_daily WHERE trade_date >= \'2026-06-01\' "' in routes
     assert "date_clause" in routes
     assert 'name="date_from"' in template
