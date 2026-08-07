@@ -120,13 +120,17 @@
       {% if overlay_trades %}
       <h2 style="margin-top:24px">Latest available session — {{ v.trade_date }}</h2>
       <table class="perf">
-        <thead><tr><th>#</th><th>Side</th><th>ITM-200</th><th>Entry / Exit</th>
+        <thead><tr><th>#</th><th>Side</th><th>Contract</th>{% if is_cpr %}<th>Lots</th>{% endif %}<th>Entry / Exit</th>
           <th>Spot in/out</th><th>Spot pts</th><th>Ask in / Bid out</th><th>Gross ₹</th>
           <th>Charges</th><th>Net ₹</th><th>Exit</th></tr></thead>
         <tbody>
         {% for t in overlay_trades %}
           <tr>
-            <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }} {{ 'CE' if t.side == 'CALL' else 'PE' }}</td>
+            <td>{{ t.seq }}</td><td>{{ t.side }}</td>
+            <td title="{{ t.tradingsymbol or '' }}">{{ t.tradingsymbol or (t.strike ~ ' ' ~ ('CE' if t.side == 'CALL' else 'PE')) }}</td>
+            {% if is_cpr %}
+            <td title="stop {{ '%.0f'|format(t.delta_spot_sl) if t.delta_spot_sl else '—' }} pts → risk ₹{{ '{:,.0f}'.format(t.risk_rs) if t.risk_rs else '—' }}">{{ t.lots }}</td>
+            {% endif %}
             <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] }}</td>
             <td>{{ "{:,.0f}".format(t.entry_spot) }} → {{ "{:,.0f}".format(t.exit_spot) }}</td>
             <td class="{{ 'green' if t.spot_pnl_pts>0 else ('red' if t.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(t.spot_pnl_pts) }}</td>
@@ -148,13 +152,13 @@
       <h2 style="margin-top:24px">Daily history</h2>
       <table class="perf">
         <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th>
-          <th>Segments</th><th>Quotes</th><th>Spot pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
+          <th>Segments</th>{% if is_cpr %}<th>Avg lots</th>{% endif %}<th>Quotes</th><th>Spot pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
         <tbody>
         {% for r in overlay_rows %}
           <tr>
             <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
             <td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
-            <td>{{ r.n_segments }}</td><td>{{ r.priced_segments }}/{{ r.n_segments }}</td>
+            <td>{{ r.n_segments }}</td>{% if is_cpr %}<td>{{ "%.1f"|format(r.avg_lots) if r.avg_lots else '—' }}</td>{% endif %}<td>{{ r.priced_segments }}/{{ r.n_segments }}</td>
             <td class="{{ 'green' if r.spot_pnl_pts>0 else ('red' if r.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(r.spot_pnl_pts or 0) }}</td>
             <td>₹{{ "{:,.2f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
             <td class="{{ 'green' if r.net_rs>0 else ('red' if r.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(r.net_rs or 0) }}</td>

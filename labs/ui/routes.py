@@ -460,8 +460,9 @@ def live_strategy():
                 overlay_cur = conn.execute(
                     "SELECT trade_date,status,tier,gap_dir,expiry_code,n_segments,"
                     "priced_segments,unavailable_segments,spot_pnl_pts,gross_rs,"
-                    "charges_rs,net_rs,strategy_version,updated_at "
-                    f"FROM {overlay_prefix}_daily WHERE trade_date >= '2026-06-01' "
+                    "charges_rs,net_rs,strategy_version,updated_at"
+                    + (",avg_lots " if overlay_prefix == "alpha_cpr" else " ")
+                    + f"FROM {overlay_prefix}_daily WHERE trade_date >= '2026-06-01' "
                     f"{date_clause} ORDER BY trade_date DESC",
                     date_params,
                 )
@@ -533,11 +534,15 @@ def live_strategy():
                         "last_date": overlay_rows[0]["trade_date"],
                         "latest": overlay_rows[0],
                     }
+                    # Alpha-CPR is the only overlay book with variable size, so
+                    # its sizing columns exist on that table alone.
+                    cpr_cols = (",lots,cpr_sl,cpr_tp,delta_spot_sl,risk_rs"
+                                if overlay_prefix == "alpha_cpr" else "")
                     overlay_trade_cur = conn.execute(
                         "SELECT seq,status,side,strike,expiry_code,tradingsymbol,"
                         "entry_ts,exit_ts,entry_spot,exit_spot,spot_pnl_pts,entry_bid,"
                         "entry_ask,exit_bid,exit_ask,option_pnl_pts,gross_rs,charges_rs,"
-                        "net_rs,quote_status,entry_rule,exit_reason "
+                        f"net_rs,quote_status,entry_rule,exit_reason{cpr_cols} "
                         f"FROM {overlay_prefix}_trades WHERE trade_date=? ORDER BY seq",
                         (overlay_rows[0]["trade_date"],),
                     )
