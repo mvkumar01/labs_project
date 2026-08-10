@@ -1071,6 +1071,19 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if adapter is None:
         return
 
+    # A DRY_RUN position is local simulation state only. Clear it before LIVE
+    # reconciliation so it is never compared with the broker book and cannot
+    # leave a false mismatch block when the operator switches modes mid-trade.
+    if not dry_run:
+        st = svc.get_trade_state(user_id, conn_id)
+        if st.get("position") == "OPEN" and int(st.get("virtual") or 0):
+            log.warning(
+                "LIVE mode clearing leftover DRY position state before reconcile | "
+                "conn=%s sym=%s",
+                conn_id, st.get("symbol"),
+            )
+            svc.reset_trade_state(user_id, conn_id)
+
     # Reconcile once per boot per conn/mode, before any signal.
     reconcile_key = (conn_id, mode.value)
     if reconcile_key not in reconciled:
@@ -1129,14 +1142,6 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             svc.set_config(user_id, conn_id, "reconcile_message", msg)
             notify_telegram(f"⚠️ {msg}")
         return
-    if not dry_run and st.get("position") == "OPEN" and int(st.get("virtual") or 0):
-        log.warning(
-            "LIVE mode clearing leftover DRY position state | conn=%s sym=%s",
-            conn_id, st.get("symbol"),
-        )
-        svc.reset_trade_state(user_id, conn_id)
-        st = svc.get_trade_state(user_id, conn_id)
-
     try:
         pos = adapter.get_position()
     except Exception as e:

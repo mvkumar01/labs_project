@@ -189,3 +189,84 @@ def test_disarmed_runner_reconciles_manual_flat_without_order(monkeypatch, tmp_p
         )
     finally:
         conn.close()
+
+
+def test_live_mode_clears_virtual_dry_state_before_reconcile(monkeypatch, tmp_path):
+    """A DRY-to-LIVE switch must not compare simulated state with Angel."""
+    monkeypatch.setattr(live_db, "LIVE_DB_PATH", tmp_path / "live.db")
+    init_live_db()
+
+    conn = live_db.get_live_conn()
+    svc.upsert_connection(
+        USER_ID,
+        CONN_ID,
+        broker="angel",
+        account_label="post-cas",
+        account_ref="angel:post-cas",
+        status="connected",
+        conn=conn,
+    )
+    for key, value in (
+        ("mode", "LIVE_ARMED"),
+        ("armed", "1"),
+        ("kill_switch", "0"),
+        ("lots", "1"),
+    ):
+        svc.set_config(USER_ID, CONN_ID, key, value, conn)
+    state = svc.get_trade_state(USER_ID, CONN_ID, conn=conn)
+    state.update(
+        {
+            "position": "OPEN",
+            "side": "CALL",
+            "symbol": "NIFTY2681124400CE",
+            "entry_price": 218.3,
+            "entry_spot": 24586.6,
+            "entry_time": "2026-08-10T03:57:41+00:00",
+            "qty": 65,
+            "virtual": 1,
+        }
+    )
+    svc.save_trade_state(USER_ID, CONN_ID, state, conn=conn)
+    conn.close()
+
+    class FlatAdapter:
+        def __init__(self, **_kwargs):
+            pass
+
+        def connect(self):
+            return None
+
+        def is_connected(self):
+            return True
+
+        def account_ref(self):
+            return "angel:post-cas"
+
+        @staticmethod
+        def get_position():
+            return Position(symbol=None, qty=0, side=None)
+
+    monkeypatch.setattr(runner, "market_session_available", lambda _now: True)
+    monkeypatch.setattr(runner, "get_latest_alpha", lambda: None)
+
+    reconciled = set()
+    runner.process_connection(
+        USER_ID,
+        CONN_ID,
+        adapters={},
+        reconciled=reconciled,
+        task_id="post-cas-test-runner",
+        signal_engines={},
+        alpha_seen={},
+        adapter_factory=FlatAdapter,
+    )
+
+    conn = live_db.get_live_conn()
+    try:
+        state = svc.get_trade_state(USER_ID, CONN_ID, conn=conn)
+        assert state["position"] == "NONE"
+        assert svc.get_config(USER_ID, CONN_ID, "reconcile_blocked", conn) == "0"
+        assert svc.get_config(USER_ID, CONN_ID, "reconcile_message", conn) == ""
+        assert (CONN_ID, "LIVE_ARMED") in reconciled
+    finally:
+        conn.close()
