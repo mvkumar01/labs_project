@@ -30,6 +30,10 @@ def _override_from_context(context: dict) -> dict:
         "open_spot": context["open_spot"],
         "open_spot_source": context.get("open_spot_source"),
         "pc400_v210_biggap": bool(context.get("biggap")),
+        # These inputs came from the ledger's audited context_json.  Preserve
+        # them verbatim during a convention-only rebuild instead of comparing
+        # them with a shared archive that may have been revised afterward.
+        "_trust_historical_context": True,
         "skip": False,
     }
 

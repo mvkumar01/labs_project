@@ -215,6 +215,7 @@ def test_historical_rebuild_recovers_frozen_context() -> None:
     assert override["upper"] == 24750.0
     assert override["bucket"] == "PC400"
     assert override["vix"] == 12.25
+    assert override["_trust_historical_context"] is True
 
 
 def test_historical_rebuild_preserves_audited_null_vix() -> None:
