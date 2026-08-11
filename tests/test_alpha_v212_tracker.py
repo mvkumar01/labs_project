@@ -90,10 +90,17 @@ def test_entry_spot_stop_then_confirmed_recovery_reenters_same_side() -> None:
     assert [segment["pos"] for segment in segments] == ["call", "call"]
     assert segments[0]["pnl"] == -1.0
     assert segments[0]["exit_spot"] == 99.0
-    # 09:25 candle high/low detects the stop and its close supplies spot P&L;
-    # the earliest causal executable quote is the following 09:26 mark.
-    assert pd.Timestamp(segments[0]["exit_ts"]).strftime("%H:%M") == "09:26"
-    assert pd.Timestamp(segments[1]["entry_ts"]).strftime("%H:%M") == "09:31"
+    # close1m: the touching candle supplies both the valuation and timestamp,
+    # and confirmed recovery remains anchored to the original signal level.
+    assert pd.Timestamp(segments[0]["exit_ts"]).strftime("%H:%M") == "09:25"
+    assert pd.Timestamp(segments[1]["entry_ts"]).strftime("%H:%M") == "09:30"
+    assert segments[0]["entry_spot"] == 100.0
+    assert segments[1]["entry_spot"] == 100.0
+
+
+def test_strategy_version_is_close1m_only() -> None:
+    assert tracker.STRATEGY_VERSION.endswith("_close1m")
+    assert "nextmark" not in tracker.STRATEGY_VERSION
 
 
 def test_completed_candle_execution_cannot_cross_eod_square_off() -> None:

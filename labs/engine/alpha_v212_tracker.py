@@ -34,10 +34,7 @@ from storage.db import get_conn
 SYMBOL = "NIFTY"
 LOT_SIZE = int(UNDERLYINGS[SYMBOL]["lot_size"])
 QTY = LOT_SIZE
-STRATEGY_VERSION = (
-    "alpha_v2.12_entry_spot_recovery_itm200_bidask_"
-    "completed1m_nextmark"
-)
+STRATEGY_VERSION = "alpha_v2.12_entry_spot_recovery_itm200_bidask_close1m"
 
 
 class AlphaV212InputError(RuntimeError):

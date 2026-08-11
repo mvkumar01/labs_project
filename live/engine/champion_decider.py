@@ -136,10 +136,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
 
     next_open_fallback = (
         (now_ist, live_execution_spot)
-        if (
-            (enable_entry_spot_recovery or enable_v211_risk_authority)
-            and live_execution_spot is not None
-        )
+        if enable_v211_risk_authority and live_execution_spot is not None
         else None
     )
     if enable_v211_risk_authority:
@@ -154,8 +151,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
             context.sgap, tier, context.weekday, context.regime,
             day["lower"], day["upper"],
             enable_entry_spot_recovery=enable_entry_spot_recovery,
-            close_eod=False, return_state=True, entries_until_ts=cutoff,
-            next_open_fallback=next_open_fallback)
+            close_eod=False, return_state=True, entries_until_ts=cutoff)
 
     economic_trades = [
         trade for trade in trades

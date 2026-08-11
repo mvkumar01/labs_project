@@ -49,11 +49,12 @@ paper engine (spec §1.4). Broker SDKs are imported lazily inside `connect()`.
   - `champion_sim.py` — the v2.11 champion replay core: alpha entries/exits +
     spot trail/SL + the **entry-spot stop/recovery** overlay (gated by
     `enable_entry_spot_recovery`). Detection on completed 1-min bar
-    **low(call)/high(put)**, valued at bar **close**, executed at the **next
-    mark** (nextmark).
+    **low(call)/high(put)**; v2.12 uses the touching bar's **close and timestamp**
+    (`close1m`) and keeps recovery anchored to the original signal spot.
   - `champion_v213.py` — v2.13 **coupled** engine: replays v2.11 as the
-    authoritative lifecycle, then applies the entry-spot overlay **only inside**
-    each v2.11 holding window (force-closed at the v2.11 exit).
+    authoritative lifecycle, then applies its separate next-mark entry-spot
+    overlay **only inside** each v2.11 holding window (force-closed at the
+    v2.11 exit).
   - `champion_decider.py` — `champion_target` / `reconcile_replay_event` — the
     canonical decision stream the live runner follows (cursor = `champion_closed_count`).
   - `champion_inputs.py` — builds sim inputs; sources 1-min spot OHLC from the

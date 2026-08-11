@@ -70,15 +70,14 @@ state/position reconcile (broker truth in LIVE)
    un-exitable). Proxy URL comes from `config/live_env.json` on PA
    (`LIVE_OUTBOUND_PROXY_URL`/`QUOTAGUARDSTATIC_URL`) loaded by
    `pa_live_runner._load_private_env`.
-4. **Stop valuation = detection candle's CLOSE, execution timestamp = next
-   1-min mark** (production model, commit 81def99). Keeps paper history
-   byte-continuous. `champion_sim.simulate` recovery block; test:
+4. **Stop valuation and timestamp = detection candle's CLOSE/bar label**
+   (`close1m`, production model selected for all v2.12 sessions).
+   `champion_sim.simulate` recovery block; test:
    `test_alpha_v212_tracker.py::test_entry_spot_stop_then_confirmed_recovery_reenters_same_side`.
 5. **Recovery re-entry is canonical only** — a completed 1-min bar must touch
-   the level AND close favourable; fill = the executable next-mark quote
-   (honest fill; the anchored-level fill was proven unearnable —
-   see memory `v212-honest-fill-revalidation`: 60% of the anchored edge was
-   artifact). The tick overlay NEVER re-enters.
+   the level AND close favourable; v2.12 re-enters at the original anchored
+   signal level and records that same completed bar's timestamp. The tick
+   overlay NEVER re-enters.
 6. **The cursor is the only event memory.** `champion_closed_count` (persisted
    in `live_trade_state`, written ONLY via `_advance_champion_cursor`) tells
    the runner which canonical closed segments were already consumed.
