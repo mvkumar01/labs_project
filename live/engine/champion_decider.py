@@ -59,6 +59,7 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
 def champion_target(trade_date: str | None = None, now_ist: datetime | None = None,
                     override: dict | None = None,
                     enable_entry_spot_recovery: bool = False,
+                    entry_spot_close_confirmed: bool = False,
                     enable_v211_risk_authority: bool = False,
                     live_execution_spot: float | None = None) -> dict | None:
     """Replay completed bars up to `now_ist` and return the target position.
@@ -151,6 +152,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
             context.sgap, tier, context.weekday, context.regime,
             day["lower"], day["upper"],
             enable_entry_spot_recovery=enable_entry_spot_recovery,
+            entry_spot_close_confirmed=entry_spot_close_confirmed,
             close_eod=False, return_state=True, entries_until_ts=cutoff)
 
     economic_trades = [

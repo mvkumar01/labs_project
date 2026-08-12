@@ -495,17 +495,23 @@ def zerodha_callback():
 # Selectable strategy presets -> (decision_engine, strategy_version). Available
 # to every user from the configure screen. The runner gates on these two configs
 # (decision_engine == "champion_replay" enables the champion replay; combined
-# with strategy_version v2.12/v2.13 it enables the corresponding overlay).
+# with the strategy version it enables the corresponding overlay).
 STRATEGY_PRESETS = {
     "legacy_v211":   ("signal_engine",   "hybrid_alpha_v28"),
     "champion_v211": ("champion_replay", "v2.11"),
     "champion_v212": ("champion_replay", "v2.12"),
+    "champion_v212_close_confirmed": (
+        "champion_replay", "v2.12_closed_confirmed"
+    ),
     "champion_v213": ("champion_replay", "v2.13"),
 }
 STRATEGY_LABELS = {
     "legacy_v211":   "Alpha v2.11 — legacy signal engine",
     "champion_v211": "Alpha v2.11 — champion replay",
     "champion_v212": "Alpha v2.12 — champion + entry-spot recovery",
+    "champion_v212_close_confirmed": (
+        "Alpha v2.12 close-confirmed — exit only on adverse 1m close"
+    ),
     "champion_v213": "Alpha v2.13 — v2.11 risk authority + recovery overlay",
 }
 
@@ -515,6 +521,8 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     sv = svc.get_config(user_id, conn_id, "strategy_version")
     if de == "champion_replay" and sv == "v2.13":
         return "champion_v213"
+    if de == "champion_replay" and sv == "v2.12_closed_confirmed":
+        return "champion_v212_close_confirmed"
     if de == "champion_replay" and sv == "v2.12":
         return "champion_v212"
     if de == "champion_replay":

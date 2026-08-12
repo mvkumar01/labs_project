@@ -55,7 +55,7 @@
             <option value="{{ key }}" {{ 'selected' if strategy == key else '' }}>{{ label }}</option>
             {% endfor %}
           </select>
-          <div class="hint">v2.12 runs the recovery overlay independently. v2.13 keeps the complete v2.11 risk lifecycle authoritative while allowing overlay exits and re-entries inside it. Both use the tick-accelerated entry-spot stop. Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
+          <div class="hint">v2.12 records every entry-anchor touch from completed 1-minute candles. v2.12 close-confirmed exits only when that completed candle closes on the adverse side; a touch that closes favourable remains HOLD. v2.13 uses its buffered tick stop and v2.11 risk authority. Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
         </div>
 
         <div class="field">

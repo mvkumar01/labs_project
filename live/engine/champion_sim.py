@@ -231,6 +231,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_v711_drift_protective=True,
              enable_v211a_low_vix_dn_put_trail=False,
              enable_entry_spot_recovery=False,
+             entry_spot_close_confirmed=False,
              # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
              no_alpha_exits=False,
              cpr_levels=None,
@@ -264,6 +265,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     overlay. Its caller enables it only when the resolved opening VIX is present
     and below 17. It changes PC400 gap-DOWN PUT exits from Alpha-only to a
     30-point arm with a 20-point retrace; every other v2.11 rule is unchanged.
+
+    `entry_spot_close_confirmed` modifies only the entry-spot overlay. A CALL
+    stop is confirmed when the completed one-minute close is at/below its
+    original entry anchor; a PUT stop is confirmed at/above the anchor. A
+    candle that merely touches the anchor and closes back on the favourable
+    side remains HOLD, avoiding v2.12's synthetic same-candle exit/re-entry.
 
     Alpha-CPR paper overlay (all flags default OFF — v2.11 / v2.12 / v2.13 and
     the live runner are byte-for-byte unchanged when they are not passed):
@@ -483,10 +490,11 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             exit_sp = None
             reason = ""
 
-            # v2.12 close1m overlay runs before every legacy spot/trail stop.
-            # A completed one-minute candle detects the touch, and that same
-            # candle's CLOSE values and timestamps the stop. Recovery remains
-            # anchored to the original signal level (`esp`).
+            # The entry-spot close1m overlay runs before every legacy spot/trail
+            # stop. Canonical v2.12 books every touch. The close-confirmed live
+            # variant ignores a touch whose completed candle closes back on the
+            # favourable side, keeping the existing option position open.
+            # Recovery remains anchored to the original signal level (`esp`).
             if enable_entry_spot_recovery:
                 stop_hits = 0
                 active_at_end = True
@@ -496,6 +504,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             (pos == "call" and bl <= esp)
                             or (pos == "put" and bh >= esp)
                         )
+                        favourable_close = (
+                            (pos == "call" and bc > esp)
+                            or (pos == "put" and bc < esp)
+                        )
+                        if hit and entry_spot_close_confirmed and favourable_close:
+                            continue
                         if hit:
                             stop_hits += 1
                             stop_exit_spot = float(bc)
@@ -516,8 +530,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                                 entry_rule=entry_rule, tier=tier,
                             ))
                             active_at_end = False
-                            if ((pos == "call" and bc > esp)
-                                    or (pos == "put" and bc < esp)):
+                            if favourable_close:
                                 active_at_end = True
                                 fill_entry_spot = esp
                                 entry_ts = bts

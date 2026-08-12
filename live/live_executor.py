@@ -47,7 +47,7 @@ log = logging.getLogger("live.executor")
 
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
-LIVE_DECISION_ABI = "cas-v2.12-canonical-completed1m-v1"
+LIVE_DECISION_ABI = "cas-v2.12-close-confirmed-v1"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

@@ -73,9 +73,9 @@ class ChampionLivePolicy:
 def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     """Return live-only authority layered on the canonical replay.
 
-    v2.12 has no live-only authority and consumes the exact completed
-    one-minute event stream used by paper. v2.13 is the explicit additive-risk
-    variant and retains its buffered tick stop and next-open fallback.
+    v2.12 and v2.12_closed_confirmed have no live-only authority and consume
+    completed one-minute candles. v2.13 is the explicit additive-risk variant
+    and retains its buffered tick stop and next-open fallback.
     """
     additive = strategy_version == "v2.13"
     return ChampionLivePolicy(
@@ -1251,9 +1251,10 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     use_champion = svc.get_config(user_id, conn_id, "decision_engine") == "champion_replay"
     strategy_version = svc.get_config(user_id, conn_id, "strategy_version")
     v212_recovery = strategy_version == "v2.12"
+    v212_close_confirmed = strategy_version == "v2.12_closed_confirmed"
     v213_additive = strategy_version == "v2.13"
     live_policy = champion_live_policy(strategy_version)
-    recovery_replay = v212_recovery or v213_additive
+    recovery_replay = v212_recovery or v212_close_confirmed or v213_additive
 
     # v2.12 decisions are canonical and have no live-only timing overlay.
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
@@ -1388,7 +1389,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         )
         target = champion_decider.champion_target(
             trade_date, now_ist=_now_ist(),
-            enable_entry_spot_recovery=v212_recovery,
+            enable_entry_spot_recovery=(v212_recovery or v212_close_confirmed),
+            entry_spot_close_confirmed=v212_close_confirmed,
             enable_v211_risk_authority=v213_additive,
             live_execution_spot=live_execution_spot)
         target_closed_count = int((target or {}).get("n_closed") or 0)

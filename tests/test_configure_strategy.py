@@ -86,6 +86,7 @@ def test_configure_renders_one_strategy_select_without_bot_variant(client):
     assert 'name="om_r2_enabled"' not in page
     assert "Alpha v2.11" in page
     assert "Alpha v2.12" in page
+    assert "Alpha v2.12 close-confirmed" in page
     assert "Alpha v2.13" in page
     assert "Switch only while FLAT" in page
 
@@ -138,6 +139,17 @@ def test_flat_strategy_change_supports_v213(client):
 
     assert response.status_code == 302
     assert _strategy_pair() == ("champion_replay", "v2.13")
+
+
+def test_flat_strategy_change_supports_v212_close_confirmed(client):
+    _set_strategy("champion_replay", "v2.12")
+
+    response = _configure(client, "champion_v212_close_confirmed")
+
+    assert response.status_code == 302
+    assert _strategy_pair() == (
+        "champion_replay", "v2.12_closed_confirmed"
+    )
 
 
 def test_open_position_allows_same_strategy_to_save_other_configuration(client):
