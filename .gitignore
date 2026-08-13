@@ -12,6 +12,12 @@ config/zerodha_token.json
 config/zerodha_creds.json
 config/telegram.json
 config/live_env.json
+config/simulation_kite.json
+config/simulation_kite_token.json
+data/simulation/
+storage/simulation.db
+storage/simulation.db-*
+storage/simulation/
 logs/
 
 # Live-stack secret/token artifacts (encrypted creds, broker tokens, runner state)

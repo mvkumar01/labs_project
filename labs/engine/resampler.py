@@ -1,7 +1,7 @@
 """
 Resamples 1-min OHLCV data to completed bars at any supported timeframe.
 
-Supported timeframes: 1m, 5m, 10m, 15m.
+Supported timeframes: 1m, 5m, 10m, 15m, 1h.
 Bar labels are bar-close times. Only completed bars are returned.
 """
 from datetime import datetime
@@ -11,7 +11,7 @@ import pytz
 
 IST = pytz.timezone("Asia/Kolkata")
 
-_TF_MINUTES = {"1m": 1, "5m": 5, "10m": 10, "15m": 15}
+_TF_MINUTES = {"1m": 1, "5m": 5, "10m": 10, "15m": 15, "1h": 60}
 
 
 def get_resampled_data(df_1min: pd.DataFrame, timeframe: str, now: datetime | None = None) -> pd.DataFrame:
@@ -19,7 +19,7 @@ def get_resampled_data(df_1min: pd.DataFrame, timeframe: str, now: datetime | No
     Resample df_1min (DatetimeIndex, tz-naive IST) to any supported timeframe.
     Returns only completed bars (bar-close < now).
 
-    timeframe: '1m' | '5m' | '10m' | '15m'
+    timeframe: '1m' | '5m' | '10m' | '15m' | '1h'
     """
     if df_1min.empty:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -39,7 +39,11 @@ def get_resampled_data(df_1min: pd.DataFrame, timeframe: str, now: datetime | No
         return completed
 
     rule = f"{minutes}min"
-    resampled = df_1min.resample(rule, label="left", closed="left").agg({
+    # Anchor all bars to the 09:15 exchange open. This matters for 10-minute
+    # and 1-hour candles, which otherwise align to 09:10 and 09:00.
+    resampled = df_1min.resample(
+        rule, label="left", closed="left", origin="start_day", offset="15min"
+    ).agg({
         "open":   "first",
         "high":   "max",
         "low":    "min",

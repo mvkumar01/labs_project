@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Simulation - Labs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/simulation.css">
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<div class="sim-shell">
+  <header class="sim-topbar">
+    <a class="sim-brand" href="/labs"><span>LABS</span> REPLAY</a>
+    <div class="market-state"><i></i><span id="replay-status">READY</span></div>
+    <nav><a href="/labs">Dashboard</a><a href="/labs/backtest">Backtest</a><a href="/labs/live">Alpha Labs</a><a href="/live/login">Live Trading</a></nav>
+  </header>
+
+  <section class="sim-commandbar">
+    <label class="instrument-search"><span>Instrument</span><select id="instrument"></select></label>
+    <label><span>Historical day</span><input id="trade-date" type="date"></label>
+    <button id="fetch-data" class="ghost" type="button">Fetch / verify data</button>
+    <div class="replay-controls">
+      <button id="start" class="control primary" title="Start">START</button>
+      <button id="play" class="control" title="Play">PLAY</button>
+      <button id="pause" class="control" title="Pause">PAUSE</button>
+      <button id="restart" class="control" title="Restart">RESTART</button>
+      <label><span>Speed</span><select id="speed"><option>1</option><option>2</option><option>5</option><option>10</option><option>30</option><option>60</option></select></label>
+    </div>
+    <div class="clock-block"><span>SIMULATED TIME</span><strong id="sim-time">--:--:--</strong><small id="historical-ts">Select a day</small></div>
+    <div class="account-chip"><span>NET ACCOUNT VALUE</span><strong id="account-value">Rs 10,00,000</strong></div>
+  </section>
+
+  <div id="alert" class="sim-alert hidden"></div>
+  <main class="terminal-grid">
+    <section class="chart-panel">
+      <div class="chart-toolbar">
+        <div class="quote-title"><strong id="quote-symbol">NIFTY</strong><span id="quote-name">NIFTY 50</span><b id="last-price">--</b></div>
+        <div class="segmented" id="timeframes"><button data-value="1m" class="active">1m</button><button data-value="5m">5m</button><button data-value="15m">15m</button><button data-value="1h">1h</button></div>
+        <label>Chart <select id="chart-type"><option value="candlestick">Candles</option><option value="heikin_ashi">Heikin Ashi</option><option value="renko">Renko</option></select></label>
+        <button id="indicator-button" class="ghost" type="button">INDICATORS</button>
+      </div>
+      <div id="indicator-drawer" class="indicator-drawer hidden">
+        <div class="indicator-presets">
+          <button data-indicator="SMA" data-period="20">SMA 20</button><button data-indicator="EMA" data-period="9">EMA 9</button>
+          <button data-indicator="VWAP">VWAP</button><button data-indicator="BOLLINGER" data-period="20">Bollinger</button>
+          <button data-indicator="RSI" data-period="14">RSI 14</button><button data-indicator="MACD">MACD</button>
+          <button data-indicator="ADX" data-period="14">ADX + DI</button><button data-indicator="ATR" data-period="14">ATR</button>
+          <button data-indicator="SUPERTREND" data-period="10">Supertrend</button><button id="reset-indicators" class="danger-soft">Reset</button>
+        </div>
+        <div id="active-indicators" class="active-indicators">No indicators</div>
+      </div>
+      <div id="chart"></div>
+      <div id="oscillator-chart" class="hidden"></div>
+      <div class="chart-foot"><span id="bar-progress">0 / 0 one-minute candles visible</span><span>No future candles are sent to this browser</span></div>
+    </section>
+
+    <aside class="order-ticket">
+      <div class="ticket-side"><button id="buy-side" class="buy active">BUY</button><button id="sell-side" class="sell">SELL</button></div>
+      <form id="order-form">
+        <div class="ticket-header"><div><small>ORDER TICKET</small><strong id="ticket-symbol">NIFTY</strong></div><span id="ticket-price">--</span></div>
+        <label>Quantity<input id="quantity" type="number" value="1" min="1" required></label>
+        <div class="order-types"><label><input type="radio" name="order-type" value="MARKET" checked><span>Market</span></label><label><input type="radio" name="order-type" value="LIMIT"><span>Limit</span></label><label><input type="radio" name="order-type" value="STOP"><span>Stop</span></label></div>
+        <div class="field-grid"><label>Limit price<input id="limit-price" type="number" step="0.05" placeholder="Optional"></label><label>Trigger price<input id="trigger-price" type="number" step="0.05" placeholder="Optional"></label></div>
+        <div class="field-grid"><label>Stop-loss<input id="stop-loss" type="number" step="0.05" placeholder="Price"></label><label>Target<input id="target" type="number" step="0.05" placeholder="Price"></label></div>
+        <details><summary>Execution settings</summary><div class="field-grid"><label>Slippage mode<select id="slippage-mode"><option value="points">Points</option><option value="bps">Basis points</option></select></label><label>Value<input id="slippage-value" type="number" value="0" min="0" step="0.01"></label></div></details>
+        <button id="place-order" class="place buy" type="submit">PLACE BUY ORDER</button>
+      </form>
+      <a class="kite-connect" href="/labs/simulation/kite/login">Connect Kite Data</a>
+      <p class="ticket-note">Simulation only. No broker order API is called.</p>
+    </aside>
+  </main>
+
+  <section class="account-strip">
+    <div><span>AVAILABLE CASH</span><strong id="available-cash">--</strong></div><div><span>USED CAPITAL</span><strong id="used-capital">--</strong></div>
+    <div><span>REALIZED P&amp;L</span><strong id="realized-pnl">--</strong></div><div><span>UNREALIZED P&amp;L</span><strong id="unrealized-pnl">--</strong></div>
+    <div><span>CHARGES</span><strong id="charges">--</strong></div>
+  </section>
+
+  <section class="blotter">
+    <div class="tabbar"><button data-tab="positions" class="active">POSITIONS <b id="position-count">0</b></button><button data-tab="orders">ORDERS <b id="order-count">0</b></button><button data-tab="trades">TRADE BOOK <b id="trade-count">0</b></button><button data-tab="performance">PERFORMANCE</button></div>
+    <div id="positions-tab" class="tab-content active"><div class="table-scroll"><table><thead><tr><th>Instrument</th><th>Direction</th><th>Qty</th><th>Average</th><th>LTP</th><th>Unrealised</th><th>Realised</th><th>SL</th><th>Target</th><th></th></tr></thead><tbody id="positions-body"></tbody></table></div></div>
+    <div id="orders-tab" class="tab-content"><div class="table-scroll"><table><thead><tr><th>Time</th><th>Instrument</th><th>Side</th><th>Qty</th><th>Type</th><th>Limit</th><th>Trigger</th><th>Status</th><th>Fill</th><th></th></tr></thead><tbody id="orders-body"></tbody></table></div></div>
+    <div id="trades-tab" class="tab-content"><div class="table-scroll"><table><thead><tr><th>Entry</th><th>Exit</th><th>Instrument</th><th>Direction</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Gross</th><th>Charges</th><th>Net</th><th>Reason</th></tr></thead><tbody id="trades-body"></tbody></table></div></div>
+    <div id="performance-tab" class="tab-content"><div id="performance-grid" class="performance-grid"></div></div>
+  </section>
+
+  <div id="toasts" class="toasts"></div>
+</div>
+<script src="/static/simulation.js"></script>
+</body>
+</html>

@@ -15,6 +15,8 @@ from storage.db import init_db
 from storage.live_db import init_live_db
 from labs.ui.routes import labs_bp
 from labs.ui.live_routes import live_bp
+from labs.ui.simulation_routes import simulation_bp
+from labs.simulation.storage import init_simulation_db
 from live.auth_gate import register_auth_gate
 from live.env_loader import load_private_env
 
@@ -30,8 +32,10 @@ app.secret_key = os.environ.get("LABS_SECRET_KEY") or secrets.token_hex(32)
 # WSGI imports the module directly, so initialize both schemas on import.
 init_db()
 init_live_db()
+init_simulation_db()
 
 app.register_blueprint(labs_bp)
+app.register_blueprint(simulation_bp)
 
 # Live real-money stack (parallel, import-isolated). The auth gate covers the
 # /live blueprint only; /labs is untouched. Routes mutate DB/config only.
