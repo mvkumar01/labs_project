@@ -19,6 +19,7 @@ if __name__ == "__main__":
     from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
     from labs.engine.sensex_v211_inverted_tracker import run_day as run_sensex_v211_inverted_day
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
+    from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     results = {
         "nifty": run_nifty_day(arg),
@@ -37,4 +38,13 @@ if __name__ == "__main__":
         results["alpha_cpr"] = run_cpr_day(arg)
     except Exception as exc:
         results["alpha_cpr"] = f"{type(exc).__name__}: {exc}"
+    for tracker, result_key in (("v2.11", "nifty"), ("v2.12", "alpha_v212")):
+        try:
+            emit_paper_trade_alerts(tracker, results[result_key]["trade_date"])
+        except Exception as exc:
+            print(
+                f"[paper-tracker:{tracker}:telegram] error: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
     print(results)

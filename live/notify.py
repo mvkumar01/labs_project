@@ -5,7 +5,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
-def notify_telegram(text: str) -> None:
+def notify_telegram(text: str) -> bool:
     repo_root = Path(__file__).resolve().parent.parent
     config_path = repo_root / "config" / "telegram.json"
 
@@ -17,14 +17,14 @@ def notify_telegram(text: str) -> None:
 
         if not config_path.exists():
             log.info("Telegram config not found at %s; notifications disabled", config_path)
-            return
+            return False
 
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         bot_token = str(payload.get("bot_token") or "").strip()
         chat_id = str(payload.get("chat_id") or "").strip()
         if not bot_token or not chat_id:
             log.warning("Telegram config missing bot_token or chat_id at %s", config_path)
-            return
+            return False
 
         response = requests.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
@@ -37,5 +37,8 @@ def notify_telegram(text: str) -> None:
                 response.status_code,
                 response.text,
             )
+            return False
+        return True
     except Exception:
         log.warning("Telegram notification failed", exc_info=True)
+        return False

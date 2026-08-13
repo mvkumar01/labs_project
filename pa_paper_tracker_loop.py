@@ -34,6 +34,7 @@ def main() -> None:
     from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
     from labs.engine.sensex_v211_inverted_tracker import run_day as run_sensex_v211_inverted_day
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
+    from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
         "nifty": None,
@@ -62,6 +63,18 @@ def main() -> None:
             ):
                 try:
                     res = runner(now.date().isoformat())
+                    alert_tracker = {"nifty": "v2.11", "alpha_v212": "v2.12"}.get(name)
+                    if alert_tracker:
+                        try:
+                            emit_paper_trade_alerts(
+                                alert_tracker, now.date().isoformat(), now=now
+                            )
+                        except Exception as alert_exc:
+                            print(
+                                f"[paper-loop:{name}:telegram] error: "
+                                f"{type(alert_exc).__name__}: {alert_exc}",
+                                flush=True,
+                            )
                     if res != last_log[name]:
                         print(
                             f"[paper-loop:{name}] {now.strftime('%H:%M')} {res}",
