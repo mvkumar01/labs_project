@@ -11,10 +11,9 @@ import pytz
 
 from config.labs_config import DATA_DIR, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
 from labs.simulation.config import (
+    ALPHAIMB_KITE_TOKEN,
     INSTRUMENTS,
     SIMULATION_DATA_DIR,
-    SIMULATION_KITE_CONFIG,
-    SIMULATION_KITE_TOKEN,
     ensure_private_dirs,
 )
 
@@ -166,39 +165,25 @@ class CompositeMarketDataProvider(MarketDataProvider):
 
 
 def simulation_kite():
-    """Build the separate simulator Kite session; never reads Labs' token."""
-    if not SIMULATION_KITE_CONFIG.is_file():
-        raise MarketDataUnavailable("Simulation Kite API key is not configured")
-    if not SIMULATION_KITE_TOKEN.is_file():
-        raise MarketDataUnavailable("Connect Simulation Kite to create today's access token")
-    config = json.loads(SIMULATION_KITE_CONFIG.read_text(encoding="utf-8-sig"))
-    token = json.loads(SIMULATION_KITE_TOKEN.read_text(encoding="utf-8-sig"))
+    """Build a data-only Kite session from the current alphaIMB token."""
+    api_key, access_token, _ = simulation_kite_auth()
     from kiteconnect import KiteConnect
 
-    kite = KiteConnect(api_key=config["api_key"])
-    kite.set_access_token(token["access_token"])
+    kite = KiteConnect(api_key=api_key)
+    kite.set_access_token(access_token)
     return kite
 
 
-def kite_login_url() -> str:
-    if not SIMULATION_KITE_CONFIG.is_file():
-        raise MarketDataUnavailable("Simulation Kite API key is not configured")
-    from kiteconnect import KiteConnect
-
-    config = json.loads(SIMULATION_KITE_CONFIG.read_text(encoding="utf-8-sig"))
-    return KiteConnect(api_key=config["api_key"]).login_url()
-
-
-def exchange_request_token(request_token: str) -> dict:
-    from kiteconnect import KiteConnect
-
-    config = json.loads(SIMULATION_KITE_CONFIG.read_text(encoding="utf-8-sig"))
-    kite = KiteConnect(api_key=config["api_key"])
-    session = kite.generate_session(request_token, api_secret=config["api_secret"])
-    payload = {
-        "access_token": session["access_token"],
-        "created_at": datetime.now(IST).isoformat(),
-    }
-    SIMULATION_KITE_TOKEN.parent.mkdir(parents=True, exist_ok=True)
-    SIMULATION_KITE_TOKEN.write_text(json.dumps(payload), encoding="utf-8")
-    return {"created_at": payload["created_at"]}
+def simulation_kite_auth(token_path: Path = ALPHAIMB_KITE_TOKEN) -> tuple[str, str, Path]:
+    """Resolve credentials without copying alphaIMB's rotating access token."""
+    token_path = Path(token_path)
+    if not token_path.is_file():
+        raise MarketDataUnavailable(
+            f"Kite data token missing; expected {ALPHAIMB_KITE_TOKEN}"
+        )
+    token = json.loads(token_path.read_text(encoding="utf-8-sig"))
+    api_key = str(token.get("api_key") or "").strip()
+    access_token = str(token.get("access_token") or "").strip()
+    if not api_key or not access_token:
+        raise MarketDataUnavailable("Kite token is missing api_key or access_token")
+    return api_key, access_token, token_path

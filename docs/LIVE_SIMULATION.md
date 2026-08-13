@@ -13,10 +13,9 @@ is simulation-only: no broker order endpoint is imported or called.
 
 - NIFTY reads the existing Labs/shared one-minute files. It does not create a
   second NIFTY collection pipeline.
-- Equity candles use a separate Kite app, token, and cache under
-  `data/simulation/1min/`.
-- The separate private files are `config/simulation_kite.json` and
-  `config/simulation_kite_token.json`. Both are gitignored.
+- Equity candles use the rotating alphaIMB Kite token read directly from
+  `~/alphaIMB/zerodha_access_token.json` and a separate cache under
+  `data/simulation/1min/`. The token is never copied into Labs.
 - Five-minute, 15-minute, and one-hour candles are resampled from one-minute
   candles and anchored to the 09:15 IST market open.
 - Replay slices the one-minute frame at the current simulated timestamp before
@@ -28,27 +27,17 @@ and NIFTY Next 50 factsheets dated 2026-07-31. Rebalance updates belong in
 
 ## Separate Kite setup
 
-Create this private file on PythonAnywhere:
+The normal PythonAnywhere data path needs no duplicate credentials. It reads:
 
-```json
-{
-  "api_key": "SIMULATION_KITE_API_KEY",
-  "api_secret": "SIMULATION_KITE_API_SECRET"
-}
-```
+`/home/mvkumar01/alphaIMB/zerodha_access_token.json`
 
-Save it as `/home/mvkumar01/labs_project/config/simulation_kite.json` with
-owner-only permissions. Configure this redirect URL in the separate Kite app:
+The file must contain both `api_key` and `access_token`. There is no Kite login
+or OAuth action in the simulator UI; alphaIMB remains the single owner of token
+refresh.
 
-`https://labs-mvkumar01.pythonanywhere.com/labs/simulation/kite/callback`
-
-Then open the simulator and click **Connect Kite Data**. The resulting access
-token is written only to `config/simulation_kite_token.json`.
-
-Kite access tokens expire daily. The supplied key file contains only the API key
-and secret, so the simulator requires a daily interactive connection before it
-can fetch an uncached equity date. Existing NIFTY data remains available without
-this simulator token.
+Kite access tokens expire daily. The simulator automatically uses the alphaIMB
+file after its existing daily refresh. If that refresh fails, uncached equity
+fetches fail clearly; existing NIFTY data and cached equity dates remain usable.
 
 ## PythonAnywhere processes
 

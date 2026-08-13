@@ -57,9 +57,6 @@
         try { render(await api(`/sessions/${sessionId}`)); }
         catch (_) { await createSession(); }
       }
-      const params = new URLSearchParams(location.search);
-      if (params.get("kite_connected")) toast("Simulation Kite connected", "success");
-      if (params.get("kite_error")) toast(`Kite connection failed: ${params.get("kite_error")}`, "error");
       bindEvents();
     } catch (error) { showError(error); }
   }

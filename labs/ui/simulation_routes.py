@@ -1,9 +1,8 @@
 """Flask page and JSON API for historical Live Simulation."""
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, render_template, request
 
-from labs.simulation.market_data import exchange_request_token, kite_login_url
 from labs.simulation.service import SimulationService
 
 
@@ -105,23 +104,3 @@ def exit_position(session_id, symbol):
 @simulation_bp.route("/api/sessions/<session_id>/positions/<symbol>", methods=["PATCH"])
 def modify_position(session_id, symbol):
     return _ok(lambda: _service().modify_position(session_id, symbol, _json_body()))
-
-
-@simulation_bp.route("/kite/login")
-def kite_login():
-    try:
-        return redirect(kite_login_url())
-    except RuntimeError as exc:
-        return redirect(url_for("simulation.page", kite_error=str(exc)))
-
-
-@simulation_bp.route("/kite/callback")
-def kite_callback():
-    request_token = request.args.get("request_token")
-    if not request_token:
-        return redirect(url_for("simulation.page", kite_error="Kite request token missing"))
-    try:
-        exchange_request_token(request_token)
-        return redirect(url_for("simulation.page", kite_connected="1"))
-    except Exception as exc:
-        return redirect(url_for("simulation.page", kite_error=type(exc).__name__))

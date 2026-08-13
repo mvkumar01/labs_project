@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from labs.simulation.engine import EquityChargesModel, SimulationEngine
 from labs.simulation.indicators import indicator_series, visible_bars
+from labs.simulation.market_data import MarketDataUnavailable, simulation_kite_auth
 from labs.simulation.service import SimulationService
 
 
@@ -110,6 +111,25 @@ def test_pending_orders_and_position_risk_can_be_modified():
     position = engine.modify_position("HDFCBANK", stop_loss=98, target=110)
     assert position["stop_loss"] == 98
     assert position["target"] == 110
+
+
+def test_external_kite_token_supplies_api_key_without_duplicate_config(tmp_path):
+    token_path = tmp_path / "zerodha_access_token.json"
+    token_path.write_text(
+        '{"api_key":"external-key","access_token":"daily-token"}',
+        encoding="utf-8",
+    )
+    api_key, access_token, source = simulation_kite_auth(token_path)
+    assert (api_key, access_token, source) == (
+        "external-key", "daily-token", token_path
+    )
+
+
+def test_external_kite_token_requires_api_key_and_access_token(tmp_path):
+    token_path = tmp_path / "zerodha_access_token.json"
+    token_path.write_text('{"access_token":"daily-token"}', encoding="utf-8")
+    with pytest.raises(MarketDataUnavailable, match="missing api_key"):
+        simulation_kite_auth(token_path)
 
 
 def test_equity_charges_are_separated_and_positive():
