@@ -19,8 +19,9 @@
   </header>
 
   <section class="sim-commandbar">
+    <label><span>Mode</span><select id="simulation-mode"><option value="HISTORICAL">Historical Replay</option><option value="LIVE_PAPER">Live Paper</option></select></label>
     <label class="instrument-search"><span>Instrument</span><select id="instrument"></select></label>
-    <label><span>Historical day</span><input id="trade-date" type="date"></label>
+    <label id="date-field"><span>Historical day</span><input id="trade-date" type="date"></label>
     <button id="fetch-data" class="ghost" type="button">Fetch / verify data</button>
     <div class="replay-controls">
       <button id="start" class="control primary" title="Start">START</button>
@@ -29,7 +30,7 @@
       <button id="restart" class="control" title="Restart">RESTART</button>
       <label><span>Speed</span><select id="speed"><option>1</option><option>2</option><option>5</option><option>10</option><option>30</option><option>60</option></select></label>
     </div>
-    <div class="clock-block"><span>SIMULATED TIME</span><strong id="sim-time">--:--:--</strong><small id="historical-ts">Select a day</small></div>
+    <div class="clock-block"><span id="clock-label">SIMULATED TIME</span><strong id="sim-time">--:--:--</strong><small id="historical-ts">Select a day</small></div>
     <div class="account-chip"><span>NET ACCOUNT VALUE</span><strong id="account-value">Rs 10,00,000</strong></div>
   </section>
 
@@ -68,7 +69,7 @@
         <details><summary>Execution settings</summary><div class="field-grid"><label>Slippage mode<select id="slippage-mode"><option value="points">Points</option><option value="bps">Basis points</option></select></label><label>Value<input id="slippage-value" type="number" value="0" min="0" step="0.01"></label></div></details>
         <button id="place-order" class="place buy" type="submit">PLACE BUY ORDER</button>
       </form>
-      <p class="ticket-note">Simulation only. No broker order API is called.</p>
+      <p class="ticket-note">Simulation only. Live Paper runs only while this page stays open and awake. No broker order API is called.</p>
     </aside>
   </main>
 

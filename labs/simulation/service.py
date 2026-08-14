@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 
 from labs.simulation.config import INSTRUMENTS, STARTING_CAPITAL, instrument_list
 from labs.simulation.engine import FINAL_ORDER_STATUSES, SimulationEngine
 from labs.simulation.indicators import chart_payload, indicator_series, visible_bars
-from labs.simulation.market_data import CompositeMarketDataProvider
+from labs.simulation.market_data import IST, CompositeMarketDataProvider
 from labs.simulation.storage import SimulationStore
 
 
@@ -26,19 +27,28 @@ class SimulationService:
     def configure(self, session_id: str, payload: dict) -> dict:
         engine = SimulationEngine(self.store.load(session_id))
         instrument = payload.get("instrument", engine.state["instrument"])
+        mode = str(payload.get("mode", engine.state.get("mode", "HISTORICAL"))).upper()
         if instrument not in INSTRUMENTS:
             raise ValueError("Unsupported instrument")
+        if mode not in {"HISTORICAL", "LIVE_PAPER"}:
+            raise ValueError("Unsupported simulation mode")
         if engine.state["orders"] or engine.state["positions"] or engine.state["trades"]:
             changing_day = payload.get("trade_date") and payload["trade_date"] != engine.state.get("trade_date")
             changing_instrument = instrument != engine.state.get("instrument")
-            if changing_day or changing_instrument:
-                raise ValueError("Reset the simulation before changing instrument or date")
+            changing_mode = mode != engine.state.get("mode", "HISTORICAL")
+            if changing_day or changing_instrument or changing_mode:
+                raise ValueError("Reset the simulation before changing mode, instrument, or date")
+        if mode != engine.state.get("mode", "HISTORICAL") and engine.state.get("replay_index", -1) >= 0:
+            raise ValueError("Reset the simulation before changing mode")
+        payload = {**payload, "mode": mode}
         engine.configure(**payload)
         self.store.save(session_id, engine.state)
         return self._response(session_id, engine)
 
     def start(self, session_id: str) -> dict:
         engine = SimulationEngine(self.store.load(session_id))
+        if engine.state.get("mode") == "LIVE_PAPER":
+            return self._start_live(session_id, engine)
         frame = self._frame(engine)
         if frame.empty:
             raise ValueError("No candles available for this session")
@@ -59,6 +69,8 @@ class SimulationService:
 
     def step(self, session_id: str, count: int = 1) -> dict:
         engine = SimulationEngine(self.store.load(session_id))
+        if engine.state.get("mode") == "LIVE_PAPER":
+            return self._step_live(session_id, engine)
         frame = self._frame(engine)
         count = max(1, min(60, int(count)))
         for _ in range(count):
@@ -92,7 +104,11 @@ class SimulationService:
         payload = payload or {}
         engine.reset(
             instrument=payload.get("instrument") or engine.state.get("instrument"),
-            trade_date=payload.get("trade_date") or engine.state.get("trade_date"),
+            trade_date=(
+                payload.get("trade_date")
+                if "trade_date" in payload else engine.state.get("trade_date")
+            ),
+            mode=payload.get("mode") or engine.state.get("mode"),
             starting_capital=payload.get("starting_capital") or engine.state.get("starting_capital"),
         )
         self.store.save(session_id, engine.state)
@@ -120,6 +136,54 @@ class SimulationService:
         if not engine.state.get("trade_date"):
             raise ValueError("Select a historical date")
         return self.provider.load_day(engine.state["instrument"], engine.state["trade_date"])
+
+    def _start_live(self, session_id: str, engine: SimulationEngine) -> dict:
+        frame = self.provider.load_live(engine.state["instrument"])
+        if frame.empty:
+            raise ValueError("No completed live one-minute candle is available yet")
+        today = frame.index[-1].date().isoformat()
+        if engine.state.get("trade_date") not in {None, today}:
+            raise ValueError("Reset Live Paper for the current trading day")
+        engine.state["trade_date"] = today
+        if engine.state.get("replay_index", -1) >= 0:
+            engine.state["replay_status"] = "PLAYING"
+            self.store.save(session_id, engine.state)
+            return self._response(session_id, engine, frame=frame)
+        latest = len(frame) - 1
+        engine.on_candle(self._candle(frame, latest), latest)
+        engine.state["replay_status"] = "PLAYING"
+        engine.state["live_last_poll_at"] = datetime.now(timezone.utc).isoformat()
+        self.store.save(session_id, engine.state)
+        return self._response(session_id, engine, frame=frame)
+
+    def _step_live(self, session_id: str, engine: SimulationEngine) -> dict:
+        frame = self.provider.load_live(engine.state["instrument"])
+        if frame.empty:
+            raise ValueError("No completed live one-minute candle is available yet")
+        last_poll = engine.state.get("live_last_poll_at")
+        now = datetime.now(timezone.utc)
+        stale = False
+        if last_poll:
+            stale = (now - datetime.fromisoformat(last_poll)).total_seconds() > 90
+        next_index = int(engine.state.get("replay_index", -1)) + 1
+        if next_index < len(frame):
+            if stale and next_index < len(frame) - 1:
+                next_index = len(frame) - 1
+                engine.notify("Browser polling gap detected; missed candles were not executed", "warning")
+            engine.on_candle(self._candle(frame, next_index), next_index)
+        engine.state["live_last_poll_at"] = now.isoformat()
+        now_ist = now.astimezone(IST)
+        at_eod = (
+            engine.state.get("trade_date") == now_ist.date().isoformat()
+            and now_ist.time() >= datetime.strptime("15:30", "%H:%M").time()
+            and engine.state.get("replay_index") >= len(frame) - 1
+        )
+        if at_eod:
+            self._complete(engine)
+        else:
+            engine.state["replay_status"] = "PLAYING"
+        self.store.save(session_id, engine.state)
+        return self._response(session_id, engine, frame=frame)
 
     @staticmethod
     def _candle(frame, index: int) -> dict:

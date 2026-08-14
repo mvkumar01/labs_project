@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -11,7 +11,11 @@ sys.path.insert(0, str(ROOT))
 
 from labs.simulation.engine import EquityChargesModel, SimulationEngine
 from labs.simulation.indicators import indicator_series, visible_bars
-from labs.simulation.market_data import MarketDataUnavailable, simulation_kite_auth
+from labs.simulation.market_data import (
+    MarketDataUnavailable,
+    completed_live_bars,
+    simulation_kite_auth,
+)
 from labs.simulation.service import SimulationService
 
 
@@ -178,6 +182,13 @@ def test_reset_clears_session_trading_state():
     assert engine.state["replay_index"] == -1
 
 
+def test_orders_are_blocked_after_session_completion():
+    engine = ready_engine(100)
+    engine.state["replay_status"] = "COMPLETE"
+    with pytest.raises(ValueError, match="complete"):
+        engine.submit_order(side="BUY", qty=1)
+
+
 class MemoryStore:
     def __init__(self): self.states = {}
     def create(self, starting_capital):
@@ -190,6 +201,7 @@ class MemoryStore:
 class FrameProvider:
     def __init__(self, frame): self.frame = frame
     def load_day(self, instrument, trade_date): return self.frame
+    def load_live(self, instrument): return self.frame
     def available_dates(self, instrument): return ["2026-08-10"]
 
 
@@ -202,3 +214,42 @@ def test_service_steps_one_candle_and_persists_cursor():
     stepped = service.step(sid, 1)
     assert stepped["state"]["replay_index"] == 1
     assert stepped["chart"]["visible_count_1m"] == 2
+
+
+def test_live_bars_exclude_the_forming_minute():
+    frame = sample_frame(3)
+    now = datetime(2026, 8, 10, 9, 17, 30)
+    visible = completed_live_bars(frame, now)
+    assert list(visible.index) == [
+        pd.Timestamp("2026-08-10 09:15"),
+        pd.Timestamp("2026-08-10 09:16"),
+    ]
+
+
+def test_live_paper_starts_at_latest_bar_and_advances_only_when_polled():
+    store = MemoryStore()
+    provider = FrameProvider(sample_frame(3))
+    service = SimulationService(store=store, provider=provider)
+    sid = service.create_session()["session_id"]
+    service.configure(sid, {"instrument": "HDFCBANK", "mode": "LIVE_PAPER"})
+    started = service.start(sid)
+    assert started["state"]["replay_index"] == 2
+    provider.frame = sample_frame(4)
+    stepped = service.step(sid)
+    assert stepped["state"]["replay_index"] == 3
+
+
+def test_live_paper_skips_missed_candles_after_browser_gap():
+    store = MemoryStore()
+    provider = FrameProvider(sample_frame(2))
+    service = SimulationService(store=store, provider=provider)
+    sid = service.create_session()["session_id"]
+    service.configure(sid, {"instrument": "HDFCBANK", "mode": "LIVE_PAPER"})
+    service.start(sid)
+    state = store.load(sid)
+    state["live_last_poll_at"] = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    store.save(sid, state)
+    provider.frame = sample_frame(6)
+    stepped = service.step(sid)
+    assert stepped["state"]["replay_index"] == 5
+    assert any("missed candles" in note["message"] for note in stepped["state"]["notifications"])

@@ -9,6 +9,10 @@ Live Simulation is a historical intraday replay terminal at:
 It provides broker-style manual trading against historical one-minute candles. It
 is simulation-only: no broker order endpoint is imported or called.
 
+The same page also has a **Live Paper** mode. While the browser remains open, it
+polls the server every 15 seconds and processes each newly completed one-minute
+candle. It places simulated orders only and does not require an always-on task.
+
 ## Data architecture
 
 - NIFTY reads the existing Labs/shared one-minute files. It does not create a
@@ -48,6 +52,12 @@ The database uses SQLite rollback-journal mode for PythonAnywhere web workers.
 If unattended daily token generation is later required, add full Kite login and
 TOTP credentials to a separate private configuration and create a scheduled task.
 Do not reuse the Labs collector credentials or token.
+
+Live Paper intentionally stops when the browser is closed or suspended. When the
+page resumes after a gap longer than 90 seconds, missed candles are skipped rather
+than executing orders retroactively. Keep the page open and the computer awake
+for continuous paper execution. At 15:30 IST, the next successful poll cancels
+pending orders and closes simulated positions using the latest completed bar.
 
 After deployment, reload the existing PythonAnywhere web app. Do not restart the
 Labs collector, paper strategy runner, or live trading runner for this feature.

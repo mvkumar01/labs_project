@@ -67,6 +67,8 @@ class EquityChargesModel:
 class SimulationEngine:
     def __init__(self, state: dict | None = None):
         self.state = deepcopy(state) if state else self.new_state()
+        self.state.setdefault("mode", "HISTORICAL")
+        self.state.setdefault("live_last_poll_at", None)
         self.charges_model = EquityChargesModel()
 
     @staticmethod
@@ -74,6 +76,7 @@ class SimulationEngine:
         return {
             "version": 1,
             "instrument": "NIFTY",
+            "mode": "HISTORICAL",
             "trade_date": None,
             "replay_index": -1,
             "replay_status": "READY",
@@ -82,6 +85,7 @@ class SimulationEngine:
             "chart_type": "candlestick",
             "current_timestamp": None,
             "current_price": None,
+            "live_last_poll_at": None,
             "starting_capital": float(starting_capital),
             "realized_pnl": 0.0,
             "charges": 0.0,
@@ -93,7 +97,7 @@ class SimulationEngine:
             "slippage": {"mode": "points", "value": 0.0},
         }
 
-    def reset(self, *, instrument=None, trade_date=None,
+    def reset(self, *, instrument=None, trade_date=None, mode=None,
               starting_capital=None) -> dict:
         capital = (
             float(starting_capital)
@@ -103,13 +107,15 @@ class SimulationEngine:
         self.state = self.new_state(capital)
         if instrument:
             self.state["instrument"] = instrument
+        if mode:
+            self.state["mode"] = mode
         if trade_date:
             self.state["trade_date"] = trade_date
         return self.snapshot()
 
     def configure(self, **values) -> dict:
         allowed = {
-            "instrument", "trade_date", "speed", "timeframe", "chart_type",
+            "instrument", "mode", "trade_date", "speed", "timeframe", "chart_type",
             "indicators", "slippage",
         }
         for key, value in values.items():
@@ -169,6 +175,8 @@ class SimulationEngine:
             raise ValueError("Unsupported order side or type")
         if qty <= 0:
             raise ValueError("Quantity must be positive")
+        if self.state.get("replay_status") == "COMPLETE":
+            raise ValueError("Simulation is complete; reset before placing an order")
         if self.state.get("current_price") is None:
             raise ValueError("Start replay before placing an order")
         if order_type == "LIMIT" and limit_price is None:

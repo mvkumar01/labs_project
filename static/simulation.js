@@ -77,9 +77,11 @@
   }
 
   async function configure(extra = {}) {
+    const mode = $("simulation-mode").value;
     const body = {
       instrument: $("instrument").value,
-      trade_date: $("trade-date").value || null,
+      mode,
+      trade_date: mode === "HISTORICAL" ? ($("trade-date").value || null) : null,
       speed: Number($("speed").value),
       timeframe: activeTimeframe(),
       chart_type: $("chart-type").value,
@@ -91,6 +93,7 @@
   }
 
   function bindEvents() {
+    $("simulation-mode").addEventListener("change", modeChanged);
     $("instrument").addEventListener("change", async () => { await configure(); await loadDates(); });
     $("trade-date").addEventListener("change", () => configure().catch(showError));
     $("fetch-data").addEventListener("click", fetchData);
@@ -131,6 +134,7 @@
   }
 
   async function loadDates() {
+    if ($("simulation-mode").value === "LIVE_PAPER") return;
     const result = await api(`/dates?instrument=${encodeURIComponent($("instrument").value)}`);
     if (!$("trade-date").value && result.dates.length) $("trade-date").value = result.dates[0];
   }
@@ -152,17 +156,19 @@
     if (!confirm("Restart this replay? Orders, positions and trades will be cleared.")) return;
     stopTimer();
     try {
-      const body = {instrument: $("instrument").value, trade_date: $("trade-date").value, starting_capital: snapshot.state.starting_capital};
+      const mode = $("simulation-mode").value;
+      const body = {instrument: $("instrument").value, mode, trade_date: mode === "HISTORICAL" ? $("trade-date").value : null, starting_capital: snapshot.state.starting_capital};
       render(await api(`/sessions/${sessionId}/reset`, {method: "POST", body: JSON.stringify(body)}));
       await startReplay();
     } catch (error) { showError(error); }
   }
-  function startTimer() { stopTimer(); timer = setInterval(stepReplay, 1000); }
+  function startTimer() { stopTimer(); timer = setInterval(stepReplay, $("simulation-mode").value === "LIVE_PAPER" ? 15000 : 1000); }
   function stopTimer() { if (timer) clearInterval(timer); timer = null; }
   async function stepReplay() {
     if (!snapshot || snapshot.state.replay_status !== "PLAYING") return stopTimer();
     try {
-      render(await api(`/sessions/${sessionId}/step`, {method: "POST", body: JSON.stringify({count: Number($("speed").value)})}));
+      const count = $("simulation-mode").value === "LIVE_PAPER" ? 1 : Number($("speed").value);
+      render(await api(`/sessions/${sessionId}/step`, {method: "POST", body: JSON.stringify({count})}));
       if (snapshot.state.replay_status === "COMPLETE") { stopTimer(); toast("Replay complete. End-of-day summary is ready.", "success"); }
     } catch (error) { stopTimer(); showError(error); }
   }
@@ -239,6 +245,8 @@
     snapshot = payload;
     const state = payload.state, account = state.account;
     indicatorSpecs = state.indicators || [];
+    $("simulation-mode").value = state.mode || "HISTORICAL";
+    applyModeUi();
     $("instrument").value = state.instrument;
     if (state.trade_date) $("trade-date").value = state.trade_date;
     $("speed").value = state.speed;
@@ -308,6 +316,29 @@
   function renderIndicatorLabels() { $("active-indicators").textContent = indicatorSpecs.length ? indicatorSpecs.map(s => `${s.name}${s.params?.period ? ` ${s.params.period}` : ""}`).join(" | ") : "No indicators"; document.querySelectorAll("[data-indicator]").forEach(b => b.classList.toggle("active", indicatorSpecs.some(s => s.name === b.dataset.indicator))); }
 
   function setSide(side) { orderSide = side; $("buy-side").classList.toggle("active", side === "BUY"); $("sell-side").classList.toggle("active", side === "SELL"); $("place-order").className = `place ${side.toLowerCase()}`; $("place-order").textContent = `PLACE ${side} ORDER`; }
+  async function modeChanged() {
+    const mode = $("simulation-mode").value;
+    applyModeUi();
+    const hasActivity = snapshot && (snapshot.state.orders.length || snapshot.state.positions.length || snapshot.state.trades.length);
+    if (hasActivity) {
+      if (!confirm("Changing mode clears this simulation's orders, positions and trades. Continue?")) {
+        $("simulation-mode").value = snapshot.state.mode || "HISTORICAL";
+        return applyModeUi();
+      }
+    }
+    stopTimer();
+    const body = {instrument: $("instrument").value, mode, trade_date: mode === "HISTORICAL" ? $("trade-date").value : null, starting_capital: snapshot.state.starting_capital};
+    try { render(await api(`/sessions/${sessionId}/reset`, {method: "POST", body: JSON.stringify(body)})); }
+    catch (error) { showError(error); }
+  }
+  function applyModeUi() {
+    const live = $("simulation-mode").value === "LIVE_PAPER";
+    $("date-field").classList.toggle("hidden", live);
+    $("fetch-data").classList.toggle("hidden", live);
+    $("speed").disabled = live;
+    $("clock-label").textContent = live ? "LATEST COMPLETED BAR" : "SIMULATED TIME";
+    $("start").textContent = live ? "START LIVE" : "START";
+  }
   function updateOrderFields() { const type = document.querySelector("input[name=order-type]:checked").value; $("limit-price").disabled = type !== "LIMIT"; $("trigger-price").disabled = type !== "STOP"; }
   function switchTab(event) { const button = event.target.closest("button[data-tab]"); if (!button) return; document.querySelectorAll(".tabbar button").forEach(b => b.classList.toggle("active", b === button)); document.querySelectorAll(".tab-content").forEach(p => p.classList.toggle("active", p.id === `${button.dataset.tab}-tab`)); }
   function activeTimeframe() { return $("timeframes").querySelector("button.active")?.dataset.value || "1m"; }

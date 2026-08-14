@@ -35,6 +35,10 @@ class MarketDataProvider(ABC):
     def available_dates(self, instrument: str) -> list[str]:
         raise NotImplementedError
 
+    def load_live(self, instrument: str) -> pd.DataFrame:
+        today = datetime.now(IST).date().isoformat()
+        return completed_live_bars(self.load_day(instrument, today))
+
 
 def normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame.copy()
@@ -58,6 +62,15 @@ def normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
     frame = frame[~frame.index.duplicated(keep="last")].sort_index()
     frame = frame.between_time("09:15", "15:30", inclusive="left")
     return frame[OHLCV]
+
+
+def completed_live_bars(frame: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+    """Exclude the currently forming one-minute candle from paper execution."""
+    now = now or datetime.now(IST)
+    if now.tzinfo is not None:
+        now = now.astimezone(IST).replace(tzinfo=None)
+    minute_start = pd.Timestamp(now).floor("min")
+    return frame.loc[frame.index < minute_start]
 
 
 class LabsNiftyProvider(MarketDataProvider):
@@ -141,6 +154,11 @@ class KiteEquityProvider(MarketDataProvider):
         frame.to_csv(path, index=False)
         return path
 
+    def load_live(self, instrument: str) -> pd.DataFrame:
+        today = datetime.now(IST).date().isoformat()
+        self.fetch_day(instrument, today)
+        return completed_live_bars(normalize_frame(pd.read_csv(self.cache_path(instrument, today))))
+
     @staticmethod
     def _instrument_token(kite, exchange: str, symbol: str) -> int:
         for row in kite.instruments(exchange):
@@ -162,6 +180,9 @@ class CompositeMarketDataProvider(MarketDataProvider):
 
     def available_dates(self, instrument: str) -> list[str]:
         return self._provider(instrument).available_dates(instrument)
+
+    def load_live(self, instrument: str) -> pd.DataFrame:
+        return self._provider(instrument).load_live(instrument)
 
 
 def simulation_kite():
