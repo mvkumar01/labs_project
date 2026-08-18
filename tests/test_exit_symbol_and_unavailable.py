@@ -76,7 +76,7 @@ def test_transient_build_failure_is_unavailable_not_flat(monkeypatch):
                                         "lower": 24000.0, "upper": 24500.0,
                                         "vix": 12.0, "biggap": False})
     monkeypatch.setattr(champion_decider.champion_inputs, "ohlc_by_minute",
-                        lambda td: {})
+                        lambda td, extra_minutes=None: {})
     class _Ctx:
         direction = "DOWN"; vix_open = 12.0; sgap = -100.0
         use_trail = False; weekday = "Wed"; regime = "TRAIL"

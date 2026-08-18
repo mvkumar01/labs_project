@@ -61,7 +61,8 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
                     enable_entry_spot_recovery: bool = False,
                     entry_spot_close_confirmed: bool = False,
                     enable_v211_risk_authority: bool = False,
-                    live_execution_spot: float | None = None) -> dict | None:
+                    live_execution_spot: float | None = None,
+                    extra_minutes: dict | None = None) -> dict | None:
     """Replay completed bars up to `now_ist` and return the target position.
 
     Returns:
@@ -81,7 +82,13 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
     tier = day["bucket"]
     # Resolve cell context first (sgap needs 09:15 open + prev close) so the
     # alpha source (regime vs gemini_c2) + formula follow the Run F routing.
-    ohlc = champion_sim.OHLC(champion_inputs.ohlc_by_minute(trade_date))
+    # `extra_minutes` carries minutes the live runner already froze from its
+    # two-second spot stream. They only fill minutes the collector has not
+    # written yet, letting a 60-second boundary decision execute at :00-:05
+    # instead of waiting on the CSV. Empty for paper/backfill callers.
+    ohlc = champion_sim.OHLC(
+        champion_inputs.ohlc_by_minute(trade_date, extra_minutes=extra_minutes)
+    )
     try:
         context = champion_inputs.resolve_day_context(
             trade_date,

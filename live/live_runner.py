@@ -25,7 +25,9 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
+import uuid
 from csv import DictReader
 from dataclasses import dataclass
 from datetime import date as dt_date, datetime, time as dtime, timedelta, timezone
@@ -42,7 +44,7 @@ from live.brokers.angel import AngelAdapter
 from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
-from live.engine import champion_decider, champion_inputs
+from live.engine import champion_decider, champion_inputs, minute_ticks
 from market_data.expiry import select_symbol_for_expiry
 log = logging.getLogger("live.runner")
 
@@ -52,6 +54,7 @@ ITM_DISTANCE = 200         # ITM option distance
 EOD_EXIT_TIME = dtime(*[int(x) for x in EOD_CUTOFF.split(":")])  # 15:25 IST
 MARKET_OPEN_TIME = dtime(*[int(x) for x in MARKET_OPEN.split(":")])
 _OWNER_STALE_S = 30        # a runner_owner heartbeat older than this is stale
+_HEARTBEAT_INTERVAL_S = 5  # independent of slow per-user strategy evaluation
 PC400_TRAIL_ARM_PNL = 40.0
 PC400_TRAIL_DRAWDOWN = 20.0
 PC400_TRAIL_VIX_CUTOFF = 17.0
@@ -68,19 +71,30 @@ _ADAPTERS = {"angel": AngelAdapter, "zerodha": ZerodhaAdapter}
 class ChampionLivePolicy:
     fast_stop_overlay: bool
     next_open_fallback: bool
+    boundary_tick_close: bool = False
 
 
 def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     """Return live-only authority layered on the canonical replay.
 
-    v2.12 and v2.12_closed_confirmed have no live-only authority and consume
-    completed one-minute candles. v2.13 is the explicit additive-risk variant
-    and retains its buffered tick stop and next-open fallback.
+    v2.12 keeps the collector's completed one-minute candle as its clock, so it
+    stays event-aligned with the paper book minute for minute.
+
+    v2.12_closed_confirmed still takes NO intraminute authority — a tick that
+    crosses the anchor mid-minute never exits — but it does not wait for the
+    collector either. `boundary_tick_close` lets it build each 60-second close
+    from the two-second samples the runner already fetches, so the decision for
+    the minute that just ended executes at :00-:05 instead of at :49 (the
+    2026-08-17 09:25 decision landed at 09:26:49).
+
+    v2.13 is the explicit additive-risk variant and alone retains a buffered
+    intraminute tick stop and the next-open fallback.
     """
     additive = strategy_version == "v2.13"
     return ChampionLivePolicy(
         fast_stop_overlay=additive,
         next_open_fallback=additive,
+        boundary_tick_close=strategy_version == "v2.12_closed_confirmed",
     )
 
 
@@ -117,6 +131,29 @@ def claim_runner_owner(user_id: str, conn_id: str, task_id: str, conn=None) -> b
                 pass  # unparseable heartbeat -> treat as stale, reclaim
     svc.set_config(user_id, conn_id, "runner_owner", f"{task_id}@{_now_iso()}", conn)
     return True
+
+
+def publish_runner_heartbeat(user_id: str, conn_id: str, task_id: str,
+                             conn=None) -> bool:
+    """Claim a connection and publish the decision ABI for the owning runner."""
+    if not claim_runner_owner(user_id, conn_id, task_id, conn):
+        return False
+    svc.set_config(
+        user_id, conn_id, "runner_decision_abi", ex.LIVE_DECISION_ABI, conn
+    )
+    svc.set_config(user_id, conn_id, "runner_decision_owner", task_id, conn)
+    return True
+
+
+def _heartbeat_loop(task_id: str, stop_event: threading.Event) -> None:
+    """Keep all enrolled connections fresh while strategy evaluation is slow."""
+    while not stop_event.is_set():
+        try:
+            for user_id, conn_id in svc.runner_connections():
+                publish_runner_heartbeat(user_id, conn_id, task_id)
+        except Exception as exc:
+            log.error("runner heartbeat error: %s", exc)
+        stop_event.wait(_HEARTBEAT_INTERVAL_S)
 
 
 def is_killed(user_id: str, conn_id: str, conn=None) -> bool:
@@ -655,6 +692,58 @@ def _log_spot_sample(source: str, value) -> None:
         pass
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# Minute-boundary clock — 2s samples folded into 60-second closes
+# ══════════════════════════════════════════════════════════════════════════
+# ONE aggregator per runner process. The spot is fetched once per cycle for the
+# whole runner rather than once per connection, so every connection decides on a
+# byte-identical boundary close and two users cannot diverge merely by sampling
+# the feed a second apart (and the Kite read cost stays flat as users are added).
+_MINUTE_TICKS = minute_ticks.MinuteTickAggregator()
+
+
+def poll_global_spot_tick(now: datetime | None = None):
+    """Fetch the index spot once for this cycle and fold it into the minute.
+
+    Returns the FrozenMinute when this sample rolled the clock over, else None.
+    Never raises: the boundary clock must not be able to abort the runner loop,
+    and a missed sample simply leaves the minute short (the staleness guard in
+    the aggregator then drops it and the strategy holds).
+    """
+    try:
+        now = now or _now_ist()
+        spot = get_kite_spot()
+        _log_spot_sample("kite", spot)
+        frozen = _MINUTE_TICKS.add(now, spot)
+        if frozen is not None:
+            log.info(
+                "minute boundary %s close=%.2f o=%.2f h=%.2f l=%.2f "
+                "samples=%d last_tick=%s decided_at=%s",
+                frozen.key, frozen.close, frozen.open, frozen.high, frozen.low,
+                frozen.samples, frozen.last_ts.strftime("%H:%M:%S"),
+                now.strftime("%H:%M:%S"))
+        return frozen
+    except Exception as exc:
+        log.error("minute boundary poll error: %s", exc)
+        return None
+
+
+def _boundary_minutes(trade_date: str) -> dict:
+    """Tick-frozen minutes offered to the replay as gap-fill.
+
+    The session-open minute is withheld deliberately: the opening gap decides
+    tier/direction for the whole day and must keep coming from the collector's
+    candle, never from a sampled tick.
+    """
+    minutes = _MINUTE_TICKS.minutes_for(trade_date)
+    minutes.pop(MARKET_OPEN, None)
+    return minutes
+
+
+def _boundary_key(trade_date: str) -> str | None:
+    return _MINUTE_TICKS.boundary_key(trade_date)
+
+
 def _as_float(value):
     try:
         return float(value)
@@ -1016,14 +1105,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     """One poll-cycle for a single live connection.
     All reads/writes are scoped to (user_id, conn_id) — never another user's."""
     # Single-flight: only the owning runner process drives this connection.
-    if not claim_runner_owner(user_id, conn_id, task_id):
+    if not publish_runner_heartbeat(user_id, conn_id, task_id):
         return
-    # Published every poll, including while disarmed. The web/order gates use
-    # this to reject a stale process left running across a source deployment.
-    svc.set_config(
-        user_id, conn_id, "runner_decision_abi", ex.LIVE_DECISION_ABI
-    )
-    svc.set_config(user_id, conn_id, "runner_decision_owner", task_id)
 
     mode = ex.get_mode(user_id, conn_id)
     if mode == ex.Mode.DISARMED:
@@ -1370,6 +1453,14 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         # Re-evaluate when either an exact-mark alpha arrives or a new completed
         # one-minute OHLC candle arrives. This is the paper replay's event clock.
         alpha_key += (champion_inputs.latest_completed_ohlc_minute(trade_date),)
+        if live_policy.boundary_tick_close:
+            # Close-confirmed additionally wakes on its own minute rollover, so
+            # the minute that just ended is decided on the first poll after :00
+            # rather than whenever the collector finishes writing it. The
+            # collector key stays in the tuple on purpose: when the real candle
+            # lands the replay re-runs and converges on collector truth, while
+            # the champion cursor below suppresses any duplicate exit/re-entry.
+            alpha_key += (_boundary_key(trade_date),)
     if alpha_seen.get(conn_id) == alpha_key:
         return
     alpha_seen[conn_id] = alpha_key
@@ -1387,12 +1478,19 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         live_execution_spot = (
             _fast_spot() if live_policy.next_open_fallback else None
         )
+        # Only close-confirmed supplies tick-built minutes; v2.12 and v2.13 pass
+        # None and so keep consuming exactly the candles they consume today.
+        boundary_minutes = (
+            _boundary_minutes(trade_date)
+            if live_policy.boundary_tick_close else None
+        )
         target = champion_decider.champion_target(
             trade_date, now_ist=_now_ist(),
             enable_entry_spot_recovery=(v212_recovery or v212_close_confirmed),
             entry_spot_close_confirmed=v212_close_confirmed,
             enable_v211_risk_authority=v213_additive,
-            live_execution_spot=live_execution_spot)
+            live_execution_spot=live_execution_spot,
+            extra_minutes=boundary_minutes)
         target_closed_count = int((target or {}).get("n_closed") or 0)
         target_event_id = (target or {}).get("last_closed_event_id")
         if recovery_replay and (
@@ -1552,36 +1650,57 @@ def run(task_id: str = None, max_cycles: int = None,
     """PA always-on entry. Boots the live schema, then loops forever (or
     `max_cycles` for tests), each pass iterating EVERY active connection and
     processing it independently. `adapter_factory` is injectable for tests."""
-    task_id = task_id or f"live_runner:{os.getpid()}"
+    task_id = task_id or f"live_runner:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     init_live_db()
     log.info("live_runner boot | task=%s", task_id)
+
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = None
+    if max_cycles is None:
+        heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            args=(task_id, heartbeat_stop),
+            name="live-runner-heartbeat",
+            daemon=True,
+        )
+        heartbeat_thread.start()
 
     adapters: dict = {}     # conn_id -> live adapter (built once, reused)
     reconciled: set = set()  # conn_ids reconciled this boot
     signal_engines: dict = {}
     alpha_seen: dict = {}
     cycles = 0
-    while True:
-        try:
-            for (user_id, conn_id) in svc.runner_connections():
-                try:
-                    process_connection(
-                        user_id, conn_id, adapters=adapters,
-                        reconciled=reconciled, task_id=task_id,
-                        signal_engines=signal_engines, alpha_seen=alpha_seen,
-                        adapter_factory=adapter_factory,
-                    )
-                except Exception as e:
-                    # One connection's failure NEVER aborts the others.
-                    log.error("conn %s cycle error: %s", conn_id, e)
-        except Exception as e:
-            log.error("runner loop error: %s", e)
+    try:
+        while True:
+            try:
+                # ONE spot read per cycle, before any connection is processed,
+                # so every connection this pass decides on the same boundary
+                # minute. Folding it in here (not inside process_connection)
+                # is what keeps the Kite cost independent of the user count.
+                poll_global_spot_tick()
+                for (user_id, conn_id) in svc.runner_connections():
+                    try:
+                        process_connection(
+                            user_id, conn_id, adapters=adapters,
+                            reconciled=reconciled, task_id=task_id,
+                            signal_engines=signal_engines, alpha_seen=alpha_seen,
+                            adapter_factory=adapter_factory,
+                        )
+                    except Exception as e:
+                        # One connection's failure NEVER aborts the others.
+                        log.error("conn %s cycle error: %s", conn_id, e)
+            except Exception as e:
+                log.error("runner loop error: %s", e)
 
-        cycles += 1
-        if max_cycles is not None and cycles >= max_cycles:
-            log.info("live_runner stopping after %d cycles", cycles)
-            return
-        time.sleep(POLL_INTERVAL)
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                log.info("live_runner stopping after %d cycles", cycles)
+                return
+            time.sleep(POLL_INTERVAL)
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=_HEARTBEAT_INTERVAL_S + 1)
 
 
 if __name__ == "__main__":

@@ -191,8 +191,15 @@ def latest_completed_ohlc_minute(trade_date: str) -> str | None:
     return result
 
 
-def ohlc_by_minute(trade_date: str) -> dict:
+def ohlc_by_minute(trade_date: str, extra_minutes: dict | None = None) -> dict:
     """{'HH:MM': (open,high,low,close)} for the trade_date.
+
+    `extra_minutes` ({'HH:MM': (o,h,l,c)}) gap-fills minutes no source has
+    published yet. The live runner passes minutes it froze from its own
+    two-second spot stream so a boundary decision need not wait for the
+    collector's CSV write. Collected rows always WIN: a real candle replaces the
+    tick-built stand-in the moment it lands, so the canonical replay converges on
+    collector truth and this never becomes a second source of record.
 
     SOURCE PRIORITY (labs is the single source of truth for OHLC, 2026-06-29):
       1. labs collector spot OHLC — ``data/live`` (incl. today, live) then the
@@ -262,6 +269,13 @@ def ohlc_by_minute(trade_date: str) -> dict:
     if cache_key is not None:
         _OHLC_BY_MINUTE_CACHE[trade_date] = (cache_key, out)
         _prune_date_cache(_OHLC_BY_MINUTE_CACHE)
+    if extra_minutes:
+        # Applied AFTER the cache store so tick-built stand-ins never
+        # contaminate the cached collector view shared with every other caller.
+        out = dict(out)
+        for hm, candle in extra_minutes.items():
+            if hm and hm not in out:
+                out[hm] = tuple(float(v) for v in candle)
     return out
 
 
