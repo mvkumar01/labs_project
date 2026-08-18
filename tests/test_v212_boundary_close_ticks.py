@@ -152,6 +152,46 @@ def test_stale_minute_is_dropped_so_the_strategy_holds() -> None:
     assert "09:25" in agg.rejected(DATE)
 
 
+def test_rejection_is_logged_loudly_not_silently(caplog) -> None:
+    """A dropped minute is safe but never silent.
+
+    A run of rejections means the boundary clock has stopped deciding; if that
+    only showed up as an absence of log lines, a degraded session could pass
+    unnoticed.
+    """
+    agg = MinuteTickAggregator()
+    with caplog.at_level("WARNING", logger="live.minute_ticks"):
+        _feed(agg, [("09:25:00", 100.0), ("09:25:10", 95.0),
+                    ("09:26:00", 101.0)])
+
+    assert any("REJECTED" in r.message for r in caplog.records)
+    assert any("09:25" in str(r.args) or "09:25" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_cadence_drift_warns_before_it_starts_dropping_minutes(caplog) -> None:
+    """Between 6s and 10s stale the minute is still used, but flagged."""
+    agg = MinuteTickAggregator()
+    with caplog.at_level("WARNING", logger="live.minute_ticks"):
+        # Last tick at :53 -> 7s before the close: usable, past the warn ratio.
+        frozen = _feed(agg, [("09:25:00", 100.0), ("09:25:53", 99.0),
+                             ("09:26:00", 101.0)])
+
+    assert len(frozen) == 1                      # still decided
+    assert frozen[0].close == 99.0
+    warnings = [r.getMessage() for r in caplog.records]
+    assert any("degrading" in w for w in warnings)
+    assert not any("REJECTED" in w for w in warnings)
+
+
+def test_healthy_cadence_stays_quiet(caplog) -> None:
+    agg = MinuteTickAggregator()
+    with caplog.at_level("WARNING", logger="live.minute_ticks"):
+        _feed(agg, _minute_stream("09:25", 100.0) + [("09:26:00", 101.0)])
+
+    assert caplog.records == []
+
+
 def test_missing_samples_never_fabricate_a_close() -> None:
     agg = MinuteTickAggregator()
     samples = [("09:25:00", None), ("09:25:30", None), ("09:26:00", 101.0)]

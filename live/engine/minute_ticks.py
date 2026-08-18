@@ -24,14 +24,30 @@ no exit. Only the frozen boundary close is ever compared to the anchor.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+log = logging.getLogger("live.minute_ticks")
 
 # A minute is only trustworthy if sampling survived to near its end. A gap wider
 # than this (rate-limit stall, auth blip, PA scheduling pause) means the "close"
 # would really be a stale mid-minute print, so the minute is dropped and the
 # strategy holds rather than acting on a fabricated close.
+#
+# Deliberately FIXED, not adapted to observed cadence. A threshold that grew as
+# sampling degraded would keep the strategy trading by accepting, say, a :40
+# print as a "60-second close" — buying availability with exactly the fidelity
+# the close-confirmed rule depends on. Holding is the safe failure here, so the
+# threshold stays put and the degradation is made loud instead (see below).
 DEFAULT_MAX_STALENESS_S = 10.0
+
+# Measured on PA 2026-08-18: POLL_INTERVAL is 2s but the real cycle is ~3.8s
+# (~16 samples/minute) because per-connection replay dominates the sleep. So one
+# missed cycle is comfortably inside the threshold and two are not. Warn once the
+# close creeps past this fraction of the limit, so cadence drift is visible
+# BEFORE it starts silently dropping minutes.
+_STALENESS_WARN_RATIO = 0.6
 
 # The runner is an always-on task spanning many sessions; only today and the
 # prior day are ever consulted, so older sessions are dropped.
@@ -135,8 +151,24 @@ class MinuteTickAggregator:
         age = (end - minute.last_ts).total_seconds()
         if age > self.max_staleness_s:
             # Last print landed too early in the minute to be its close.
+            # Logged at WARNING: dropping the minute is safe (the strategy
+            # holds) but it is NOT free — a run of these means the boundary
+            # clock has stopped deciding, and that must never be silent.
             self._rejected.setdefault(minute.trade_date, []).append(minute.minute)
+            log.warning(
+                "minute %s %s REJECTED: last tick %.1fs before the close "
+                "(limit %.1fs, %d samples) — no decision for this minute",
+                minute.trade_date, minute.minute, age,
+                self.max_staleness_s, minute.samples)
             return None
+        if age > self.max_staleness_s * _STALENESS_WARN_RATIO:
+            # Early warning: still usable, but sampling is drifting toward the
+            # rejection threshold.
+            log.warning(
+                "minute %s %s close is %.1fs stale (limit %.1fs, %d samples); "
+                "sampling cadence degrading toward rejection",
+                minute.trade_date, minute.minute, age,
+                self.max_staleness_s, minute.samples)
         frozen = FrozenMinute(
             trade_date=minute.trade_date,
             minute=minute.minute,
