@@ -333,6 +333,7 @@ def replay_champion_signals(
     override: dict | None = None,
     *,
     enable_v211a: bool = False,
+    suppress_pc50_call_entries: bool = False,
 ) -> dict:
     """Build v2.11 trades once, before any option-contract pricing.
 
@@ -389,6 +390,7 @@ def replay_champion_signals(
         context.sgap, tier, context.weekday, context.regime,
         day["lower"], day["upper"],
         enable_v211a_low_vix_dn_put_trail=v211a_low_vix,
+        suppress_pc50_call_entries=suppress_pc50_call_entries,
     )
     return {
         "tier": tier,

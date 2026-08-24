@@ -230,6 +230,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_rule3_dn_put=True,
              enable_v711_drift_protective=True,
              enable_v211a_low_vix_dn_put_trail=False,
+             suppress_pc50_call_entries=False,
              enable_entry_spot_recovery=False,
              entry_spot_close_confirmed=False,
              # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
@@ -265,6 +266,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     overlay. Its caller enables it only when the resolved opening VIX is present
     and below 17. It changes PC400 gap-DOWN PUT exits from Alpha-only to a
     30-point arm with a 20-point retrace; every other v2.11 rule is unchanged.
+
+    `suppress_pc50_call_entries` is the isolated Alpha v2.11 champion replay B
+    decision gate. A qualifying PC50 CALL remains flat; PUT entries and every
+    PC250/PC400 entry retain the original v2.11 behavior.
 
     `entry_spot_close_confirmed` modifies only the entry-spot overlay. A CALL
     stop is confirmed when the completed one-minute close is at/below its
@@ -855,6 +860,9 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                                 d2_pending = True
                                 d2_nbw = nbw
                                 d2_prev_oi = float(cur_oi)
+
+            if suppress_pc50_call_entries and tier == "PC50" and new_pos == "call":
+                entered = False
 
             if entered:
                 pos = new_pos

@@ -27,6 +27,7 @@ def _in_session(now: datetime) -> bool:
 def main() -> None:
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
     from labs.engine.alpha_v211a_tracker import run_day as run_v211a_day
+    from labs.engine.alpha_v211b_tracker import run_day as run_v211b_day
     from labs.engine.alpha_v212_tracker import run_day as run_v212_day
     from labs.engine.alpha_v213_tracker import run_day as run_v213_day
     from labs.engine.sensex_alpha_tracker import run_day as run_sensex_day
@@ -39,6 +40,7 @@ def main() -> None:
     last_log = {
         "nifty": None,
         "alpha_v211a": None,
+        "alpha_v211b": None,
         "alpha_v212": None,
         "alpha_v213": None,
         "sensex_alpha": None,
@@ -53,6 +55,7 @@ def main() -> None:
             for name, runner in (
                 ("nifty", run_nifty_day),
                 ("alpha_v211a", run_v211a_day),
+                ("alpha_v211b", run_v211b_day),
                 ("alpha_v212", run_v212_day),
                 ("alpha_v213", run_v213_day),
                 ("sensex_alpha", run_sensex_day),

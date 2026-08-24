@@ -363,7 +363,8 @@ def live_strategy():
     date_clause, date_params = _live_date_clause(date_from, date_to)
     active_live_tab = request.args.get("tab", "nifty")
     if active_live_tab not in {
-        "nifty", "alpha_v211a", "alpha_v212", "alpha_v213", "alpha_cpr",
+        "nifty", "alpha_v211a", "alpha_v211b", "alpha_v212", "alpha_v213",
+        "alpha_cpr",
         "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
@@ -377,6 +378,7 @@ def live_strategy():
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
     overlay_version = {
         "alpha_v211a": "v2.11A",
+        "alpha_v211b": "2.11 - champion replay (B)",
         "alpha_v212": "v2.12",
         "alpha_v213": "v2.13",
         "alpha_cpr": "CPR",
@@ -506,8 +508,8 @@ def live_strategy():
 
         # v2.11A, v2.12 and v2.13 are separate paper ledgers backed by their respective
         # canonical replay engines. Only load the selected tab's tables.
-        if active_live_tab in {"alpha_v211a", "alpha_v212", "alpha_v213",
-                               "alpha_cpr"}:
+        if active_live_tab in {"alpha_v211a", "alpha_v211b", "alpha_v212",
+                               "alpha_v213", "alpha_cpr"}:
             overlay_prefix = active_live_tab
             try:
                 overlay_cur = conn.execute(
@@ -864,6 +866,34 @@ def alpha_cpr_backfill():
     never runs long; keep calling while `remaining` > 0. Pass `start` to build
     the earlier research parity window. Paper data only — no orders."""
     from labs.engine.alpha_cpr_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(int(request.args.get("limit", 5)), 10)
+    except (TypeError, ValueError):
+        limit = 5
+    start = request.args.get("start") or DEFAULT_START
+    end = request.args.get("end") or None
+    try:
+        result = run_backfill(
+            start_date=start,
+            end_date=end,
+            limit=limit,
+            rebuild=request.args.get("rebuild") == "1",
+        )
+        return jsonify({
+            "ok": True,
+            "done": len(result["done"]),
+            "dates": result["done"],
+            "remaining": result["remaining"],
+            "errors": result["errors"],
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@labs_bp.route("/api/alpha_v211b/backfill", methods=["POST"])
+def alpha_v211b_backfill():
+    """Replay bounded v2.11 history with PC50 CALL entries suppressed."""
+    from labs.engine.alpha_v211b_backfill import DEFAULT_START, run_backfill
     try:
         limit = min(int(request.args.get("limit", 5)), 10)
     except (TypeError, ValueError):

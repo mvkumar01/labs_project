@@ -46,6 +46,7 @@
     <div class="live-tabs">
       <a href="{{ url_for('labs.live_strategy', tab='nifty', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v211a', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v211a' else '' }}">Alpha v2.11A</a>
+      <a href="{{ url_for('labs.live_strategy', tab='alpha_v211b', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v211b' else '' }}">Alpha 2.11 replay (B)</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v212', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v213', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_cpr', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_cpr' else '' }}">Alpha CPR</a>
@@ -66,8 +67,9 @@
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
 
-    {% if active_live_tab in ['alpha_v211a', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
+    {% if active_live_tab in ['alpha_v211a', 'alpha_v211b', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
     {% set is_v211a = active_live_tab == 'alpha_v211a' %}
+    {% set is_v211b = active_live_tab == 'alpha_v211b' %}
     {% set is_v213 = active_live_tab == 'alpha_v213' %}
     {% set is_cpr = active_live_tab == 'alpha_cpr' %}
     {% if is_cpr %}
@@ -83,6 +85,12 @@
       <br><em>Paper-trade candidate.</em> Research profit factor is ~1.2 on a points basis; most of
       the rupee edge came from the sizing overlay, so treat this tab as the out-of-sample test of
       whether that survives.</p>
+    {% elif is_v211b %}
+    <h1>Alpha 2.11 - champion replay (B) (paper)</h1>
+    <p class="sub">Canonical Alpha v2.11 decision and exit rules with one isolated gate:
+      <b>PC50 CALL decisions do not enter a trade.</b> PC50 PUT and every PC250/PC400
+      decision remain unchanged. One nearest-expiry NIFTY ITM-200 option lot,
+      priced at <b>exact-minute ask in / bid out</b>. Net P&amp;L includes charges.</p>
     {% else %}
     <h1>Alpha {{ overlay_version }} — {{ 'low-VIX PC400/DOWN PUT trail' if is_v211a else ('v2.11 risk authority + recovery overlay' if is_v213 else 'entry-spot recovery') }} (paper)</h1>
     <p class="sub">{% if is_v211a %}Alpha v2.11 with one isolated exit overlay: when opening VIX is below 17, PC400 gap-DOWN PUT arms a NIFTY spot trail at +30 points and exits after a 20-point retrace.{% else %}{{ 'The complete Alpha v2.11 lifecycle stays authoritative while' if is_v213 else 'Alpha v2.11 signals plus' }} an original-entry-spot stop and same-side recovery.{% endif %}
@@ -170,6 +178,8 @@
       <p class="note">
         {% if is_v211a %}
         v2.11A changes only low-VIX PC400 gap-DOWN PUT exits: arm after 30 favourable NIFTY spot points, then trail 20 points from the best spot. Missing VIX, VIX at or above 17, and every other tier/direction/side retain the original v2.11 exits. The original Alpha exit remains the control book in the Alpha v2.11 tab.
+        {% elif is_v211b %}
+        Replay B changes only the entry decision: CALL entries are suppressed when the locked tier is PC50. The book remains flat at that decision and may take a later valid PUT. PC50 PUT and all PC250/PC400 entries and exits retain canonical v2.11 behavior.
         {% elif is_v213 %}
         v2.13 keeps a shadow v2.11 lifecycle authoritative. The entry-spot overlay may exit and recover only while that lifecycle remains active; a v2.11 trail, Alpha exit, target, wall, drift stop, or EOD exit closes the active overlay segment and cancels pending recovery.
         {% else %}
