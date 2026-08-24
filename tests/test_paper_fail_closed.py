@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 import pytest
@@ -70,3 +71,49 @@ def test_missing_locked_state_preserves_existing_result(monkeypatch) -> None:
     assert conn.execute(
         "SELECT net_rs FROM paper_strategy_daily WHERE trade_date=?", (DATE,)
     ).fetchone()[0] == 950.0
+
+
+def test_verified_locked_skip_is_not_treated_as_missing(tmp_path, monkeypatch) -> None:
+    state_path = tmp_path / "hybrid_range_state.json"
+    state_path.write_text(json.dumps({
+        "trade_date": DATE,
+        "locked": True,
+        "verified_open_locked": True,
+        "bucket": "SKIP",
+        "direction": "UP",
+        "lower": None,
+        "upper": None,
+    }), encoding="utf-8")
+    monkeypatch.setattr(tracker, "HYBRID_STATE_FILE", state_path)
+    monkeypatch.setattr(tracker, "_read_locked_hybrid_state", lambda *_: None)
+
+    assert tracker._resolve_day(DATE, None) == {
+        "bucket": "SKIP",
+        "direction": "UP",
+    }
+
+
+def test_verified_skip_persists_no_trade_row(monkeypatch) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    tracker._ensure_tables(conn)
+    monkeypatch.setattr(
+        tracker,
+        "_resolve_day",
+        lambda *_: {"bucket": "SKIP", "direction": "UP"},
+    )
+
+    result = tracker.run_day(DATE, connection=conn)
+
+    assert result == {
+        "trade_date": DATE,
+        "status": "no_trade",
+        "net_rs": 0.0,
+        "n_trades": 0,
+    }
+    row = conn.execute(
+        "SELECT status,tier,gap_dir,n_trades,net_rs "
+        "FROM paper_strategy_daily WHERE trade_date=?",
+        (DATE,),
+    ).fetchone()
+    assert tuple(row) == ("no_trade", "SKIP", "UP", 0, 0.0)

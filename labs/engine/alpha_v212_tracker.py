@@ -276,17 +276,14 @@ def _price_segment(segment: dict, expiry_code: str, quotes: dict) -> dict:
 
 def replay_v212(trade_date: str, override: dict | None = None) -> dict:
     day = _resolve_day(trade_date, override)
-    if day is None:
-        explicitly_skipped = override is not None and (
-            override.get("bucket") == "SKIP" or override.get("skip")
-        )
-        if not explicitly_skipped:
+    if day is None or day.get("bucket") == "SKIP":
+        if day is None:
             raise AlphaV212InputError(
                 f"No locked range state is available for {trade_date}"
             )
         return {
             "tier": "SKIP",
-            "direction": override.get("direction"),
+            "direction": day.get("direction"),
             "segments": [],
             "session_done": _session_over(trade_date),
         }

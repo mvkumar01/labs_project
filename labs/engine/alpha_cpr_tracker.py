@@ -214,13 +214,11 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
 def replay_cpr(trade_date: str, override: dict | None = None) -> dict:
     """v2.11 entries + CPR-only exits for one session."""
     day = _resolve_day(trade_date, override)
-    if day is None:
-        explicitly_skipped = override is not None and (
-            override.get("bucket") == "SKIP" or override.get("skip"))
-        if not explicitly_skipped:
+    if day is None or day.get("bucket") == "SKIP":
+        if day is None:
             raise AlphaCprInputError(
                 f"No locked range state is available for {trade_date}")
-        return {"tier": "SKIP", "direction": override.get("direction"),
+        return {"tier": "SKIP", "direction": day.get("direction"),
                 "segments": [], "session_done": _session_over(trade_date),
                 "cpr_prev_date": None}
 

@@ -44,7 +44,7 @@ import pandas as pd
 from storage.db import get_conn
 from labs.engine.charges import round_trip_charges
 from live.engine import champion_inputs, champion_sim
-from live.engine.alpha_hybrid import _read_locked_hybrid_state
+from live.engine.alpha_hybrid import HYBRID_STATE_FILE, _read_locked_hybrid_state
 from config.labs_config import SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR, UNDERLYINGS
 from market_data.expiry import select_expiry_code
 from market_data.shared_store import load_options_frame
@@ -236,11 +236,15 @@ def _premium(lookup: dict, bar_ts_iso: str, strike: int, otype: str) -> float | 
 
 
 def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
-    """Resolve the day's range + cell context, from the backfill override or the
-    locked hybrid state. Returns None for no-trade (SKIP / not locked)."""
+    """Resolve a tradable range, a verified SKIP day, or missing state.
+
+    A locked SKIP is a valid strategy result and must remain distinguishable
+    from a missing/unverified range so the paper books can persist no-trade
+    rows without hiding upstream range failures.
+    """
     if override is not None:
         if override.get("skip") or override.get("bucket") == "SKIP":
-            return None
+            return {"bucket": "SKIP", "direction": override.get("direction")}
         return {"lower": float(override["lower"]), "upper": float(override["upper"]),
                 "bucket": override["bucket"], "direction": override["direction"],
                 "vix": override.get("vix"), "vix_source": "backfill_override",
@@ -255,6 +259,20 @@ def _resolve_day(trade_date: str, override: dict | None) -> dict | None:
                 "biggap": bool(override.get("pc400_v210_biggap"))}
     state = _read_locked_hybrid_state(trade_date)
     if state is None:
+        try:
+            raw_state = json.loads(
+                HYBRID_STATE_FILE.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, ValueError, TypeError):
+            raw_state = None
+        if (
+            raw_state
+            and raw_state.get("trade_date") == trade_date
+            and raw_state.get("locked")
+            and raw_state.get("verified_open_locked")
+            and raw_state.get("bucket") == "SKIP"
+        ):
+            return {"bucket": "SKIP", "direction": raw_state.get("direction")}
         return None
     return {"lower": float(state["lower"]), "upper": float(state["upper"]),
             "bucket": state.get("bucket") or "PC50", "direction": state.get("direction"),
@@ -322,17 +340,14 @@ def replay_champion_signals(
     ensuring their signal layer is identical to the NIFTY champion.
     """
     day = _resolve_day(trade_date, override)
-    if day is None:
-        explicitly_skipped = override is not None and (
-            override.get("bucket") == "SKIP" or override.get("skip")
-        )
-        if not explicitly_skipped:
+    if day is None or day.get("bucket") == "SKIP":
+        if day is None:
             raise ReplayInputError(
                 f"No locked range state is available for {trade_date}; existing rows retained"
             )
         return {
             "tier": "SKIP",
-            "direction": override.get("direction"),
+            "direction": day.get("direction"),
             "sim_trades": [],
             "session_done": _session_over(trade_date),
         }
@@ -410,17 +425,14 @@ def run_day(
         _ensure_tables(conn)
 
     day = _resolve_day(trade_date, override)
-    if day is None:
-        explicitly_skipped = override is not None and (
-            override.get("bucket") == "SKIP" or override.get("skip")
-        )
-        if not explicitly_skipped:
+    if day is None or day.get("bucket") == "SKIP":
+        if day is None:
             raise ReplayInputError(
                 f"No locked range state is available for {trade_date}; existing rows retained"
             )
         if persist:
             _save_daily(conn, trade_date, status="no_trade", tier="SKIP",
-                        gap_dir=override.get("direction"), trades=[], commit=commit)
+                        gap_dir=day.get("direction"), trades=[], commit=commit)
             _save_all_comparison_variants(
                 conn, trade_date, {}, [], True, commit=commit
             )
