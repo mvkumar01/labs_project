@@ -72,10 +72,14 @@ class ChampionLivePolicy:
     fast_stop_overlay: bool
     next_open_fallback: bool
     boundary_tick_close: bool = False
+    suppress_pc50_call_entries: bool = False
 
 
 def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
-    """Return live-only authority layered on the canonical replay.
+    """Return version-specific authority layered on the canonical replay.
+
+    v2.11b keeps canonical v2.11 timing and exits while suppressing only PC50
+    CALL entries.
 
     v2.12 keeps the collector's completed one-minute candle as its clock, so it
     stays event-aligned with the paper book minute for minute.
@@ -95,6 +99,7 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
         fast_stop_overlay=additive,
         next_open_fallback=additive,
         boundary_tick_close=strategy_version == "v2.12_closed_confirmed",
+        suppress_pc50_call_entries=strategy_version == "v2.11b",
     )
 
 
@@ -1488,6 +1493,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             trade_date, now_ist=_now_ist(),
             enable_entry_spot_recovery=(v212_recovery or v212_close_confirmed),
             entry_spot_close_confirmed=v212_close_confirmed,
+            suppress_pc50_call_entries=live_policy.suppress_pc50_call_entries,
             enable_v211_risk_authority=v213_additive,
             live_execution_spot=live_execution_spot,
             extra_minutes=boundary_minutes)

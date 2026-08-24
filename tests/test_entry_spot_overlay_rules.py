@@ -56,6 +56,14 @@ def test_v213_retains_explicit_additive_risk_authority():
     assert policy.next_open_fallback is True
 
 
+def test_v211b_enables_only_pc50_call_suppression():
+    policy = lr.champion_live_policy("v2.11b")
+    assert policy.suppress_pc50_call_entries is True
+    assert policy.fast_stop_overlay is False
+    assert policy.next_open_fallback is False
+    assert policy.boundary_tick_close is False
+
+
 # ── phantom-P&L guard ─────────────────────────────────────────────────────
 def _track_svc(monkeypatch):
     calls = {"record": [], "day_pnl": []}

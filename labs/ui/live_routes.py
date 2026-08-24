@@ -499,6 +499,7 @@ def zerodha_callback():
 STRATEGY_PRESETS = {
     "legacy_v211":   ("signal_engine",   "hybrid_alpha_v28"),
     "champion_v211": ("champion_replay", "v2.11"),
+    "champion_v211b": ("champion_replay", "v2.11b"),
     "champion_v212": ("champion_replay", "v2.12"),
     "champion_v212_close_confirmed": (
         "champion_replay", "v2.12_closed_confirmed"
@@ -508,6 +509,7 @@ STRATEGY_PRESETS = {
 STRATEGY_LABELS = {
     "legacy_v211":   "Alpha v2.11 — legacy signal engine",
     "champion_v211": "Alpha v2.11 — champion replay",
+    "champion_v211b": "Alpha 2.11 - champion replay (B)",
     "champion_v212": "Alpha v2.12 — champion + entry-spot recovery",
     "champion_v212_close_confirmed": (
         "Alpha v2.12 close-confirmed — exit only on adverse 1m close"
@@ -519,6 +521,8 @@ STRATEGY_LABELS = {
 def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     de = svc.get_config(user_id, conn_id, "decision_engine")
     sv = svc.get_config(user_id, conn_id, "strategy_version")
+    if de == "champion_replay" and sv == "v2.11b":
+        return "champion_v211b"
     if de == "champion_replay" and sv == "v2.13":
         return "champion_v213"
     if de == "champion_replay" and sv == "v2.12_closed_confirmed":

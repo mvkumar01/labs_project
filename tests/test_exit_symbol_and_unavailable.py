@@ -8,6 +8,7 @@
    failures, so reconcile HOLDs instead of flattening a healthy position.
 """
 import pytest
+import pandas as pd
 
 import live.live_runner as lr
 from live.engine import champion_decider
@@ -93,3 +94,40 @@ def test_transient_build_failure_is_unavailable_not_flat(monkeypatch):
     # An open position must HOLD, not flatten, on an unavailable replay.
     sig = champion_decider.reconcile_replay_event(target, "PUT", closed_count_seen=0)
     assert sig["action"] == "HOLD"
+
+
+def test_champion_target_forwards_v211b_decision_gate(monkeypatch):
+    monkeypatch.setattr(champion_decider, "_resolve_day",
+                        lambda td, ov: {"bucket": "PC50", "direction": "UP",
+                                        "lower": 24000.0, "upper": 24500.0,
+                                        "vix": 12.0, "biggap": False})
+    monkeypatch.setattr(champion_decider.champion_inputs, "ohlc_by_minute",
+                        lambda td, extra_minutes=None: {})
+
+    class _Ctx:
+        direction = "UP"; vix_open = 12.0; sgap = 0.0
+        use_trail = False; weekday = "Wed"; regime = "TRAIL"
+
+    monkeypatch.setattr(champion_decider.champion_inputs, "resolve_day_context",
+                        lambda *a, **k: _Ctx())
+    monkeypatch.setattr(champion_decider.champion_inputs, "alpha_source",
+                        lambda *a, **k: ("regime", True))
+    adf = pd.DataFrame({
+        "timestamp": pd.to_datetime(["2026-07-08 09:15", "2026-07-08 09:20"]),
+        "alpha": [0.0, 40.0],
+    })
+    monkeypatch.setattr(champion_decider.champion_inputs, "build_sim_inputs",
+                        lambda *a, **k: (None, adf, {}, {}))
+    captured = {}
+
+    def fake_simulate(*args, **kwargs):
+        captured.update(kwargs)
+        return 0.0, [], None
+
+    monkeypatch.setattr(champion_decider.champion_sim, "simulate", fake_simulate)
+
+    target = champion_decider.champion_target(
+        "2026-07-08", suppress_pc50_call_entries=True)
+
+    assert target["position"] == "FLAT"
+    assert captured["suppress_pc50_call_entries"] is True

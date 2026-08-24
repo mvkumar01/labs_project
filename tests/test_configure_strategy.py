@@ -85,6 +85,7 @@ def test_configure_renders_one_strategy_select_without_bot_variant(client):
     assert 'name="exec_mode"' not in page
     assert 'name="om_r2_enabled"' not in page
     assert "Alpha v2.11" in page
+    assert "Alpha 2.11 - champion replay (B)" in page
     assert "Alpha v2.12" in page
     assert "Alpha v2.12 close-confirmed" in page
     assert "Alpha v2.13" in page
@@ -139,6 +140,19 @@ def test_flat_strategy_change_supports_v213(client):
 
     assert response.status_code == 302
     assert _strategy_pair() == ("champion_replay", "v2.13")
+
+
+def test_flat_strategy_change_supports_v211b(client):
+    _set_strategy("champion_replay", "v2.11")
+
+    response = _configure(client, "champion_v211b")
+
+    assert response.status_code == 302
+    assert _strategy_pair() == ("champion_replay", "v2.11b")
+
+    response = client.get("/live/configure")
+    page = response.get_data(as_text=True)
+    assert 'value="champion_v211b" selected' in page
 
 
 def test_flat_strategy_change_supports_v212_close_confirmed(client):
