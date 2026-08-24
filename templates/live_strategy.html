@@ -151,13 +151,13 @@
 
       <h2 style="margin-top:24px">Daily history</h2>
       <table class="perf">
-        <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th>
+        <thead><tr><th>Date</th><th>Status</th><th>Side</th><th>Tier</th><th>Gap</th><th>Expiry</th>
           <th>Segments</th>{% if is_cpr %}<th>Avg lots</th>{% endif %}<th>Quotes</th><th>Spot pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
         <tbody>
         {% for r in overlay_rows %}
           <tr>
             <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
-            <td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
+            <td>{{ r.trade_sides or '—' }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
             <td>{{ r.n_segments }}</td>{% if is_cpr %}<td>{{ "%.1f"|format(r.avg_lots) if r.avg_lots else '—' }}</td>{% endif %}<td>{{ r.priced_segments }}/{{ r.n_segments }}</td>
             <td class="{{ 'green' if r.spot_pnl_pts>0 else ('red' if r.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(r.spot_pnl_pts or 0) }}</td>
             <td>₹{{ "{:,.2f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
@@ -250,12 +250,12 @@
 
       <h2 style="margin-top:24px">Daily history</h2>
       <table class="perf">
-        <thead><tr><th>Date</th><th>Status</th><th>Alpha</th><th>Position</th><th>Trades</th>
+        <thead><tr><th>Date</th><th>Status</th><th>Side</th><th>Alpha</th><th>Position</th><th>Trades</th>
           <th>Spot pts</th><th>Option ₹</th><th>Quotes</th><th>Range</th></tr></thead>
         <tbody>
         {% for r in sensex_rows %}
           <tr>
-            <td>{{ r.trade_date }}</td><td>{{ r.status }}</td><td>{{ "%+.2f"|format(r.latest_alpha) }}</td>
+            <td>{{ r.trade_date }}</td><td>{{ r.status }}</td><td>{{ r.trade_sides or '—' }}</td><td>{{ "%+.2f"|format(r.latest_alpha) }}</td>
             <td>{{ r.position_side or 'FLAT' }}</td><td>{{ r.n_trades }}</td>
             <td class="{{ 'green' if r.spot_pnl_pts>0 else ('red' if r.spot_pnl_pts<0 else '') }}">{{ "%+.2f"|format(r.spot_pnl_pts) }}</td>
             <td class="{{ 'green' if r.option_gross_rs>0 else ('red' if r.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(r.option_gross_rs) }}</td>
@@ -333,12 +333,12 @@
 
       <h2 style="margin-top:24px">Daily history</h2>
       <table class="perf">
-        <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Expiry</th><th>Trades</th><th>Quotes</th><th>Gross option ₹</th></tr></thead>
+        <thead><tr><th>Date</th><th>Status</th><th>Side</th><th>Tier</th><th>Gap</th><th>Expiry</th><th>Trades</th><th>Quotes</th><th>Gross option ₹</th></tr></thead>
         <tbody>
         {% for r in sensex_v211_rows %}
           <tr>
             <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
-            <td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
+            <td>{{ r.trade_sides or '—' }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
             <td>{{ r.n_trades }}</td><td>{{ r.option_priced_trades }}/{{ r.n_trades }}</td>
             <td class="{{ 'green' if r.option_gross_rs>0 else ('red' if r.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(r.option_gross_rs or 0) }}</td>
           </tr>
@@ -610,11 +610,11 @@
 
     <h2 style="margin-top:24px">Daily history</h2>
     <table class="perf">
-      <thead><tr><th>Date</th><th>Status</th><th>Tier</th><th>Gap</th><th>Trades</th><th>Pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
+      <thead><tr><th>Date</th><th>Status</th><th>Side</th><th>Tier</th><th>Gap</th><th>Trades</th><th>Pts</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th></tr></thead>
       <tbody>
       {% for r in rows %}
         <tr>
-          <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td>
+          <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td><td>{{ r.trade_sides or '—' }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td>
           <td>{{ r.n_trades }}</td>
           <td class="{{ 'green' if r.pnl_pts>0 else ('red' if r.pnl_pts<0 else '') }}">{{ "%+.0f"|format(r.pnl_pts or 0) }}</td>
           <td>₹{{ "{:,.0f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.0f}".format(r.charges_rs or 0) }}</td>

@@ -66,6 +66,26 @@ def _live_date_clause(
     return (" AND " + " AND ".join(clauses) if clauses else ""), params
 
 
+def _attach_daily_trade_sides(conn, rows: list[dict], trades_table: str) -> None:
+    """Annotate daily rows with the distinct option sides traded that day."""
+    if not rows:
+        return
+    dates = [row["trade_date"] for row in rows]
+    placeholders = ",".join("?" for _ in dates)
+    side_rows = conn.execute(
+        f"SELECT trade_date, UPPER(side) AS side FROM {trades_table} "
+        f"WHERE trade_date IN ({placeholders}) ORDER BY trade_date, seq",
+        dates,
+    ).fetchall()
+    sides_by_date: dict[str, list[str]] = {}
+    for trade_date, side in side_rows:
+        sides = sides_by_date.setdefault(trade_date, [])
+        if side and side not in sides:
+            sides.append(side)
+    for row in rows:
+        row["trade_sides"] = " / ".join(sides_by_date.get(row["trade_date"], []))
+
+
 # ── Dashboard ────────────────────────────────────────────────────────────────
 
 @labs_bp.route("/")
@@ -373,6 +393,7 @@ def live_strategy():
         )
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        _attach_daily_trade_sides(conn, rows, "paper_strategy_trades")
         pnl_by_key = {}
         if rows:
             displayed_dates = [r["trade_date"] for r in rows]
@@ -502,6 +523,9 @@ def live_strategy():
                 overlay_rows = [
                     dict(zip(overlay_cols, row)) for row in overlay_cur.fetchall()
                 ]
+                _attach_daily_trade_sides(
+                    conn, overlay_rows, f"{overlay_prefix}_trades"
+                )
                 if overlay_rows:
                     active_days = [
                         row for row in overlay_rows
@@ -617,6 +641,7 @@ def live_strategy():
             )
             sx_cols = [column[0] for column in sx_cur.description]
             sensex_rows = [dict(zip(sx_cols, row)) for row in sx_cur.fetchall()]
+            _attach_daily_trade_sides(conn, sensex_rows, sx_trades_table)
             if sensex_rows:
                 latest_sx = sensex_rows[0]
                 completed_option_days = [
@@ -686,6 +711,7 @@ def live_strategy():
             )
             sv_cols = [column[0] for column in sv_cur.description]
             sensex_v211_rows = [dict(zip(sv_cols, row)) for row in sv_cur.fetchall()]
+            _attach_daily_trade_sides(conn, sensex_v211_rows, sv_trades_table)
             if sensex_v211_rows:
                 latest_sv = sensex_v211_rows[0]
                 sensex_v211_stats = {

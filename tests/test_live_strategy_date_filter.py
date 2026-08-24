@@ -3,7 +3,7 @@ import sqlite3
 from flask import Flask
 
 from labs.engine import alpha_v212_tracker, paper_strategy_tracker
-from labs.ui.routes import labs_bp
+from labs.ui.routes import _attach_daily_trade_sides, labs_bp
 
 
 def _app(monkeypatch, conn):
@@ -86,6 +86,62 @@ def _insert_v212_day(conn, trade_date, net, charges):
     )
 
 
+def _insert_v212_trade(conn, trade_date, seq, side):
+    conn.execute(
+        "INSERT INTO alpha_v212_trades "
+        "(trade_date,seq,status,side,strike,expiry_code,tradingsymbol,entry_ts,"
+        "exit_ts,entry_spot,exit_spot,spot_pnl_pts,entry_bid,entry_ask,exit_bid,"
+        "exit_ask,option_pnl_pts,gross_rs,charges_rs,net_rs,quote_status,"
+        "entry_rule,exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            trade_date,
+            seq,
+            "closed",
+            side,
+            25000,
+            "26804",
+            f"NIFTY{side}",
+            f"{trade_date}T09:20:00+05:30",
+            f"{trade_date}T10:20:00+05:30",
+            25000.0,
+            25010.0,
+            10.0,
+            99.0,
+            100.0,
+            119.0,
+            120.0,
+            20.0,
+            1300.0,
+            100.0,
+            1200.0,
+            "priced",
+            "test",
+            "alpha_exit",
+        ),
+    )
+
+
+def test_attach_daily_trade_sides_preserves_distinct_trade_order():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE sample_trades (trade_date TEXT, seq INTEGER, side TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO sample_trades VALUES (?,?,?)",
+        [
+            ("2026-07-30", 1, "put"),
+            ("2026-07-30", 2, "put"),
+            ("2026-07-30", 3, "call"),
+        ],
+    )
+    rows = [{"trade_date": "2026-07-30"}, {"trade_date": "2026-07-31"}]
+
+    _attach_daily_trade_sides(conn, rows, "sample_trades")
+
+    assert rows[0]["trade_sides"] == "PUT / CALL"
+    assert rows[1]["trade_sides"] == ""
+
+
 def test_v211_filter_recomputes_summary(monkeypatch):
     conn = sqlite3.connect(":memory:")
     paper_strategy_tracker._ensure_tables(conn)
@@ -118,6 +174,8 @@ def test_v212_filter_recomputes_summary_and_latest_day(monkeypatch):
     alpha_v212_tracker._ensure_tables(conn)
     _insert_v212_day(conn, "2026-07-29", 1200.0, 120.0)
     _insert_v212_day(conn, "2026-07-30", -100.0, 50.0)
+    _insert_v212_trade(conn, "2026-07-30", 1, "CALL")
+    _insert_v212_trade(conn, "2026-07-30", 2, "PUT")
     conn.commit()
 
     client = _app(monkeypatch, conn).test_client()
@@ -129,3 +187,4 @@ def test_v212_filter_recomputes_summary_and_latest_day(monkeypatch):
     assert "2026-07-29" not in html
     assert "₹-100.00" in html
     assert "after ₹50.00 charges" in html
+    assert "CALL / PUT" in html
