@@ -349,6 +349,7 @@ def live_strategy():
     }:
         active_live_tab = "nifty"
     rows, trades, stats = [], [], {}
+    tier_side_pnl = []
     comparison_variant_totals = {}
     comparison_by_date = {}
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
@@ -372,6 +373,37 @@ def live_strategy():
         )
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        pnl_by_key = {}
+        if rows:
+            displayed_dates = [r["trade_date"] for r in rows]
+            placeholders = ",".join("?" for _ in displayed_dates)
+            pnl_cur = conn.execute(
+                "SELECT d.tier, UPPER(t.side) AS side, COUNT(*) AS n_trades, "
+                "SUM(COALESCE(t.gross_rs, 0)) AS gross_rs, "
+                "SUM(COALESCE(t.charges_rs, 0)) AS charges_rs, "
+                "SUM(COALESCE(t.net_rs, 0)) AS net_rs "
+                "FROM paper_strategy_trades t "
+                "JOIN paper_strategy_daily d ON d.trade_date = t.trade_date "
+                f"WHERE t.trade_date IN ({placeholders}) "
+                "GROUP BY d.tier, UPPER(t.side)",
+                displayed_dates,
+            )
+            pnl_cols = [c[0] for c in pnl_cur.description]
+            pnl_by_key = {
+                (r["tier"], r["side"]): r
+                for r in (dict(zip(pnl_cols, values)) for values in pnl_cur.fetchall())
+            }
+        if pnl_by_key:
+            for tier in ("PC50", "PC250", "PC400"):
+                for side in ("CALL", "PUT"):
+                    tier_side_pnl.append(pnl_by_key.get((tier, side), {
+                        "tier": tier,
+                        "side": side,
+                        "n_trades": 0,
+                        "gross_rs": 0,
+                        "charges_rs": 0,
+                        "net_rs": 0,
+                    }))
         if rows:
             net = [float(r["net_rs"] or 0) for r in rows]
             traded = [r for r in rows if r["status"] == "traded"]
@@ -756,6 +788,7 @@ def live_strategy():
         basket_pending=basket_pending,
         basket_error=basket_error,
         rows=rows, trades=trades, stats=stats,
+        tier_side_pnl=tier_side_pnl,
         contract_variants=CONTRACT_VARIANTS,
         comparison_variant_totals=comparison_variant_totals,
         comparison_by_date=comparison_by_date,

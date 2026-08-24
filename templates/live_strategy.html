@@ -510,6 +510,23 @@
 
     <canvas id="curve" height="120"></canvas>
 
+    {% if tier_side_pnl %}
+    <h2 style="margin-top:24px">P&amp;L by tier and side</h2>
+    <table class="perf">
+      <thead><tr><th>Tier</th><th>Side</th><th>Trades</th><th>Gross P&amp;L</th><th>Charges</th><th>Net P&amp;L</th></tr></thead>
+      <tbody>
+      {% for r in tier_side_pnl %}
+        <tr>
+          <td>{{ r.tier }}</td><td>{{ r.side }}</td><td>{{ r.n_trades }}</td>
+          <td class="{{ 'green' if r.gross_rs>0 else ('red' if r.gross_rs<0 else 'muted') }}">₹{{ "{:,.0f}".format(r.gross_rs) }}</td>
+          <td class="muted">₹{{ "{:,.0f}".format(r.charges_rs) }}</td>
+          <td class="{{ 'green' if r.net_rs>0 else ('red' if r.net_rs<0 else 'muted') }}">₹{{ "{:,.0f}".format(r.net_rs) }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     {% if trades %}
     <h2 style="margin-top:24px">Latest session — {{ stats.latest_date }}</h2>
     <table class="perf">
