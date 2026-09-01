@@ -157,3 +157,13 @@ def test_backfill_date_scan_excludes_weekends(monkeypatch):
     monkeypatch.setattr(backfill, "resolve_options_source", lambda *args, **kwargs: True)
 
     assert backfill._available_dates("2026-06-01", "2026-06-07") == ["2026-06-05"]
+
+
+def test_backfill_default_end_never_includes_an_incomplete_session(monkeypatch):
+    class BeforeClose:
+        @classmethod
+        def now(cls, tz):
+            return pd.Timestamp("2026-09-01 12:00", tz="Asia/Kolkata").to_pydatetime()
+
+    monkeypatch.setattr(backfill, "datetime", BeforeClose)
+    assert backfill._default_end_date() == "2026-08-31"

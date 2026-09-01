@@ -36,3 +36,5 @@ tracker once so it imports the new module.
 The `/labs/live?tab=theta_straddle` tab contains a bounded, idempotent backfill
 button. It reads the shared NIFTY options archive from 1 June 2026 onward and
 writes only `theta_straddle_daily` and `theta_straddle_trades`.
+Before 15:20 IST, the backfill ends at the previous date so an incomplete live
+session can never be recorded as historically unavailable.

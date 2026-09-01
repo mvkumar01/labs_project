@@ -1,7 +1,7 @@
 """Bounded backfill for the NIFTY 09:20 ATM short-straddle paper book."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 from config.labs_config import SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
 from labs.engine.theta_straddle_tracker import (
@@ -16,6 +16,14 @@ from storage.db import get_conn
 
 
 DEFAULT_START = "2026-06-01"
+
+
+def _default_end_date() -> str:
+    now = datetime.now(IST)
+    session = now.date()
+    if session.weekday() < 5 and now.time() < time(15, 20):
+        session -= timedelta(days=1)
+    return session.isoformat()
 
 
 def _available_dates(start_date: str, end_date: str) -> list[str]:
@@ -54,7 +62,7 @@ def run_backfill(
     *, start_date: str = DEFAULT_START, end_date: str | None = None,
     limit: int = 5, rebuild: bool = False,
 ) -> dict:
-    end_date = end_date or datetime.now(IST).date().isoformat()
+    end_date = end_date or _default_end_date()
     conn = get_conn()
     _ensure_tables(conn)
     try:
