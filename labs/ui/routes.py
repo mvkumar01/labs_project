@@ -365,6 +365,7 @@ def live_strategy():
     if active_live_tab not in {
         "nifty", "alpha_v211a", "alpha_v211b", "alpha_v212", "alpha_v213",
         "alpha_cpr",
+        "theta_straddle",
         "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
@@ -376,6 +377,7 @@ def live_strategy():
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
     sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
+    theta_rows, theta_trades, theta_stats = [], [], {}
     overlay_version = {
         "alpha_v211a": "v2.11A",
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -615,6 +617,89 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     overlay_stats = {"error": str(exc)}
 
+        if active_live_tab == "theta_straddle":
+            try:
+                theta_cur = conn.execute(
+                    "SELECT trade_date,status,expiry_code,strike,entry_ts,exit_ts,"
+                    "entry_spot,lot_size,lots,qty,n_legs,priced_legs,"
+                    "capital_required_rs,premium_credit_rs,gross_rs,charges_rs,"
+                    "net_rs,return_on_capital_pct,margin_method,strategy_version,"
+                    "error,updated_at FROM theta_straddle_daily WHERE 1=1 "
+                    f"{date_clause} ORDER BY trade_date DESC LIMIT 120",
+                    date_params,
+                )
+                theta_cols = [column[0] for column in theta_cur.description]
+                theta_rows = [
+                    dict(zip(theta_cols, row)) for row in theta_cur.fetchall()
+                ]
+                if theta_rows:
+                    closed_rows = [
+                        row for row in theta_rows if row["status"] == "closed"
+                    ]
+                    wins = [
+                        row for row in closed_rows
+                        if float(row["net_rs"] or 0) > 0
+                    ]
+                    capitals = [
+                        float(row["capital_required_rs"] or 0)
+                        for row in theta_rows
+                        if row["capital_required_rs"] is not None
+                    ]
+                    rocs = [
+                        float(row["return_on_capital_pct"] or 0)
+                        for row in closed_rows
+                        if row["return_on_capital_pct"] is not None
+                    ]
+                    theta_stats = {
+                        "days": len(theta_rows),
+                        "closed_days": len(closed_rows),
+                        "win_days": len(wins),
+                        "win_pct": round(
+                            100 * len(wins) / max(len(closed_rows), 1), 1
+                        ),
+                        "gross_total": round(sum(
+                            float(row["gross_rs"] or 0) for row in theta_rows
+                        ), 2),
+                        "charges_total": round(sum(
+                            float(row["charges_rs"] or 0) for row in theta_rows
+                        ), 2),
+                        "net_total": round(sum(
+                            float(row["net_rs"] or 0) for row in theta_rows
+                        ), 2),
+                        "premium_credit_total": round(sum(
+                            float(row["premium_credit_rs"] or 0)
+                            for row in theta_rows
+                        ), 2),
+                        "avg_capital": round(
+                            sum(capitals) / max(len(capitals), 1), 2
+                        ),
+                        "max_capital": round(max(capitals), 2) if capitals else 0,
+                        "avg_daily_roc": round(
+                            sum(rocs) / max(len(rocs), 1), 3
+                        ),
+                        "first_date": theta_rows[-1]["trade_date"],
+                        "last_date": theta_rows[0]["trade_date"],
+                        "latest": theta_rows[0],
+                    }
+                    theta_trade_cur = conn.execute(
+                        "SELECT leg,option_type,tradingsymbol,expiry_code,strike,"
+                        "entry_ts,exit_ts,entry_sell_bid,exit_buy_ask,qty,"
+                        "premium_credit_rs,allocated_capital_rs,gross_rs,"
+                        "charges_rs,net_rs,status,exit_reason "
+                        "FROM theta_straddle_trades WHERE trade_date=? ORDER BY leg",
+                        (theta_rows[0]["trade_date"],),
+                    )
+                    theta_trade_cols = [
+                        column[0] for column in theta_trade_cur.description
+                    ]
+                    theta_trades = [
+                        dict(zip(theta_trade_cols, row))
+                        for row in theta_trade_cur.fetchall()
+                    ]
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    theta_stats = {"error": str(exc)}
+
         # SENSEX-own Alpha is a separate paper book and never changes the
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
@@ -831,9 +916,32 @@ def live_strategy():
         overlay_trades=overlay_trades,
         overlay_stats=overlay_stats,
         overlay_version=overlay_version,
+        theta_rows=theta_rows,
+        theta_trades=theta_trades,
+        theta_stats=theta_stats,
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@labs_bp.route("/api/theta_straddle/backfill", methods=["POST"])
+def theta_straddle_backfill():
+    """Backfill bounded batches of paper-only ATM short-straddle sessions."""
+    from labs.engine.theta_straddle_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        result = run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        )
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @labs_bp.route("/api/baskets/refresh", methods=["POST"])

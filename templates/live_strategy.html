@@ -21,7 +21,7 @@
     .cmp-note{color:#8a93a6;font-size:12px;margin:6px 0 10px;line-height:1.5}
     .unavail{color:#8a93a6}
     .card .sub-k{font-size:11px;color:#8a93a6;margin-top:6px}
-    .live-tabs{display:flex;gap:8px;margin:0 0 20px;border-bottom:1px solid #2b3445}
+    .live-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 20px;border-bottom:1px solid #2b3445}
     .live-tabs a{padding:9px 14px;color:#8a93a6;text-decoration:none;border-bottom:2px solid transparent}
     .live-tabs a.active{color:#f3f4f6;border-bottom-color:#16a34a}
     .formula{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#111827;
@@ -50,6 +50,7 @@
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v212', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v213', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_cpr', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_cpr' else '' }}">Alpha CPR</a>
+      <a href="{{ url_for('labs.live_strategy', tab='theta_straddle', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_straddle' else '' }}">09:20 Theta Straddle</a>
       <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
@@ -67,7 +68,100 @@
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
 
-    {% if active_live_tab in ['alpha_v211a', 'alpha_v211b', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
+    {% if active_live_tab == 'theta_straddle' %}
+    <h1>NIFTY 09:20 ATM short straddle (paper)</h1>
+    <p class="sub">At the first common executable quote from 09:20 to 09:25 IST,
+      sell one nearest-weekly ATM CE and one ATM PE. Buy both legs back at the
+      first common executable quote from 15:15 to 15:20 IST. Entry uses bid and
+      exit uses ask, so the replay includes the spread rather than optimistic LTP marks.</p>
+
+    <div class="formula">
+      Estimated capital = entry NIFTY spot × 65 × 10% after straddle offset.
+      This is a stable historical estimate, not broker-exact SPAN margin.
+      Premium received is reported separately and is not treated as capital.
+    </div>
+
+    {% if theta_stats.get('error') %}
+      <p class="empty">Theta straddle unavailable ({{ theta_stats.error }}).</p>
+    {% elif not theta_rows %}
+      <p class="empty">No theta-straddle sessions recorded in this date range.</p>
+      <button type="button" id="theta-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="theta-backfill-status" class="muted"></span>
+    {% else %}
+      {% set v = theta_stats.latest %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if theta_stats.net_total>0 else ('red' if theta_stats.net_total<0 else '') }}">₹{{ "{:,.2f}".format(theta_stats.net_total) }}</div>
+          <div class="sub-k">after ₹{{ "{:,.2f}".format(theta_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Gross P&amp;L</div>
+          <div class="v {{ 'green' if theta_stats.gross_total>0 else ('red' if theta_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(theta_stats.gross_total) }}</div>
+          <div class="sub-k">bid sold · ask covered · 65 qty per leg</div></div>
+        <div class="card"><div class="k">Avg estimated capital</div>
+          <div class="v">₹{{ "{:,.0f}".format(theta_stats.avg_capital) }}</div>
+          <div class="sub-k">peak ₹{{ "{:,.0f}".format(theta_stats.max_capital) }} · not broker SPAN</div></div>
+        <div class="card"><div class="k">Premium credit</div>
+          <div class="v">₹{{ "{:,.0f}".format(theta_stats.premium_credit_total) }}</div>
+          <div class="sub-k">sum of opening CE + PE premiums</div></div>
+        <div class="card"><div class="k">Win days</div>
+          <div class="v">{{ theta_stats.win_pct }}%</div>
+          <div class="sub-k">{{ theta_stats.win_days }}/{{ theta_stats.closed_days }} completed sessions</div></div>
+        <div class="card"><div class="k">Average daily ROC</div>
+          <div class="v {{ 'green' if theta_stats.avg_daily_roc>0 else ('red' if theta_stats.avg_daily_roc<0 else '') }}">{{ "%+.3f"|format(theta_stats.avg_daily_roc) }}%</div>
+          <div class="sub-k">net P&amp;L / estimated capital</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
+        <button type="button" id="theta-backfill" class="btn-secondary">Refresh backfill</button>
+        <span id="theta-backfill-status" class="muted"></span>
+      </div>
+
+      {% if theta_trades %}
+      <h2 style="margin-top:24px">Latest session — {{ v.trade_date }}</h2>
+      <table class="perf">
+        <thead><tr><th>Leg</th><th>Contract</th><th>Entry / Exit</th><th>Sell bid</th>
+          <th>Buy ask</th><th>Qty</th><th>Premium credit</th><th>Allocated capital</th>
+          <th>Gross ₹</th><th>Charges</th><th>Net ₹</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for t in theta_trades %}
+          <tr>
+            <td>{{ t.leg }}</td><td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.option_type|upper) }}</td>
+            <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+            <td>{{ "%.2f"|format(t.entry_sell_bid) }}</td><td>{{ "%.2f"|format(t.exit_buy_ask) if t.exit_buy_ask is not none else '—' }}</td>
+            <td>{{ t.qty }}</td><td>₹{{ "{:,.2f}".format(t.premium_credit_rs) }}</td>
+            <td>₹{{ "{:,.0f}".format(t.allocated_capital_rs) }}</td>
+            <td class="{{ 'green' if t.gross_rs>0 else ('red' if t.gross_rs<0 else '') }}">₹{{ "{:,.2f}".format(t.gross_rs) }}</td>
+            <td class="muted">₹{{ "{:,.2f}".format(t.charges_rs) }}</td>
+            <td class="{{ 'green' if t.net_rs>0 else ('red' if t.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(t.net_rs) }}</td>
+            <td class="{{ 'amber' if t.status == 'open' else 'muted' }}">{{ t.status|upper }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Expiry</th><th>ATM</th><th>Entry / Exit</th>
+          <th>Est. capital</th><th>Premium credit</th><th>Gross ₹</th><th>Charges</th><th>Net ₹</th><th>ROC</th></tr></thead>
+        <tbody>
+        {% for r in theta_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ r.status }}</td>
+            <td>{{ r.expiry_code or '—' }}</td><td>{{ r.strike or '—' }}</td>
+            <td title="{{ r.error or '' }}">{% if r.entry_ts %}{{ r.entry_ts[11:16] }} → {{ r.exit_ts[11:16] if r.exit_ts else 'open' }}{% else %}—{% endif %}</td>
+            <td title="{{ r.margin_method }}">₹{{ "{:,.0f}".format(r.capital_required_rs or 0) }}</td>
+            <td>₹{{ "{:,.0f}".format(r.premium_credit_rs or 0) }}</td>
+            <td>₹{{ "{:,.2f}".format(r.gross_rs or 0) }}</td><td class="muted">₹{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if r.net_rs>0 else ('red' if r.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
+            <td>{{ "%+.3f"|format(r.return_on_capital_pct or 0) }}%</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Capital is estimated consistently for historical comparison because archived broker SPAN snapshots are unavailable. Charges include two orders per leg, exchange and regulatory fees, GST, stamp duty on each cover buy, and 0.15% STT on each opening option sale. Paper only; this strategy never calls a broker order API.</p>
+    {% endif %}
+
+    {% elif active_live_tab in ['alpha_v211a', 'alpha_v211b', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
     {% set is_v211a = active_live_tab == 'alpha_v211a' %}
     {% set is_v211b = active_live_tab == 'alpha_v211b' %}
     {% set is_v213 = active_live_tab == 'alpha_v213' %}
@@ -647,6 +741,44 @@
     {% endif %}
   </main>
 </div>
+{% if active_live_tab == 'theta_straddle' %}
+<script>
+  const thetaButton = document.getElementById('theta-backfill');
+  const thetaStatus = document.getElementById('theta-backfill-status');
+  if (thetaButton) {
+    thetaButton.addEventListener('click', async () => {
+      thetaButton.disabled = true;
+      let completed = 0;
+      try {
+        while (true) {
+          thetaStatus.textContent = `Backfilling... ${completed} sessions completed`;
+          const response = await fetch('/labs/api/theta_straddle/backfill?limit=5', {
+            method: 'POST',
+          });
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+          }
+          completed += payload.done.length + (payload.unavailable || []).length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            thetaStatus.textContent = `Completed ${completed}; unavailable: ${errors.join(', ')}`;
+            break;
+          }
+          if (!payload.remaining) {
+            thetaStatus.textContent = `Backfill complete: ${completed} new sessions`;
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        thetaStatus.textContent = `Backfill failed: ${error.message}`;
+        thetaButton.disabled = false;
+      }
+    });
+  }
+</script>
+{% endif %}
 {% if stats.get('curve') %}
 <script>
   const curve = {{ stats.curve | tojson }};

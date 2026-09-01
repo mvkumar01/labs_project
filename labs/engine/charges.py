@@ -48,6 +48,37 @@ def round_trip_charges(entry_premium: float, exit_premium: float, qty: int) -> d
     }
 
 
+def short_option_round_trip_charges(
+    entry_sell_premium: float, exit_buy_premium: float, qty: int
+) -> dict:
+    """Current NSE charge model for one short-option intraday round trip.
+
+    STT is charged on the opening sell premium. The 0.15% rate applies from
+    2026-04-01; it is intentionally isolated from the legacy long-option
+    benchmark above so historical Alpha ledgers do not change underneath us.
+    """
+    sell_value = float(entry_sell_premium) * int(qty)
+    buy_value = float(exit_buy_premium) * int(qty)
+    turnover = sell_value + buy_value
+    brokerage = BROKERAGE_PER_LEG * 2
+    stt = 0.0015 * sell_value
+    txn = EXCH_TXN * turnover
+    sebi = SEBI * turnover
+    stamp = STAMP_BUY * buy_value
+    gst = GST * (brokerage + txn + sebi)
+    total = brokerage + stt + txn + sebi + stamp + gst
+    return {
+        "brokerage": round(brokerage, 2),
+        "stt": round(stt, 2),
+        "exch_txn": round(txn, 2),
+        "sebi": round(sebi, 4),
+        "stamp": round(stamp, 2),
+        "gst": round(gst, 2),
+        "raw_total": total,
+        "total": round(total, 2),
+    }
+
+
 # ── SENSEX (BSE) options round-trip charges ──────────────────────────────────
 # BSE F&O schedule differs from NSE: STT 0.15% on sell, txn 0.0325% turnover,
 # lot size 20. Supplied by the operator (2026-06-29).
