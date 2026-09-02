@@ -365,7 +365,7 @@ def live_strategy():
     if active_live_tab not in {
         "nifty", "alpha_v211a", "alpha_v211b", "alpha_v212", "alpha_v213",
         "alpha_cpr",
-        "theta_straddle",
+        "theta_straddle", "theta_iron_fly",
         "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
@@ -378,6 +378,7 @@ def live_strategy():
     sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
     theta_rows, theta_trades, theta_stats = [], [], {}
+    iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211a": "v2.11A",
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -700,6 +701,102 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     theta_stats = {"error": str(exc)}
 
+        if active_live_tab == "theta_iron_fly":
+            try:
+                iron_fly_cur = conn.execute(
+                    "SELECT trade_date,status,expiry_code,atm_strike,"
+                    "lower_wing_strike,upper_wing_strike,entry_ts,exit_ts,"
+                    "entry_spot,lot_size,lots,qty,n_legs,priced_legs,"
+                    "capital_required_rs,net_credit_rs,target_rs,gross_rs,"
+                    "charges_rs,net_rs,return_on_capital_pct,exit_reason,"
+                    "margin_method,strategy_version,error,updated_at "
+                    "FROM theta_iron_fly_daily WHERE 1=1 "
+                    f"{date_clause} ORDER BY trade_date DESC LIMIT 120",
+                    date_params,
+                )
+                iron_fly_cols = [column[0] for column in iron_fly_cur.description]
+                iron_fly_rows = [
+                    dict(zip(iron_fly_cols, row)) for row in iron_fly_cur.fetchall()
+                ]
+                if iron_fly_rows:
+                    closed_rows = [
+                        row for row in iron_fly_rows if row["status"] == "closed"
+                    ]
+                    net_values = [float(row["net_rs"] or 0) for row in closed_rows]
+                    wins = [value for value in net_values if value > 0]
+                    losses = [value for value in net_values if value < 0]
+                    capitals = [
+                        float(row["capital_required_rs"])
+                        for row in closed_rows
+                        if row["capital_required_rs"] is not None
+                    ]
+                    rocs = [
+                        float(row["return_on_capital_pct"])
+                        for row in closed_rows
+                        if row["return_on_capital_pct"] is not None
+                    ]
+                    cumulative = peak = max_drawdown = 0.0
+                    for row in sorted(closed_rows, key=lambda item: item["trade_date"]):
+                        cumulative += float(row["net_rs"] or 0)
+                        peak = max(peak, cumulative)
+                        max_drawdown = min(max_drawdown, cumulative - peak)
+                    gross_profit = sum(wins)
+                    gross_loss = -sum(losses)
+                    iron_fly_stats = {
+                        "days": len(iron_fly_rows),
+                        "closed_days": len(closed_rows),
+                        "win_days": len(wins),
+                        "win_pct": round(
+                            100 * len(wins) / max(len(closed_rows), 1), 1
+                        ),
+                        "gross_total": round(sum(
+                            float(row["gross_rs"] or 0) for row in iron_fly_rows
+                        ), 2),
+                        "charges_total": round(sum(
+                            float(row["charges_rs"] or 0) for row in iron_fly_rows
+                        ), 2),
+                        "net_total": round(sum(net_values), 2),
+                        "net_credit_total": round(sum(
+                            float(row["net_credit_rs"] or 0) for row in iron_fly_rows
+                        ), 2),
+                        "avg_capital": round(
+                            sum(capitals) / max(len(capitals), 1), 2
+                        ),
+                        "max_capital": round(max(capitals), 2) if capitals else 0,
+                        "avg_daily_roc": round(
+                            sum(rocs) / max(len(rocs), 1), 3
+                        ),
+                        "max_drawdown": round(max_drawdown, 2),
+                        "profit_factor": round(
+                            gross_profit / gross_loss, 2
+                        ) if gross_loss else None,
+                        "target_exits": sum(
+                            row["exit_reason"] == "PROFIT_TARGET_20PCT"
+                            for row in closed_rows
+                        ),
+                        "first_date": iron_fly_rows[-1]["trade_date"],
+                        "last_date": iron_fly_rows[0]["trade_date"],
+                        "latest": iron_fly_rows[0],
+                    }
+                    iron_fly_trade_cur = conn.execute(
+                        "SELECT leg,position_side,option_type,tradingsymbol,"
+                        "expiry_code,strike,entry_ts,exit_ts,entry_price,"
+                        "exit_price,qty,premium_cashflow_rs,allocated_capital_rs,"
+                        "gross_rs,charges_rs,net_rs,status,exit_reason "
+                        "FROM theta_iron_fly_trades WHERE trade_date=? ORDER BY leg",
+                        (iron_fly_rows[0]["trade_date"],),
+                    )
+                    iron_fly_trade_cols = [
+                        column[0] for column in iron_fly_trade_cur.description
+                    ]
+                    iron_fly_trades = [
+                        dict(zip(iron_fly_trade_cols, row))
+                        for row in iron_fly_trade_cur.fetchall()
+                    ]
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    iron_fly_stats = {"error": str(exc)}
+
         # SENSEX-own Alpha is a separate paper book and never changes the
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
@@ -919,6 +1016,9 @@ def live_strategy():
         theta_rows=theta_rows,
         theta_trades=theta_trades,
         theta_stats=theta_stats,
+        iron_fly_rows=iron_fly_rows,
+        iron_fly_trades=iron_fly_trades,
+        iron_fly_stats=iron_fly_stats,
         date_from=date_from,
         date_to=date_to,
     )
@@ -928,6 +1028,26 @@ def live_strategy():
 def theta_straddle_backfill():
     """Backfill bounded batches of paper-only ATM short-straddle sessions."""
     from labs.engine.theta_straddle_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        result = run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        )
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/theta_iron_fly/backfill", methods=["POST"])
+def theta_iron_fly_backfill():
+    """Backfill bounded batches of paper-only defined-risk iron-fly sessions."""
+    from labs.engine.theta_iron_fly_backfill import DEFAULT_START, run_backfill
     try:
         limit = min(max(int(request.args.get("limit", 5)), 1), 20)
     except (TypeError, ValueError):

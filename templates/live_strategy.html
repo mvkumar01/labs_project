@@ -51,6 +51,7 @@
       <a href="{{ url_for('labs.live_strategy', tab='alpha_v213', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
       <a href="{{ url_for('labs.live_strategy', tab='alpha_cpr', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_cpr' else '' }}">Alpha CPR</a>
       <a href="{{ url_for('labs.live_strategy', tab='theta_straddle', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_straddle' else '' }}">09:20 Theta Straddle</a>
+      <a href="{{ url_for('labs.live_strategy', tab='theta_iron_fly', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_iron_fly' else '' }}">09:20 Iron Fly</a>
       <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
@@ -159,6 +160,108 @@
         </tbody>
       </table>
       <p class="note">Capital is estimated consistently for historical comparison because archived broker SPAN snapshots are unavailable. Charges include two orders per leg, exchange and regulatory fees, GST, stamp duty on each cover buy, and 0.15% STT on each opening option sale. Paper only; this strategy never calls a broker order API.</p>
+    {% endif %}
+
+    {% elif active_live_tab == 'theta_iron_fly' %}
+    <h1>NIFTY 09:20 ATM iron fly (paper)</h1>
+    <p class="sub">Sell the nearest-weekly ATM CE and PE, and buy protective
+      wings 400 points away. Take profit when charge-adjusted basket P&amp;L reaches
+      20% of the opening net credit; otherwise close at the first common
+      executable quote from 15:00 to 15:05 IST.</p>
+
+    <div class="formula">
+      Defined-risk capital = (400-point wing width − opening net credit points) × 65.
+      All four legs must share an executable minute: shorts use bid in / ask out;
+      protective wings use ask in / bid out.
+    </div>
+
+    {% if iron_fly_stats.get('error') %}
+      <p class="empty">Iron fly unavailable ({{ iron_fly_stats.error }}).</p>
+    {% elif not iron_fly_rows %}
+      <p class="empty">No iron-fly sessions recorded in this date range.</p>
+      <button type="button" id="theta-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="theta-backfill-status" class="muted"></span>
+    {% else %}
+      {% set v = iron_fly_stats.latest %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if iron_fly_stats.net_total>0 else ('red' if iron_fly_stats.net_total<0 else '') }}">₹{{ "{:,.2f}".format(iron_fly_stats.net_total) }}</div>
+          <div class="sub-k">after ₹{{ "{:,.2f}".format(iron_fly_stats.charges_total) }} four-leg charges</div></div>
+        <div class="card"><div class="k">Win days</div>
+          <div class="v">{{ iron_fly_stats.win_pct }}%</div>
+          <div class="sub-k">{{ iron_fly_stats.win_days }}/{{ iron_fly_stats.closed_days }} completed · {{ iron_fly_stats.target_exits }} target exits</div></div>
+        <div class="card"><div class="k">Max drawdown</div>
+          <div class="v red">₹{{ "{:,.2f}".format(iron_fly_stats.max_drawdown) }}</div>
+          <div class="sub-k">closed-session equity curve</div></div>
+        <div class="card"><div class="k">Profit factor</div>
+          <div class="v">{{ "%.2f"|format(iron_fly_stats.profit_factor) if iron_fly_stats.profit_factor is not none else '—' }}</div>
+          <div class="sub-k">gross winning net ₹ / losing net ₹</div></div>
+        <div class="card"><div class="k">Avg defined-risk capital</div>
+          <div class="v">₹{{ "{:,.0f}".format(iron_fly_stats.avg_capital) }}</div>
+          <div class="sub-k">peak ₹{{ "{:,.0f}".format(iron_fly_stats.max_capital) }} · not broker SPAN</div></div>
+        <div class="card"><div class="k">Average daily ROC</div>
+          <div class="v {{ 'green' if iron_fly_stats.avg_daily_roc>0 else ('red' if iron_fly_stats.avg_daily_roc<0 else '') }}">{{ "%+.3f"|format(iron_fly_stats.avg_daily_roc) }}%</div>
+          <div class="sub-k">net P&amp;L / defined-risk capital</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
+        <button type="button" id="theta-backfill" class="btn-secondary">Refresh backfill</button>
+        <span id="theta-backfill-status" class="muted"></span>
+      </div>
+
+      {% if iron_fly_trades %}
+      <h2 style="margin-top:24px">Latest session — {{ v.trade_date }}</h2>
+      <table class="perf">
+        <thead><tr><th>Leg</th><th>Side</th><th>Contract</th><th>Entry / Exit</th>
+          <th>Entry</th><th>Exit</th><th>Qty</th><th>Premium cashflow</th>
+          <th>Gross ₹</th><th>Charges</th><th>Net ₹</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for t in iron_fly_trades %}
+          <tr>
+            <td>{{ t.leg }}</td><td>{{ t.position_side }}</td>
+            <td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.option_type|upper) }}</td>
+            <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+            <td>{{ "%.2f"|format(t.entry_price) }}</td>
+            <td>{{ "%.2f"|format(t.exit_price) if t.exit_price is not none else '—' }}</td>
+            <td>{{ t.qty }}</td>
+            <td class="{{ 'green' if t.premium_cashflow_rs>0 else 'red' }}">₹{{ "{:,.2f}".format(t.premium_cashflow_rs) }}</td>
+            <td class="{{ 'green' if t.gross_rs>0 else ('red' if t.gross_rs<0 else '') }}">₹{{ "{:,.2f}".format(t.gross_rs) }}</td>
+            <td class="muted">₹{{ "{:,.2f}".format(t.charges_rs) }}</td>
+            <td class="{{ 'green' if t.net_rs>0 else ('red' if t.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(t.net_rs) }}</td>
+            <td class="{{ 'amber' if t.status == 'open' else 'muted' }}">{{ t.status|upper }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Expiry</th><th>ATM / Wings</th>
+          <th>Entry / Exit</th><th>Exit reason</th><th>Defined capital</th>
+          <th>Net credit</th><th>Target</th><th>Gross ₹</th><th>Charges</th>
+          <th>Net ₹</th><th>ROC</th></tr></thead>
+        <tbody>
+        {% for r in iron_fly_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td>
+            <td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ r.status }}</td>
+            <td>{{ r.expiry_code or '—' }}</td>
+            <td>{{ r.atm_strike or '—' }} / {{ r.lower_wing_strike or '—' }}–{{ r.upper_wing_strike or '—' }}</td>
+            <td title="{{ r.error or '' }}">{% if r.entry_ts %}{{ r.entry_ts[11:16] }} → {{ r.exit_ts[11:16] if r.exit_ts else 'open' }}{% else %}—{% endif %}</td>
+            <td>{{ r.exit_reason or '—' }}</td>
+            <td title="{{ r.margin_method }}">₹{{ "{:,.0f}".format(r.capital_required_rs or 0) }}</td>
+            <td>₹{{ "{:,.0f}".format(r.net_credit_rs or 0) }}</td>
+            <td>₹{{ "{:,.0f}".format(r.target_rs or 0) }}</td>
+            <td>₹{{ "{:,.2f}".format(r.gross_rs or 0) }}</td>
+            <td class="muted">₹{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if r.net_rs>0 else ('red' if r.net_rs<0 else '') }}">₹{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
+            <td>{{ "%+.3f"|format(r.return_on_capital_pct or 0) }}%</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Selection evidence: 61 complete executable-quote sessions through 1 September 2026 produced a 65.6% win rate, 1.52 profit factor, positive P&amp;L in June-August plus the single partial September session, and a ₹-5,231 worst day. This is a short research sample, not a performance guarantee. The wings define expiry risk, but execution, volatility and intraday mark risk remain. Paper only; no broker order API is called.</p>
     {% endif %}
 
     {% elif active_live_tab in ['alpha_v211a', 'alpha_v211b', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
@@ -741,7 +844,7 @@
     {% endif %}
   </main>
 </div>
-{% if active_live_tab == 'theta_straddle' %}
+{% if active_live_tab in ['theta_straddle', 'theta_iron_fly'] %}
 <script>
   const thetaButton = document.getElementById('theta-backfill');
   const thetaStatus = document.getElementById('theta-backfill-status');
@@ -752,7 +855,8 @@
       try {
         while (true) {
           thetaStatus.textContent = `Backfilling... ${completed} sessions completed`;
-          const response = await fetch('/labs/api/theta_straddle/backfill?limit=5', {
+          const endpoint = {{ ('/labs/api/theta_iron_fly/backfill?limit=5' if active_live_tab == 'theta_iron_fly' else '/labs/api/theta_straddle/backfill?limit=5') | tojson }};
+          const response = await fetch(endpoint, {
             method: 'POST',
           });
           const payload = await response.json();
