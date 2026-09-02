@@ -37,7 +37,7 @@ def test_dashboard_date_filter_recomputes_iron_fly_summary(monkeypatch):
         row.append(f"{trade_date}T15:01:00+05:30")
         conn.execute(
             f"INSERT INTO theta_iron_fly_daily ({columns}) "
-            f"VALUES ({','.join('?' for _ in row)})",
+            f"VALUES ({','.join('?' for _ in range(len(row) + 1))})",
             (trade_date, *row),
         )
     conn.commit()
