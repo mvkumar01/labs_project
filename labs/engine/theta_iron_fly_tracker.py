@@ -105,8 +105,7 @@ def _leg_specs(atm_strike: int) -> tuple[dict, ...]:
     )
 
 
-def _quotes_at(frame: pd.DataFrame, timestamp: pd.Timestamp, specs: tuple[dict, ...]) -> dict | None:
-    minute = frame[frame["timestamp"] == timestamp]
+def _quotes_from_minute(minute: pd.DataFrame, specs: tuple[dict, ...]) -> dict | None:
     quotes = {}
     for spec in specs:
         rows = minute[
@@ -128,17 +127,22 @@ def _quotes_at(frame: pd.DataFrame, timestamp: pd.Timestamp, specs: tuple[dict, 
     return quotes
 
 
+def _quotes_at(
+    frame: pd.DataFrame, timestamp: pd.Timestamp, specs: tuple[dict, ...]
+) -> dict | None:
+    return _quotes_from_minute(frame[frame["timestamp"] == timestamp], specs)
+
+
 def _entry_snapshot(frame: pd.DataFrame, trade_date: str) -> tuple[pd.Timestamp, float, int, dict]:
     start = _timestamp(trade_date, ENTRY_TIME)
     end = start + pd.Timedelta(minutes=ENTRY_WINDOW_MINUTES)
     candidates = frame[(frame["timestamp"] >= start) & (frame["timestamp"] <= end)]
-    for timestamp in candidates["timestamp"].drop_duplicates().sort_values():
-        minute = candidates[candidates["timestamp"] == timestamp]
+    for timestamp, minute in candidates.groupby("timestamp", sort=True):
         spot = _positive(minute["spot"].median())
         if spot is None:
             continue
         atm = int(math.floor(spot / STRIKE_STEP + 0.5) * STRIKE_STEP)
-        quotes = _quotes_at(frame, timestamp, _leg_specs(atm))
+        quotes = _quotes_from_minute(minute, _leg_specs(atm))
         if quotes is not None:
             return timestamp, spot, atm, quotes
     raise ThetaIronFlyInputError(
@@ -197,11 +201,13 @@ def _exit_snapshot(
         }
         for quote in entry_quotes.values()
     )
-    timestamps = frame[
-        (frame["timestamp"] > entry_ts) & (frame["timestamp"] <= end)
-    ]["timestamp"].drop_duplicates().sort_values()
-    for timestamp in timestamps:
-        quotes = _quotes_at(frame, timestamp, specs)
+    relevant = frame[
+        (frame["timestamp"] > entry_ts)
+        & (frame["timestamp"] <= end)
+        & (frame["strike"].isin([spec["strike"] for spec in specs]))
+    ]
+    for timestamp, minute in relevant.groupby("timestamp", sort=True):
+        quotes = _quotes_from_minute(minute, specs)
         if quotes is None:
             continue
         priced = _price_mark(entry_quotes, quotes)
