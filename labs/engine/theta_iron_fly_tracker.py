@@ -302,8 +302,8 @@ def run_day(
         for leg in legs:
             conn.execute(
                 "INSERT INTO theta_iron_fly_trades "
-                "(trade_date,leg,position_side,option_type,tradingsymbol,expiry_code," 
-                "strike,entry_ts,exit_ts,entry_price,exit_price,qty,premium_cashflow_rs," 
+                "(trade_date,leg,position_side,option_type,tradingsymbol,expiry_code,"
+                "strike,entry_ts,exit_ts,entry_price,exit_price,qty,premium_cashflow_rs,"
                 "allocated_capital_rs,gross_rs,charges_rs,net_rs,status,exit_reason) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
@@ -317,21 +317,21 @@ def run_day(
             )
         conn.execute(
             "INSERT INTO theta_iron_fly_daily "
-            "(trade_date,status,expiry_code,atm_strike,lower_wing_strike," 
-            "upper_wing_strike,entry_ts,exit_ts,entry_spot,lot_size,lots,qty,n_legs," 
-            "priced_legs,capital_required_rs,net_credit_rs,target_rs,gross_rs," 
-            "charges_rs,net_rs,return_on_capital_pct,exit_reason,margin_method," 
+            "(trade_date,status,expiry_code,atm_strike,lower_wing_strike,"
+            "upper_wing_strike,entry_ts,exit_ts,entry_spot,lot_size,lots,qty,n_legs,"
+            "priced_legs,capital_required_rs,net_credit_rs,target_rs,gross_rs,"
+            "charges_rs,net_rs,return_on_capital_pct,exit_reason,margin_method,"
             "strategy_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status," 
-            "expiry_code=excluded.expiry_code,atm_strike=excluded.atm_strike," 
-            "lower_wing_strike=excluded.lower_wing_strike," 
-            "upper_wing_strike=excluded.upper_wing_strike,entry_ts=excluded.entry_ts," 
-            "exit_ts=excluded.exit_ts,entry_spot=excluded.entry_spot," 
-            "capital_required_rs=excluded.capital_required_rs," 
-            "net_credit_rs=excluded.net_credit_rs,target_rs=excluded.target_rs," 
-            "gross_rs=excluded.gross_rs,charges_rs=excluded.charges_rs," 
-            "net_rs=excluded.net_rs,return_on_capital_pct=excluded.return_on_capital_pct," 
-            "exit_reason=excluded.exit_reason,margin_method=excluded.margin_method," 
+            "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,"
+            "expiry_code=excluded.expiry_code,atm_strike=excluded.atm_strike,"
+            "lower_wing_strike=excluded.lower_wing_strike,"
+            "upper_wing_strike=excluded.upper_wing_strike,entry_ts=excluded.entry_ts,"
+            "exit_ts=excluded.exit_ts,entry_spot=excluded.entry_spot,"
+            "capital_required_rs=excluded.capital_required_rs,"
+            "net_credit_rs=excluded.net_credit_rs,target_rs=excluded.target_rs,"
+            "gross_rs=excluded.gross_rs,charges_rs=excluded.charges_rs,"
+            "net_rs=excluded.net_rs,return_on_capital_pct=excluded.return_on_capital_pct,"
+            "exit_reason=excluded.exit_reason,margin_method=excluded.margin_method,"
             "strategy_version=excluded.strategy_version,error=NULL,updated_at=excluded.updated_at",
             (
                 trade_date, status, expiry_code, atm, atm - WING_WIDTH,
@@ -363,16 +363,16 @@ def record_unavailable(
         conn.execute("DELETE FROM theta_iron_fly_trades WHERE trade_date=?", (trade_date,))
         conn.execute(
             "INSERT INTO theta_iron_fly_daily "
-            "(trade_date,status,lot_size,lots,qty,n_legs,priced_legs,gross_rs," 
+            "(trade_date,status,lot_size,lots,qty,n_legs,priced_legs,gross_rs,"
             "charges_rs,net_rs,margin_method,strategy_version,error,updated_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status," 
-            "expiry_code=NULL,atm_strike=NULL,lower_wing_strike=NULL," 
-            "upper_wing_strike=NULL,entry_ts=NULL,exit_ts=NULL,entry_spot=NULL," 
-            "n_legs=0,priced_legs=0,capital_required_rs=NULL,net_credit_rs=0," 
-            "target_rs=0,gross_rs=0,charges_rs=0,net_rs=0," 
-            "return_on_capital_pct=NULL,exit_reason=NULL," 
-            "margin_method=excluded.margin_method,strategy_version=excluded.strategy_version," 
+            "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,"
+            "expiry_code=NULL,atm_strike=NULL,lower_wing_strike=NULL,"
+            "upper_wing_strike=NULL,entry_ts=NULL,exit_ts=NULL,entry_spot=NULL,"
+            "n_legs=0,priced_legs=0,capital_required_rs=NULL,net_credit_rs=0,"
+            "target_rs=0,gross_rs=0,charges_rs=0,net_rs=0,"
+            "return_on_capital_pct=NULL,exit_reason=NULL,"
+            "margin_method=excluded.margin_method,strategy_version=excluded.strategy_version,"
             "error=excluded.error,updated_at=excluded.updated_at",
             (
                 trade_date, "unavailable", LOT_SIZE, LOTS, QTY, 0, 0, 0, 0, 0,

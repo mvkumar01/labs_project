@@ -146,4 +146,3 @@ def test_paper_runtime_and_ui_are_wired():
     assert "09:20 Iron Fly" in template
     assert "/api/theta_iron_fly/backfill" in routes
     assert "run_theta_iron_fly_day" in loop
-
