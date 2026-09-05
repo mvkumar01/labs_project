@@ -25,7 +25,7 @@ from datetime import datetime
 
 from .base import BrokerAdapter, OrderResult, Position
 from config.labs_config import STATE_DIR
-from live.proxy import order_proxy
+from live.brokers.order_transport import send_order
 
 
 def _live_orders_enabled() -> bool:
@@ -101,7 +101,7 @@ class AngelAdapter(BrokerAdapter):
         """generateSession(client_code, pin, totp) from decrypted creds.
 
         Login is a DATA/auth call — it goes out DIRECT (not via the static IP).
-        Only place_order / exit_all are wrapped with order_proxy()."""
+        Order mutations use the separate assigned order transport."""
         from SmartApi import SmartConnect  # SDK import isolated to this pkg
         import pyotp                        # TOTP for Angel login
 
@@ -383,13 +383,8 @@ class AngelAdapter(BrokerAdapter):
             "ordertag": _angel_order_tag(idempotency_key),
         }
         # Static IP used ONLY for the order placement (symbol/token resolution
-        # above already ran direct). order_proxy restores env + SDK proxy after.
-        with order_proxy(self._smart):
-            # Retry ONLY on an explicit throttle (order was rejected, nothing
-            # placed). Never retry on ambiguous/parse errors — the order may
-            # have gone through, and a blind retry would double it.
-            resp = self._with_backoff(
-                lambda: self._smart.placeOrder(order_params), _is_rate_limited)
+        # above already ran direct). The transport never mutates this SDK client.
+        resp = send_order(self, 'entry', order_params, idempotency_key)
         self._invalidate_reads()   # book changed — next position/LTP read is fresh
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True
@@ -483,12 +478,7 @@ class AngelAdapter(BrokerAdapter):
         }
         # Static IP used ONLY for order placement; position and symbol/token
         # reads above ran direct.
-        with order_proxy(self._smart):
-            # Retry ONLY on an explicit throttle (order was rejected, nothing
-            # placed). Never retry on ambiguous/parse errors — the order may
-            # have gone through, and a blind retry would double it.
-            resp = self._with_backoff(
-                lambda: self._smart.placeOrder(order_params), _is_rate_limited)
+        resp = send_order(self, 'exit', order_params, idempotency_key)
         self._invalidate_reads()   # book changed — next position/LTP read is fresh
         if isinstance(resp, dict):
             ok = resp.get("status") is True or resp.get("success") is True

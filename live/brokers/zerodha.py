@@ -18,13 +18,17 @@ auth.session_manager.get_kite() is available as shared neutral infra and may
 be used ONLY here inside live/brokers/.
 """
 import os
+from urllib.parse import urlencode
 
 from .base import BrokerAdapter, OrderResult, Position
-from live.proxy import order_proxy
+from live.brokers.order_transport import send_order
 
 
-def build_login_url(api_key: str) -> str:
-    return f"https://kite.trade/connect/login?v=3&api_key={api_key}"
+def build_login_url(api_key: str, state: str = '') -> str:
+    params = {'v': '3', 'api_key': api_key}
+    if state:
+        params['redirect_params'] = urlencode({'state': state})
+    return 'https://kite.zerodha.com/connect/login?' + urlencode(params)
 
 
 def exchange_request_token(*, api_key: str, api_secret: str, request_token: str) -> dict:
@@ -61,12 +65,8 @@ class ZerodhaAdapter(BrokerAdapter):
     def connect(self) -> None:
         """Build a KiteConnect session from THIS user's own encrypted creds.
 
-        Falls back to the shared labs session (auth.session_manager) only when
-        no per-user api_key/access_token were supplied — both paths keep the
-        SDK import inside live/brokers/.
-
-        Session setup is DATA/auth — direct, not via the static IP. Only
-        place_order / exit_all are wrapped with order_proxy().
+        Missing per-user credentials fail closed. Session setup and reads go
+        direct; order mutations use the assigned order transport.
         """
         api_key = self._creds.get("api_key")
         access_token = self._creds.get("access_token")
@@ -169,8 +169,7 @@ class ZerodhaAdapter(BrokerAdapter):
             )
         # ── real branch — reached only in Phase 1 (LIVE_ARMED + 7 gates) ──
         # Static IP used ONLY for the order placement.
-        with order_proxy(self._kite):
-            order_id = self._kite.place_order(
+        order_id = send_order(self, 'entry', dict(
                 variety=self._kite.VARIETY_REGULAR,
                 exchange=self._kite.EXCHANGE_NFO,
                 tradingsymbol=symbol,
@@ -184,7 +183,7 @@ class ZerodhaAdapter(BrokerAdapter):
                 validity=self._kite.VALIDITY_IOC,
                 price=price,
                 tag=idempotency_key[:20],  # Zerodha tag max 20 chars
-            )
+            ), idempotency_key)
         return OrderResult(
             broker_order_id=str(order_id),
             status="PLACED",
@@ -235,8 +234,7 @@ class ZerodhaAdapter(BrokerAdapter):
         # Caller-supplied marketable SELL limit (crosses the spread so a stop
         # fills); own-LTP fallback only when the caller sent none.
         exit_price = price if price and price > 0 else self.get_ltp(symbol)
-        with order_proxy(self._kite):
-            order_id = self._kite.place_order(
+        order_id = send_order(self, 'exit', dict(
                 variety=self._kite.VARIETY_REGULAR,
                 exchange=self._kite.EXCHANGE_NFO,
                 tradingsymbol=symbol,
@@ -246,7 +244,7 @@ class ZerodhaAdapter(BrokerAdapter):
                 order_type=self._kite.ORDER_TYPE_LIMIT,
                 price=exit_price,
                 tag=idempotency_key[:20],
-            )
+            ), idempotency_key)
         return OrderResult(
             broker_order_id=str(order_id),
             status="PLACED",

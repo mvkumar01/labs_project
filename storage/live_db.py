@@ -55,6 +55,7 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
         conn = get_live_conn()
 
     try:
+        from live.control_plane import init_schema
         with conn:
             conn.executescript("""
             -- One row per registered user. The ONLY live_* table without user_id
@@ -196,6 +197,8 @@ def init_live_db(conn: sqlite3.Connection | None = None) -> None:
                 PRIMARY KEY (trade_date, conn_id)
             );
             """)
+
+        init_schema(conn)
 
         # ── Safe migrations (PRAGMA table_info ADD-COLUMN guard) ──────────
         # Same pattern as storage/db.py: check for missing columns, add them.

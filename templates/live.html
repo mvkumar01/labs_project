@@ -14,6 +14,7 @@
     <nav>
       <a href="/live/configure">Configure</a>
       <a href="/live/connect">Broker</a>
+      {% if is_admin %}<a href="/live/admin">Administration</a>{% endif %}
       <a href="/labs">Paper Labs</a>
       <form method="POST" action="/live/logout" style="display:inline;">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -72,6 +73,16 @@
         <button id="btn-resume" class="btn btn-ghost">Clear Kill</button>
       </div>
     </div>
+
+    <section class="card" aria-labelledby="readiness-heading">
+      <h3 id="readiness-heading">Arming readiness</h3>
+      <p id="readiness-summary" role="status">Checking readiness...</p>
+      <ul id="readiness-checks"></ul>
+      <h3>Order egress</h3>
+      <p id="order-egress">Checking assigned route...</p>
+      <p class="sub">Market data and broker reads use the direct connection. Route verification samples one egress IP; both configured IPs must be whitelisted at your broker.</p>
+    </section>
+    <script src="/static/live_readiness.js" defer></script>
 
     <!-- Live stats -->
     <div class="stat-grid">

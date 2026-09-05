@@ -30,6 +30,7 @@ every adapter's place_order raises NotImplementedError until Phase-1
 enablement — so no real order can fire in this build.
 """
 import logging
+import contextlib
 import sys
 import time
 from dataclasses import dataclass
@@ -41,13 +42,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from live.brokers.base import OrderResult
 from live import live_service as svc
-from live.proxy import order_proxy_url
+from live import control_plane as cp
 
 log = logging.getLogger("live.executor")
 
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
-LIVE_DECISION_ABI = "alpha-v2.11b-live-v1"
+LIVE_DECISION_ABI = "alpha-v2.11b-live-v2-routing"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
@@ -92,12 +93,16 @@ def can_transition(current: Mode, target: Mode) -> bool:
 def set_mode(user_id: str, conn_id: str, target: Mode, conn=None) -> Mode:
     """Validate via can_transition, else raise InvalidTransition. Writes the
     new mode to THIS connection's live_config only."""
-    current = get_mode(user_id, conn_id, conn)
-    if current == target:
-        return current
-    if not can_transition(current, target):
-        raise InvalidTransition(f"{current.value} -> {target.value} not allowed")
-    svc.set_config(user_id, conn_id, "mode", target.value, conn)
+    with cp.transaction() if conn is None else contextlib.nullcontext(conn) as c:
+        current = get_mode(user_id, conn_id, c)
+        selected = svc.get_selected_broker(user_id, c)
+        if target != Mode.DISARMED and selected and conn_id != svc.conn_id_for(user_id, selected):
+            raise InvalidTransition('Broker selection changed; reload the page')
+        if current != target and not can_transition(current, target):
+            raise InvalidTransition(f"{current.value} -> {target.value} not allowed")
+        for key, value in [('mode', target.value), ('armed', '1' if target == Mode.LIVE_ARMED else '0')]:
+            c.execute('INSERT INTO live_config VALUES(?,?,?,?,?) ON CONFLICT(user_id,conn_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                      (user_id, conn_id, key, value, _now_iso()))
     return target
 
 
@@ -113,14 +118,12 @@ def arm_live(user_id: str, conn_id: str, conn=None) -> Mode:
     no DISARMED -> LIVE_ARMED edge — going live always passes through DRY_RUN.
     """
     m = set_mode(user_id, conn_id, Mode.LIVE_ARMED, conn)
-    svc.set_config(user_id, conn_id, "armed", "1", conn)
     return m
 
 
 def disarm(user_id: str, conn_id: str, conn=None) -> Mode:
     """Any -> DISARMED; clears this connection's armed flag."""
     m = set_mode(user_id, conn_id, Mode.DISARMED, conn)
-    svc.set_config(user_id, conn_id, "armed", "0", conn)
     return m
 
 
@@ -195,13 +198,16 @@ def gate_lots_within_cap(user_id: str, conn_id: str, conn=None) -> GateResult:
     return GateResult("lots_within_cap", ok, f"lots={lots} cap={LOTS_HARD_CAP}")
 
 
-def gate_static_order_proxy(*_args, **_kwargs) -> GateResult:
+def gate_static_order_proxy(user_id=None, conn_id=None, conn=None, *, for_exit=False) -> GateResult:
     """7. Every real order must have an order-only static-IP route."""
-    configured = bool(order_proxy_url())
+    status = cp.route_status(user_id, conn_id, conn)
+    configured = status['ready']
+    if for_exit and status.get('label'):
+        configured = True  # The transport enforces the remaining exit budget.
     return GateResult(
         "static_order_proxy",
         configured,
-        "configured=1" if configured else "configured=0; live orders blocked",
+        status['detail'],
     )
 
 
@@ -248,9 +254,17 @@ def evaluate_all(adapter, user_id: str, conn_id: str, conn=None) -> list:
         gate_account_isolation(adapter, user_id, conn_id, conn),
         gate_daily_loss_ok(adapter, user_id, conn_id, conn),
         gate_lots_within_cap(user_id, conn_id, conn),
-        gate_static_order_proxy(),
+        gate_static_order_proxy(user_id, conn_id, conn),
         gate_runner_decision_abi(user_id, conn_id, conn),
+        gate_transport_clear(user_id, conn_id, conn),
     ]
+
+
+def gate_transport_clear(user_id, conn_id, conn=None):
+    from storage.live_db import get_live_conn
+    with contextlib.closing(get_live_conn()) if conn is None else contextlib.nullcontext(conn) as c:
+        pending = c.execute("SELECT 1 FROM live_order_requests WHERE user_id=? AND conn_id=? AND outcome IN ('reserved','uncertain') LIMIT 1", (user_id,conn_id)).fetchone()
+    return GateResult('order_transport_clear', not pending, 'Order request needs broker reconciliation' if pending else 'No uncertain order requests')
 
 
 def all_passed(results: list) -> bool:
@@ -485,7 +499,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
             gate_kill_switch_clear(user_id, conn_id, conn),
             gate_broker_connected(adapter, user_id, conn_id, conn),
             gate_account_isolation(adapter, user_id, conn_id, conn),
-            gate_static_order_proxy(),
+            gate_static_order_proxy(user_id, conn_id, conn, for_exit=True),
         ]
     else:
         gates = evaluate_all(adapter, user_id, conn_id, conn)

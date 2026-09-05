@@ -21,6 +21,8 @@ TOTP secret / PIN / API secret / passcode are WRITE-ONLY — never echoed in any
 GET or JSON response. GET cred routes show only `set` / `unset` status.
 """
 import logging
+import secrets
+import hmac
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +35,7 @@ from flask import (
 
 from live import live_service as svc
 from live import live_executor as ex
+from live import control_plane as cp
 from live.auth_gate import (
     current_user_id, login_throttled, record_attempt, issue_csrf, csrf_protect,
     registration_open, verify_invite_code,
@@ -116,21 +119,15 @@ def _current_conn_id():
     Returns (user_id, broker, conn_id) or (user_id, None, None) if no broker
     selected yet. NEVER trusts a client-supplied id."""
     user_id = current_user_id()
-    broker = (session.get("live_broker") or "").lower()
+    broker = (svc.get_selected_broker(user_id) or "").lower() if user_id else None
     if broker not in SUPPORTED_BROKERS:
         broker = None
     if user_id and not broker:
         broker = svc.get_selected_broker(user_id)
         if broker:
             session["live_broker"] = broker
-    if user_id and not broker:
-        connections = svc.list_user_connections(user_id)
-        if connections:
-            connections.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
-            broker = (connections[0].get("broker") or "").lower()
-            if broker in SUPPORTED_BROKERS:
-                session["live_broker"] = broker
-                svc.set_selected_broker(user_id, broker)
+    if broker:
+        session['live_broker'] = broker
     conn_id = svc.conn_id_for(user_id, broker) if (user_id and broker) else None
     return user_id, broker, conn_id
 
@@ -336,6 +333,7 @@ def dashboard():
         return redirect(url_for("live.connect"))
     return render_template(
         "live.html",
+        is_admin=cp.is_admin(user_id),
         csrf_token=issue_csrf(),
         username=(svc.get_user(user_id) or {}).get("username", ""),
         mode=svc.get_mode(user_id, conn_id),
@@ -372,8 +370,6 @@ def connect():
     broker = request.form.get("broker", "")
     if broker not in SUPPORTED_BROKERS:
         return redirect(url_for("live.connect"))
-    session["live_broker"] = broker
-    svc.set_selected_broker(user_id, broker)
     return redirect(url_for("live.credentials", broker=broker))
 
 
@@ -414,20 +410,26 @@ def credentials(broker):
     if not creds:
         return redirect(url_for("live.credentials", broker=broker))
 
-    account_label = creds.get("client_code") or creds.get("api_key") or broker
-    svc.store_credentials(user_id, conn_id, broker, creds)
-    svc.upsert_connection(user_id, conn_id, broker=broker,
-                          account_label=account_label,
-                          account_ref=_account_ref_from_creds(broker, creds),
-                          status="configured")
-    session["live_broker"] = broker
-    svc.set_selected_broker(user_id, broker)
+    if broker == 'zerodha' and any(creds.get(k) != existing.get(k) for k in ('api_key','api_secret')):
+        for key in ('access_token','public_token','request_token','user_id'):
+            creds.pop(key, None)
+
+    try:
+        cp.save_connection_credentials(user_id,conn_id,broker,creds,existing)
+    except cp.ControlError as exc:
+        return redirect(url_for('live.credentials',broker=broker,error=str(exc)))
     log.info("stored credentials user=%s broker=%s (fields=%s)",
              user_id, broker, sorted(creds.keys()))  # field NAMES only
     if broker == "zerodha" and creds.get("api_key") and creds.get("api_secret"):
         return redirect(url_for("live.zerodha_login"))
     if broker == "angel":
-        _refresh_broker_funds(user_id, broker, conn_id, creds)
+        if not _refresh_broker_funds(user_id, broker, conn_id, creds):
+            return redirect(url_for('live.credentials', broker=broker, error='Broker authentication failed; active broker unchanged'))
+        try:
+            cp.activate_broker(user_id, broker)
+            session['live_broker'] = broker
+        except cp.ControlError as exc:
+            return redirect(url_for('live.credentials', broker=broker, error=str(exc)))
     return redirect(url_for("live.configure"))
 
 
@@ -442,9 +444,9 @@ def zerodha_login():
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         return redirect(url_for("live.credentials", broker="zerodha"))
-    session["live_broker"] = "zerodha"
-    svc.set_selected_broker(user_id, "zerodha")
-    return redirect(build_login_url(api_key))
+    session['kite_login_pending'] = _now_iso()
+    session['kite_login_state'] = secrets.token_urlsafe(32)
+    return redirect(build_login_url(api_key, session['kite_login_state']))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -454,7 +456,10 @@ def zerodha_login():
 def zerodha_callback():
     user_id = current_user_id()
     request_token = request.args.get("request_token", "")
-    status = request.args.get("status", "")
+    pending = session.pop('kite_login_pending', None)
+    expected_state = session.pop('kite_login_state', '')
+    if not pending or not expected_state or not hmac.compare_digest(expected_state, request.args.get('state','')) or _is_stale_iso(pending, max_age_s=600):
+        return redirect(url_for('live.credentials', broker='zerodha', error='Login expired; start Kite login again'))
     conn_id = svc.conn_id_for(user_id, "zerodha")
     if request_token:
         try:
@@ -463,33 +468,46 @@ def zerodha_callback():
             blob = {}
         api_key = str(blob.get("api_key") or "").strip()
         api_secret = str(blob.get("api_secret") or "").strip()
+        previous_blob = dict(blob)
         try:
-            if api_key and api_secret:
-                blob.update(
-                    exchange_request_token(
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        request_token=request_token,
-                    )
-                )
+            if not api_key or not api_secret:
+                raise ValueError('Missing credentials')
+            fresh = exchange_request_token(api_key=api_key, api_secret=api_secret, request_token=request_token)
+            if not fresh.get('access_token'):
+                raise ValueError('Missing access token')
+            blob.update(fresh)
         except Exception as exc:
             log.warning("zerodha token exchange failed user=%s err=%s", user_id, type(exc).__name__)
-        blob["request_token"] = request_token
-        svc.store_credentials(user_id, conn_id, "zerodha", blob)
-        svc.upsert_connection(
-            user_id,
-            conn_id,
-            broker="zerodha",
-            account_label=blob.get("user_id") or blob.get("api_key") or "zerodha",
-            account_ref=_account_ref_from_creds("zerodha", blob),
-            status="connected" if blob.get("access_token") else "configured",
-        )
-        if blob.get("access_token"):
-            _refresh_broker_funds(user_id, "zerodha", conn_id, blob)
-        session["live_broker"] = "zerodha"
-        svc.set_selected_broker(user_id, "zerodha")
-        log.info("stored zerodha request_token user=%s (status=%s)", user_id, status)
+            return redirect(url_for('live.credentials', broker='zerodha', error='Kite login failed; active broker unchanged'))
+        blob.pop('request_token', None)
+        try:
+            cp.save_connection_credentials(user_id,conn_id,'zerodha',blob,previous_blob)
+        except cp.ControlError as exc:
+            return redirect(url_for('live.credentials',broker='zerodha',error=str(exc)))
+        if not _refresh_broker_funds(user_id, "zerodha", conn_id, blob):
+            return redirect(url_for('live.credentials', broker='zerodha', error='Kite authentication failed; active broker unchanged'))
+        try:
+            cp.activate_broker(user_id,'zerodha')
+            session['live_broker'] = 'zerodha'
+        except cp.ControlError as exc:
+            return redirect(url_for('live.credentials', broker='zerodha', error=str(exc)))
     return redirect(url_for("live.configure"))
+
+
+@live_bp.route('/select_broker/<broker>', methods=['POST'])
+@csrf_protect
+def select_broker(broker):
+    if broker not in SUPPORTED_BROKERS:
+        return 'Unsupported broker', 400
+    user_id = current_user_id()
+    if not _refresh_broker_funds(user_id, broker, svc.conn_id_for(user_id, broker)):
+        return redirect(url_for('live.credentials', broker=broker, error='Reconnect this broker before selecting it'))
+    try:
+        cp.activate_broker(user_id,broker)
+    except cp.ControlError as exc:
+        return redirect(url_for('live.credentials',broker=broker,error=str(exc)))
+    session['live_broker']=broker
+    return redirect(url_for('live.dashboard'))
 
 
 # Selectable strategy presets -> (decision_engine, strategy_version). Available
@@ -656,6 +674,10 @@ def arm():
             return conn_row.get("status") == "connected"
 
     gates = ex.evaluate_all(_DbAdapter(), user_id, conn_id)
+    from labs.ui.live_admin_routes import readiness
+    ready = readiness(user_id, conn_id)
+    if not ready['ready']:
+        return jsonify({'ok':False,'failed_gates':[{'name':c['name'],'detail':c['detail']} for c in ready['checks'] if not c['passed']]}),409
     # mode_armed is False until we transition; require the OTHER gates first.
     non_mode = [g for g in gates if g.name != "mode_armed"]
     if not ex.all_passed(non_mode):
@@ -783,3 +805,7 @@ def status():
         "strategy": _current_strategy_preset(user_id, conn_id),
         "open_mtm": open_mtm,
     })
+
+
+from labs.ui.live_admin_routes import register_routes
+register_routes(live_bp)

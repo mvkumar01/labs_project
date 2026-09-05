@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live administration</title><link rel="stylesheet" href="/static/live.css">
+<link rel="stylesheet" href="/static/live_admin.css"></head>
+<body><div class="page"><header class="live-topbar"><span class="live-logo">Live administration</span><nav><a href="/live/">Live status</a><a href="#routes">Routes</a><a href="#accounts">Accounts</a><a href="#audit">Audit</a></nav></header><main>
+<h1>Accounts and order routing</h1>
+<p class="sub">Assign each broker connection a verified proxy route. Save broker allowlist changes in Kite or SmartAPI first. Proxy URLs are encrypted and write-only.</p>
+{% if error %}<p class="reconcile-warning" role="alert">{{ error }}</p>{% endif %}
+{% if request.args.get('saved') %}<p role="status">Settings saved.</p>{% endif %}
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% endmacro %}
+{% macro route_form(r) %}
+<form method="post" autocomplete="off">{{ csrf() }}<input type="hidden" name="action" value="route"><input type="hidden" name="route_id" value="{{ r.route_id|default('') }}"><input type="hidden" name="revision" value="{{ r.revision|default(0) }}">
+<div class="admin-grid">
+<div><label>Route name<input name="label" value="{{ r.label|default('') }}" required maxlength="80"></label>
+<label>Authenticated proxy URL<input type="password" name="endpoint" autocomplete="new-password" placeholder="{{ 'Leave blank to retain secret' if r else 'http://username:password@host:port' }}"></label>
+{% if not r %}<label><input type="checkbox" name="import_existing" value="1"> Import the existing deployment proxy if the URL is blank.</label>{% endif %}
+<label>Expected static IPs (comma separated)<input name="expected_ips" value="{{ r.expected_ips|default('') }}" required></label>
+<label>Status<select name="enabled"><option value="1" {% if r.enabled|default(1) %}selected{% endif %}>Enabled</option><option value="0" {% if r and not r.enabled %}selected{% endif %}>Disabled</option></select></label></div>
+<div>{% for key,label,value,maximum in [('per_second','Requests per second',5,5),('per_minute','Requests per minute',100,100),('daily_quota','Daily request budget',1000,1000),('monthly_quota','Monthly request budget',10000,10000000),('exit_reserve','Exit/cancel reserve',20,999)] %}<label>{{ label }}<input type="number" name="{{ key }}" value="{{ r[key]|default(value) }}" min="1" max="{{ maximum }}" required></label>{% endfor %}</div></div>
+<p class="sub">Saving creates a new revision, clears verification and requires every assignment to be confirmed again. Disarm affected accounts and resolve open/pending orders first.</p>
+<button class="btn btn-primary" type="submit">{{ 'Save new revision' if r else 'Create route' }}</button></form>
+{% endmacro %}
+<section id="routes"><h2>Proxy routes</h2><details class="card"><summary>Create route</summary>{{ route_form({}) }}</details>
+{% for r in routes %}<article class="card"><h3>{{ r.label }} <small>revision {{ r.revision }}</small></h3><p>{{ r.expected_ips }} | {{ 'Enabled' if r.enabled else 'Disabled' }}</p>
+<p>Observed IP: {{ r.observed_ip or 'Unknown' }} | {{ r.verified_at|operator_ist }}</p><p>Requests today: {{ r.usage.day }}/{{ r.daily_quota }} | Month: {{ r.usage.month }}/{{ r.monthly_quota }}</p>
+<form method="post">{{ csrf() }}<input type="hidden" name="action" value="verify"><input type="hidden" name="route_id" value="{{ r.route_id }}"><input type="hidden" name="revision" value="{{ r.revision }}"><button type="submit" class="btn btn-ghost">Verify egress (1 proxy request)</button></form>
+<details><summary>Edit or rotate route</summary>{{ route_form(r) }}</details></article>{% else %}<p>No routes. Create, verify, then assign a route to each connection before arming.</p>{% endfor %}</section>
+<section id="accounts"><h2>Broker connections</h2><div class="admin-grid">{% for c in connections %}<article class="card"><h3>{{ c.username }} / {{ c.broker }}</h3><p>{{ c.account_ref or 'Account not authenticated' }} | {{ c.status }} | {{ c.mode }}</p><p>Assigned route: {{ c.route_id or 'None' }} (revision {{ c.confirmed_revision or '-' }})</p>
+<form method="post">{{ csrf() }}<input type="hidden" name="action" value="assign"><input type="hidden" name="user_id" value="{{ c.user_id }}"><input type="hidden" name="conn_id" value="{{ c.conn_id }}">
+<label>Route<select name="route_id" class="route-assignment" required><option value="">Choose a route</option>{% for r in routes %}<option value="{{ r.route_id }}" data-revision="{{ r.revision }}">{{ r.label }} / {{ r.expected_ips }} / rev {{ r.revision }}</option>{% endfor %}</select></label>
+<input name="revision" type="hidden" value="0"><label><input type="checkbox" name="confirmed" value="1" required> I confirmed these IPs in this account's broker allowlist.</label><button type="submit" class="btn btn-primary">Assign route</button></form>
+<details><summary>Risk settings</summary><form method="post">{{ csrf() }}<input type="hidden" name="action" value="settings"><input type="hidden" name="user_id" value="{{ c.user_id }}"><input type="hidden" name="conn_id" value="{{ c.conn_id }}"><label>Lots (phase cap: 1)<input name="lots" type="number" min="1" max="1" value="{{ c.lots }}" required></label><label>Daily loss cap (INR)<input name="daily_loss_cap" type="number" min="1" max="100000" value="{{ c.daily_loss_cap }}" required></label><button type="submit" class="btn btn-ghost">Save risk settings</button></form></details></article>{% endfor %}</div></section>
+<section class="card"><h2>Administrator access</h2><p class="sub">Bootstrap operators are configured with LIVE_ADMIN_USER_IDS. Delegated operators can be managed here.</p><form method="post">{{ csrf() }}<input type="hidden" name="action" value="role"><label>User<select name="user_id">{% for u in users %}<option value="{{ u.user_id }}">{{ u.username }}</option>{% endfor %}</select></label><label>Access<select name="enabled"><option value="1">Grant administrator</option><option value="0">Remove delegated administrator</option></select></label><button type="submit" class="btn btn-ghost">Save access</button></form></section>
+<section id="audit" class="card audit-scroll"><h2>Settings audit (latest 100)</h2><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Change</th></tr></thead><tbody>{% for a in audits %}<tr><td>{{ a.created_at|operator_ist }}</td><td>{{ a.actor }}</td><td>{{ a.action }}</td><td>{{ a.target }}</td><td>{{ a.detail }}</td></tr>{% endfor %}</tbody></table></section>
+<section class="card audit-scroll"><h2>Order transport audit (latest 100)</h2><p class="sub">Acknowledged means the broker accepted the request; confirm fills in trade history. Uncertain requests require broker reconciliation before retrying.</p><table><thead><tr><th>Time</th><th>Connection</th><th>Operation</th><th>Outcome</th></tr></thead><tbody>{% for r in order_requests %}<tr><td>{{ r.requested_at|operator_ist }}</td><td>{{ r.conn_id }}</td><td>{{ r.operation }}</td><td>{{ r.outcome }}</td></tr>{% endfor %}</tbody></table></section>
+</main></div><script src="/static/live_admin.js"></script></body></html>

@@ -477,6 +477,14 @@ def active_connections(conn: sqlite3.Connection = None) -> list:
             conn.close()
 
 
+def readiness_connections(conn=None):
+    """Publish liveness for connected accounts without enrolling their strategies."""
+    import contextlib
+    with contextlib.closing(get_live_conn()) if conn is None else contextlib.nullcontext(conn) as c:
+        rows = c.execute("SELECT user_id,conn_id FROM live_broker_connections WHERE status='connected'").fetchall()
+        return list(set((r['user_id'],r['conn_id']) for r in rows) | set(runner_connections(c)))
+
+
 def runner_connections(conn: sqlite3.Connection = None) -> list:
     """Return active connections plus disarmed real OPEN states.
 

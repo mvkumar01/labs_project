@@ -71,6 +71,9 @@ def _conn():
     svc.set_config(USER_ID, CONN_ID, "kill_switch", "0", conn)
     svc.set_config(USER_ID, CONN_ID, "lots", "1", conn)
     svc.set_config(USER_ID, CONN_ID, "daily_loss_cap", "50000", conn)
+    conn.execute("INSERT INTO proxy_routes(route_id,label,endpoint_enc,expected_ips,per_second,per_minute,daily_quota,monthly_quota,exit_reserve,observed_ip,verified_at,created_at) VALUES('test','Test',?,'[\"13.238.166.208\"]',5,100,1000,10000,20,'13.238.166.208',1,1)", (b'test-only',))
+    conn.execute('INSERT INTO live_proxy_assignments VALUES(?,?,?,?,?)', (CONN_ID, USER_ID, 'test', 1, 1))
+    conn.commit()
     return conn
 
 

@@ -154,7 +154,7 @@ def _heartbeat_loop(task_id: str, stop_event: threading.Event) -> None:
     """Keep all enrolled connections fresh while strategy evaluation is slow."""
     while not stop_event.is_set():
         try:
-            for user_id, conn_id in svc.runner_connections():
+            for user_id, conn_id in svc.readiness_connections():
                 publish_runner_heartbeat(user_id, conn_id, task_id)
         except Exception as exc:
             log.error("runner heartbeat error: %s", exc)
@@ -1083,6 +1083,14 @@ def _ensure_connected_adapter(user_id: str, conn_id: str, *, adapters: dict,
     """Return a connected adapter, reconnecting stale cached sessions."""
     row = svc.get_connection(user_id, conn_id)
     adapter = adapters.get(conn_id)
+    if adapter is not None and hasattr(adapter, '_creds'):
+        try:
+            changed = adapter._creds != svc.load_credentials(user_id, conn_id)
+        except Exception:
+            changed = True
+        if changed:
+            adapters.pop(conn_id, None)
+            adapter = None
     if adapter is not None:
         try:
             if adapter.is_connected():
