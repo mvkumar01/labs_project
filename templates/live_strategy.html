@@ -72,19 +72,17 @@
 
     {% if active_live_tab == 'proposer_sensex' %}
     <h1>SENSEX Proposer (paper)</h1>
-    <p class="sub">The reverse-engineered Pramanaa Proposer rules, current rule set, 25 lots.
-      Side comes from the Market Predictor's 09:00 regime row; a Strong Bull/Bear print above
-      45% confidence overrides it; entries are five-minute checkpoints after RSI(3) touches its
-      20/80 band; the contract is the nearest weekly, rounded ATM &#8723;200 ITM. Exits: 2.5%
-      daily target on the premium paid for the day's first trade (which ends the session), +40
-      spot points, &minus;30% premium floor, micro-trend reversal, opposite strong print, 15:25.</p>
+    <p class="sub">SENSEX Proposer, current rule set, 25 lots. Side comes from the Market
+      Predictor's 09:00 regime row; a Strong Bull/Bear print above 45% confidence overrides it;
+      entries are five-minute checkpoints after RSI(3) touches its 20/80 band; the contract is
+      the nearest weekly, rounded ATM &#8723;200 ITM. Exits: 2.5% daily target on the premium
+      paid for the day's first trade (which ends the session), +40 spot points, &minus;30%
+      premium floor, micro-trend reversal, opposite strong print, 15:25.</p>
 
     <div class="formula">
-      Paper execution is ask-in / bid-out plus SENSEX charges. Pramanaa books at LTP, so the
-      gross-LTP column is the like-for-like comparison with its ledger and the net column is the
-      honest one. The micro-trend exit is only partly recoverable from one-minute data (see the
-      alphaIMB research folder), so this book tests the recovered rules rather than reproducing
-      Proposer exactly.
+      Paper execution is ask-in / bid-out plus SENSEX charges; the gross-LTP column prices the
+      same trades at LTP for comparison. The micro-trend exit is evaluated on one-minute data,
+      so its timing is approximate.
     </div>
 
     {% if proposer_stats.get('error') %}

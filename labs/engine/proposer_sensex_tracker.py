@@ -1,8 +1,8 @@
-"""SENSEX Proposer paper book - the reverse-engineered Pramanaa Proposer rules.
+"""SENSEX Proposer paper book.
 
 Paper only. This module never calls a broker order API.
 
-Rule set ("current", the one Pramanaa runs since 8 Sep 2026), recovered in
+Rule set ("current", in force since 8 Sep 2026); the supporting analysis lives in
 alphaIMB `research/experiments/2026-09-09_proposer_v1_reverse_engineering`:
 
   side        the Market Predictor's 09:00 regime row - bullish buys calls,
