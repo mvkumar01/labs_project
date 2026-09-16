@@ -366,6 +366,7 @@ def live_strategy():
         "nifty", "alpha_v211a", "alpha_v211b", "alpha_v212", "alpha_v213",
         "alpha_cpr",
         "theta_straddle", "theta_iron_fly",
+        "proposer_sensex",
         "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
@@ -378,6 +379,7 @@ def live_strategy():
     sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
     theta_rows, theta_trades, theta_stats = [], [], {}
+    proposer_rows, proposer_trades, proposer_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211a": "v2.11A",
@@ -797,6 +799,57 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     iron_fly_stats = {"error": str(exc)}
 
+        if active_live_tab == "proposer_sensex":
+            try:
+                cur = conn.execute(
+                    "SELECT trade_date,status,expiry_code,regime_open,side_day,side_source,"
+                    "risk_off_from,n_trades,priced_trades,first_trade_premium_rs,day_target_rs,"
+                    "day_done_by_target,gross_rs,charges_rs,net_rs,gross_ltp_rs,qty,"
+                    "strategy_version,error,updated_at FROM proposer_daily WHERE 1=1 "
+                    f"{date_clause} ORDER BY trade_date DESC LIMIT 120",
+                    date_params,
+                )
+                cols = [column[0] for column in cur.description]
+                proposer_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+                if proposer_rows:
+                    traded = [row for row in proposer_rows if row["n_trades"]]
+                    wins = [row for row in traded if float(row["net_rs"] or 0) > 0]
+                    proposer_stats = {
+                        "days": len(proposer_rows),
+                        "traded_days": len(traded),
+                        "win_days": len(wins),
+                        "win_pct": round(100 * len(wins) / max(len(traded), 1), 1),
+                        "trades": sum(int(row["n_trades"] or 0) for row in proposer_rows),
+                        "gross_total": round(sum(
+                            float(row["gross_rs"] or 0) for row in proposer_rows), 2),
+                        "charges_total": round(sum(
+                            float(row["charges_rs"] or 0) for row in proposer_rows), 2),
+                        "net_total": round(sum(
+                            float(row["net_rs"] or 0) for row in proposer_rows), 2),
+                        "gross_ltp_total": round(sum(
+                            float(row["gross_ltp_rs"] or 0) for row in proposer_rows), 2),
+                        "target_days": sum(
+                            1 for row in proposer_rows if row["day_done_by_target"]),
+                        "first_date": proposer_rows[-1]["trade_date"],
+                        "last_date": proposer_rows[0]["trade_date"],
+                        "latest": proposer_rows[0],
+                    }
+                    trade_cur = conn.execute(
+                        "SELECT seq,signal,side,strike,tradingsymbol,expiry_code,entry_ts,"
+                        "exit_ts,entry_spot,exit_spot,rsi3,entry_ask,exit_bid,entry_ltp,"
+                        "exit_ltp,option_pnl_pts,gross_rs,charges_rs,net_rs,gross_ltp_rs,"
+                        "quote_status,exit_rule FROM proposer_trades WHERE trade_date=? "
+                        "ORDER BY seq",
+                        (proposer_rows[0]["trade_date"],),
+                    )
+                    trade_cols = [column[0] for column in trade_cur.description]
+                    proposer_trades = [
+                        dict(zip(trade_cols, row)) for row in trade_cur.fetchall()
+                    ]
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_stats = {"error": str(exc)}
+
         # SENSEX-own Alpha is a separate paper book and never changes the
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
@@ -1016,6 +1069,9 @@ def live_strategy():
         theta_rows=theta_rows,
         theta_trades=theta_trades,
         theta_stats=theta_stats,
+        proposer_rows=proposer_rows,
+        proposer_trades=proposer_trades,
+        proposer_stats=proposer_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
@@ -1048,6 +1104,26 @@ def theta_straddle_backfill():
 def theta_iron_fly_backfill():
     """Backfill bounded batches of paper-only defined-risk iron-fly sessions."""
     from labs.engine.theta_iron_fly_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        result = run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        )
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/proposer_sensex/backfill", methods=["POST"])
+def proposer_sensex_backfill():
+    """Backfill bounded batches of paper-only SENSEX Proposer sessions."""
+    from labs.engine.proposer_sensex_backfill import DEFAULT_START, run_backfill
     try:
         limit = min(max(int(request.args.get("limit", 5)), 1), 20)
     except (TypeError, ValueError):

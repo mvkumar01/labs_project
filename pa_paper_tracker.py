@@ -22,6 +22,7 @@ if __name__ == "__main__":
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
+    from labs.engine.proposer_sensex_tracker import run_day as run_proposer_sensex_day
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     results = {
@@ -54,6 +55,12 @@ if __name__ == "__main__":
         )
     except Exception as exc:
         results["theta_iron_fly"] = f"{type(exc).__name__}: {exc}"
+    # SENSEX Proposer is an unproven paper candidate and, like the books above,
+    # must never abort the established ledgers that have already persisted.
+    try:
+        results["proposer_sensex"] = run_proposer_sensex_day(arg)
+    except Exception as exc:
+        results["proposer_sensex"] = f"{type(exc).__name__}: {exc}"
     for tracker, result_key in (("v2.11", "nifty"), ("v2.12", "alpha_v212")):
         try:
             emit_paper_trade_alerts(tracker, results[result_key]["trade_date"])

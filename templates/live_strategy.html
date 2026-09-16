@@ -52,6 +52,7 @@
       <a href="{{ url_for('labs.live_strategy', tab='alpha_cpr', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_cpr' else '' }}">Alpha CPR</a>
       <a href="{{ url_for('labs.live_strategy', tab='theta_straddle', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_straddle' else '' }}">09:20 Theta Straddle</a>
       <a href="{{ url_for('labs.live_strategy', tab='theta_iron_fly', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_iron_fly' else '' }}">09:20 Iron Fly</a>
+      <a href="{{ url_for('labs.live_strategy', tab='proposer_sensex', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'proposer_sensex' else '' }}">Sensex Proposer</a>
       <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
@@ -69,7 +70,108 @@
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
 
-    {% if active_live_tab == 'theta_straddle' %}
+    {% if active_live_tab == 'proposer_sensex' %}
+    <h1>SENSEX Proposer (paper)</h1>
+    <p class="sub">The reverse-engineered Pramanaa Proposer rules, current rule set, 25 lots.
+      Side comes from the Market Predictor's 09:00 regime row; a Strong Bull/Bear print above
+      45% confidence overrides it; entries are five-minute checkpoints after RSI(3) touches its
+      20/80 band; the contract is the nearest weekly, rounded ATM &#8723;200 ITM. Exits: 2.5%
+      daily target on the premium paid for the day's first trade (which ends the session), +40
+      spot points, &minus;30% premium floor, micro-trend reversal, opposite strong print, 15:25.</p>
+
+    <div class="formula">
+      Paper execution is ask-in / bid-out plus SENSEX charges. Pramanaa books at LTP, so the
+      gross-LTP column is the like-for-like comparison with its ledger and the net column is the
+      honest one. The micro-trend exit is only partly recoverable from one-minute data (see the
+      alphaIMB research folder), so this book tests the recovered rules rather than reproducing
+      Proposer exactly.
+    </div>
+
+    {% if proposer_stats.get('error') %}
+      <p class="empty">Proposer book unavailable ({{ proposer_stats.error }}).</p>
+    {% elif not proposer_rows %}
+      <p class="empty">No Proposer sessions recorded in this date range.</p>
+      <button type="button" id="proposer-backfill" class="btn-secondary">Backfill from 22 June</button>
+      <span id="proposer-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if proposer_stats.net_total>0 else ('red' if proposer_stats.net_total<0 else '') }}">&#8377;{{ "{:,.2f}".format(proposer_stats.net_total) }}</div>
+          <div class="sub-k">ask-in / bid-out after &#8377;{{ "{:,.2f}".format(proposer_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Gross at LTP</div>
+          <div class="v {{ 'green' if proposer_stats.gross_ltp_total>0 else ('red' if proposer_stats.gross_ltp_total<0 else '') }}">&#8377;{{ "{:,.2f}".format(proposer_stats.gross_ltp_total) }}</div>
+          <div class="sub-k">Pramanaa's convention, for comparison</div></div>
+        <div class="card"><div class="k">Trades</div>
+          <div class="v">{{ proposer_stats.trades }}</div>
+          <div class="sub-k">over {{ proposer_stats.traded_days }} traded sessions</div></div>
+        <div class="card"><div class="k">Win days</div>
+          <div class="v">{{ proposer_stats.win_pct }}%</div>
+          <div class="sub-k">{{ proposer_stats.win_days }}/{{ proposer_stats.traded_days }} sessions</div></div>
+        <div class="card"><div class="k">Daily target hit</div>
+          <div class="v">{{ proposer_stats.target_days }}</div>
+          <div class="sub-k">sessions ended by the 2.5% target</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
+        <button type="button" id="proposer-backfill" class="btn-secondary">Refresh backfill</button>
+        <span id="proposer-backfill-status" class="muted"></span>
+      </div>
+
+      {% if proposer_trades %}
+      <h2 style="margin-top:24px">Latest session &mdash; {{ proposer_stats.latest.trade_date }}</h2>
+      <table class="perf">
+        <thead><tr><th>#</th><th>Signal</th><th>Contract</th><th>Entry &rarr; Exit</th><th>RSI3</th>
+          <th>Ask in</th><th>Bid out</th><th>LTP in/out</th><th>Gross &#8377;</th><th>Charges</th>
+          <th>Net &#8377;</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in proposer_trades %}
+          <tr>
+            <td>{{ t.seq }}</td><td>{{ t.signal }}</td>
+            <td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.side) }}</td>
+            <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] }}</td>
+            <td>{{ "%.1f"|format(t.rsi3) if t.rsi3 is not none else '&mdash;' }}</td>
+            <td>{{ "%.2f"|format(t.entry_ask) if t.entry_ask is not none else '&mdash;' }}</td>
+            <td>{{ "%.2f"|format(t.exit_bid) if t.exit_bid is not none else '&mdash;' }}</td>
+            <td class="muted">{{ "%.2f"|format(t.entry_ltp) }} / {{ "%.2f"|format(t.exit_ltp) }}</td>
+            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(t.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.net_rs or 0) }}</td>
+            <td>{{ t.exit_rule }}{% if t.quote_status != 'priced' %} <span class="unavail">({{ t.quote_status }})</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Side</th><th>Expiry</th>
+          <th>Trades</th><th>First premium</th><th>Target &#8377;</th><th>Gross &#8377;</th>
+          <th>Charges</th><th>Net &#8377;</th><th>Gross LTP &#8377;</th></tr></thead>
+        <tbody>
+        {% for r in proposer_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td>
+            <td class="{{ 'amber' if r.status == 'unavailable' else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+            <td>{{ r.regime_open or '&mdash;' }}</td>
+            <td title="{{ r.side_source or '' }}">{{ r.side_day or '&mdash;' }}{% if r.risk_off_from %} <span class="amber">risk_off</span>{% endif %}</td>
+            <td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td>
+            <td>&#8377;{{ "{:,.0f}".format(r.first_trade_premium_rs or 0) }}</td>
+            <td>&#8377;{{ "{:,.0f}".format(r.day_target_rs or 0) }}{% if r.day_done_by_target %} &check;{% endif %}</td>
+            <td>&#8377;{{ "{:,.2f}".format(r.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(r.gross_ltp_rs or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Paper only; this book never calls a broker order API. Predictor rows are
+        stored per session and the book fails closed when they are missing rather than guessing
+        a regime.</p>
+    {% endif %}
+
+    {% elif active_live_tab == 'theta_straddle' %}
     <h1>NIFTY 09:20 ATM short straddle (paper)</h1>
     <p class="sub">At the first common executable quote from 09:20 to 09:25 IST,
       sell one nearest-weekly ATM CE and one ATM PE. Buy both legs back at the
@@ -844,6 +946,44 @@
     {% endif %}
   </main>
 </div>
+{% if active_live_tab == 'proposer_sensex' %}
+<script>
+  const proposerButton = document.getElementById('proposer-backfill');
+  const proposerStatus = document.getElementById('proposer-backfill-status');
+  if (proposerButton) {
+    proposerButton.addEventListener('click', async () => {
+      proposerButton.disabled = true;
+      let completed = 0;
+      try {
+        while (true) {
+          proposerStatus.textContent = 'Backfilling... ' + completed + ' sessions completed';
+          const response = await fetch('/labs/api/proposer_sensex/backfill?limit=5', {
+            method: 'POST',
+          });
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          completed += payload.done.length + (payload.unavailable || []).length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            proposerStatus.textContent = 'Completed ' + completed + '; errors: ' + errors.join(', ');
+            break;
+          }
+          if (!payload.remaining) {
+            proposerStatus.textContent = 'Backfill complete: ' + completed + ' sessions';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        proposerStatus.textContent = 'Backfill failed: ' + error.message;
+        proposerButton.disabled = false;
+      }
+    });
+  }
+</script>
+{% endif %}
 {% if active_live_tab in ['theta_straddle', 'theta_iron_fly'] %}
 <script>
   const thetaButton = document.getElementById('theta-backfill');

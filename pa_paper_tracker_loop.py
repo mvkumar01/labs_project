@@ -37,6 +37,7 @@ def main() -> None:
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
+    from labs.engine.proposer_sensex_tracker import run_day as run_proposer_sensex_day
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
@@ -52,6 +53,7 @@ def main() -> None:
         "alpha_cpr": None,
         "theta_straddle": None,
         "theta_iron_fly": None,
+        "proposer_sensex": None,
     }
     while True:
         now = datetime.now(IST)
@@ -69,6 +71,7 @@ def main() -> None:
                 ("alpha_cpr", run_cpr_day),
                 ("theta_straddle", run_theta_straddle_day),
                 ("theta_iron_fly", run_theta_iron_fly_day),
+                ("proposer_sensex", run_proposer_sensex_day),
             ):
                 try:
                     res = runner(now.date().isoformat())
