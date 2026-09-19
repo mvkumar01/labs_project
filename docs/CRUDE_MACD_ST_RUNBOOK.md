@@ -24,7 +24,7 @@ by the next day's first run. The always-on task must be restarted after deployin
 **Backfill** (from 1 June; safe to re-run, frozen sessions are skipped):
 
 ```bash
-cd ~/labs_project && python3 labs/engine/crude_macd_st_backfill.py 2026-06-01
+cd ~/labs_project && python3 -m labs.engine.crude_macd_st_backfill 2026-06-01
 ```
 
 or the tab's "Backfill" button. Add `--rebuild` to recompute frozen sessions.
