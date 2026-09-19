@@ -18,10 +18,18 @@ OPEN = time(9, 15)
 CLOSE = time(15, 40)          # a few min past 15:30 close to capture the last bar
 POLL_MARKET = 60             # seconds between refreshes during the session
 POLL_IDLE = 300              # seconds between checks when closed
+# MCX books (CRUDEOIL) trade 09:00-23:30; run a few minutes past the close so the
+# session is replayed once more and frozen (crude tracker FINAL_AFTER = 23:40).
+MCX_OPEN = time(9, 0)
+MCX_CLOSE = time(23, 50)
 
 
 def _in_session(now: datetime) -> bool:
     return now.weekday() < 5 and OPEN <= now.time() <= CLOSE
+
+
+def _in_mcx_session(now: datetime) -> bool:
+    return now.weekday() < 5 and MCX_OPEN <= now.time() <= MCX_CLOSE
 
 
 def main() -> None:
@@ -38,6 +46,7 @@ def main() -> None:
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
     from labs.engine.proposer_sensex_tracker import run_day as run_proposer_sensex_day
+    from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
@@ -54,6 +63,7 @@ def main() -> None:
         "theta_straddle": None,
         "theta_iron_fly": None,
         "proposer_sensex": None,
+        "crude_macd_st": None,
     }
     while True:
         now = datetime.now(IST)
@@ -98,6 +108,16 @@ def main() -> None:
                         f"[paper-loop:{name}] error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
+        if _in_mcx_session(now):
+            # MCX paper book; isolated so a Kite or data error never touches the NSE books.
+            try:
+                res = run_crude_macd_st_live(now)
+                if res != last_log["crude_macd_st"]:
+                    print(f"[paper-loop:crude_macd_st] {now.strftime('%H:%M')} {res}", flush=True)
+                    last_log["crude_macd_st"] = res
+            except Exception as exc:
+                print(f"[paper-loop:crude_macd_st] error: {type(exc).__name__}: {exc}", flush=True)
+        if _in_session(now) or _in_mcx_session(now):
             _time.sleep(POLL_MARKET)
         else:
             _time.sleep(POLL_IDLE)

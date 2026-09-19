@@ -366,7 +366,7 @@ def live_strategy():
         "nifty", "alpha_v211a", "alpha_v211b", "alpha_v212", "alpha_v213",
         "alpha_cpr",
         "theta_straddle", "theta_iron_fly",
-        "proposer_sensex",
+        "proposer_sensex", "crude_macd_st",
         "sensex_alpha", "sensex_alpha_inverted",
         "sensex_v211", "sensex_v211_inverted", "baskets",
     }:
@@ -380,6 +380,7 @@ def live_strategy():
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
     theta_rows, theta_trades, theta_stats = [], [], {}
     proposer_rows, proposer_trades, proposer_stats = [], [], {}
+    crude_rows, crude_trades, crude_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211a": "v2.11A",
@@ -850,6 +851,60 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_stats = {"error": str(exc)}
 
+        if active_live_tab == "crude_macd_st":
+            try:
+                cur = conn.execute(
+                    "SELECT trade_date,status,tradingsymbol,expiry,pdc,valid_bars,n_signals,"
+                    "n_trades,open_trades,wins,gross_rs,charges_rs,net_rs,qty,error,updated_at "
+                    "FROM crude_macd_st_daily WHERE 1=1 "
+                    f"{date_clause} ORDER BY trade_date DESC LIMIT 400",
+                    date_params,
+                )
+                cols = [column[0] for column in cur.description]
+                crude_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+                trade_cur = conn.execute(
+                    "SELECT trade_date,seq,tradingsymbol,signal_ts,entry_ts,exit_ts,entry_price,"
+                    "exit_price,stop_price,target_price,stop_dist,r_multiple,points,qty,gross_rs,"
+                    "charges_rs,net_rs,status,exit_reason,bars_held FROM crude_macd_st_trades "
+                    f"WHERE 1=1 {date_clause} ORDER BY trade_date DESC, seq DESC LIMIT 500",
+                    date_params,
+                )
+                trade_cols = [column[0] for column in trade_cur.description]
+                crude_trades = [dict(zip(trade_cols, row)) for row in trade_cur.fetchall()]
+                if crude_rows:
+                    closed = [t for t in crude_trades if t["status"] == "closed"]
+                    wins = [t for t in closed if float(t["net_rs"] or 0) > 0]
+                    equity, peak, max_dd = 0.0, 0.0, 0.0
+                    for t in reversed(closed):
+                        equity += float(t["net_rs"] or 0)
+                        peak = max(peak, equity)
+                        max_dd = max(max_dd, peak - equity)
+                    sessions = [r for r in crude_rows if r["status"] != "no_session"]
+                    crude_stats = {
+                        "sessions": len(sessions),
+                        "traded_days": sum(1 for r in crude_rows if r["n_trades"]),
+                        "trades": len(closed),
+                        "open_trades": sum(1 for t in crude_trades if t["status"] == "open"),
+                        "wins": len(wins),
+                        "win_pct": round(100 * len(wins) / max(len(closed), 1), 1),
+                        "targets": sum(1 for t in closed if t["exit_reason"] == "target"),
+                        "stops": sum(1 for t in closed if t["exit_reason"] == "stop"),
+                        "gross_total": round(sum(float(t["gross_rs"] or 0) for t in closed), 2),
+                        "charges_total": round(sum(float(t["charges_rs"] or 0) for t in closed), 2),
+                        "net_total": round(sum(float(t["net_rs"] or 0) for t in closed), 2),
+                        "open_net": round(sum(float(t["net_rs"] or 0) for t in crude_trades
+                                              if t["status"] == "open"), 2),
+                        "avg_r": round(sum(float(t["r_multiple"] or 0) for t in closed)
+                                       / max(len(closed), 1), 3),
+                        "max_dd": round(max_dd, 2),
+                        "first_date": crude_rows[-1]["trade_date"],
+                        "last_date": crude_rows[0]["trade_date"],
+                        "latest": crude_rows[0],
+                    }
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    crude_stats = {"error": str(exc)}
+
         # SENSEX-own Alpha is a separate paper book and never changes the
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
@@ -1072,6 +1127,9 @@ def live_strategy():
         proposer_rows=proposer_rows,
         proposer_trades=proposer_trades,
         proposer_stats=proposer_stats,
+        crude_rows=crude_rows,
+        crude_trades=crude_trades,
+        crude_stats=crude_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
@@ -1134,6 +1192,25 @@ def proposer_sensex_backfill():
             end_date=request.args.get("end"),
             limit=limit,
             rebuild=request.args.get("rebuild", "0") == "1",
+        )
+        return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/crude_macd_st/backfill", methods=["POST"])
+def crude_macd_st_backfill():
+    """Backfill bounded batches of the paper-only CRUDEOIL MACD/Supertrend book."""
+    from labs.engine.crude_macd_st_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 20)), 1), 60)
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        result = run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
         )
         return jsonify(result)
     except Exception as exc:

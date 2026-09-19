@@ -53,6 +53,7 @@
       <a href="{{ url_for('labs.live_strategy', tab='theta_straddle', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_straddle' else '' }}">09:20 Theta Straddle</a>
       <a href="{{ url_for('labs.live_strategy', tab='theta_iron_fly', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_iron_fly' else '' }}">09:20 Iron Fly</a>
       <a href="{{ url_for('labs.live_strategy', tab='proposer_sensex', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'proposer_sensex' else '' }}">Sensex Proposer</a>
+      <a href="{{ url_for('labs.live_strategy', tab='crude_macd_st', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'crude_macd_st' else '' }}">Crude MACD/ST</a>
       <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
       <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
@@ -70,7 +71,116 @@
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
 
-    {% if active_live_tab == 'proposer_sensex' %}
+    {% if active_live_tab == 'crude_macd_st' %}
+    <h1>CRUDEOIL MACD + Supertrend flip, long (paper)</h1>
+    <p class="sub">Strategy Tester run crudeoil/ui_20260919_084538_9143, rank 194. Buy one lot
+      (100 barrels) of the front CRUDEOIL future when, on the same completed 5-minute bar, the
+      MACD(12,26,9) histogram crosses below zero and Supertrend(7,2) flips down, provided the
+      1-minute close is above the previous session's close. Fill at the next 1-minute open.
+      Stop 1.5&times;ATR(14, 5-minute) below entry, target 0.5R, no time stop, flat at the
+      23:29 bar. One position at a time; 30-minute cooldown between signals.</p>
+
+    <div class="formula">
+      Backfilled from 1 June 2026; live from 21 September 2026. MCX session 09:00&ndash;23:29,
+      updated every minute from completed Kite 1-minute candles. The front contract is the
+      nearest listed expiry after the session (rolled on its expiry day); Kite does not list
+      expired contracts, so history before 21 Sept replays on CRUDEOIL26SEPFUT, as the
+      research did. The replay matches the Tester's 39 trades exactly. Charges: Zerodha MCX
+      futures (brokerage, CTT, exchange, SEBI, stamp, GST), no slippage.
+    </div>
+
+    {% if crude_stats.get('error') %}
+      <p class="empty">Crude book unavailable ({{ crude_stats.error }}).</p>
+    {% elif not crude_rows %}
+      <p class="empty">No crude sessions recorded in this date range.</p>
+      <button type="button" id="crude-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="crude-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if crude_stats.net_total>0 else ('red' if crude_stats.net_total<0 else '') }}">&#8377;{{ "{:,.2f}".format(crude_stats.net_total) }}</div>
+          <div class="sub-k">closed trades, after &#8377;{{ "{:,.2f}".format(crude_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Trades</div>
+          <div class="v">{{ crude_stats.trades }}</div>
+          <div class="sub-k">{{ crude_stats.targets }} target / {{ crude_stats.stops }} stop over {{ crude_stats.sessions }} sessions</div></div>
+        <div class="card"><div class="k">Win rate</div>
+          <div class="v">{{ crude_stats.win_pct }}%</div>
+          <div class="sub-k">{{ crude_stats.wins }}/{{ crude_stats.trades }} net winners</div></div>
+        <div class="card"><div class="k">Avg R</div>
+          <div class="v">{{ crude_stats.avg_r }}</div>
+          <div class="sub-k">gross, per closed trade</div></div>
+        <div class="card"><div class="k">Max drawdown</div>
+          <div class="v">&#8377;{{ "{:,.2f}".format(crude_stats.max_dd) }}</div>
+          <div class="sub-k">on cumulative net, trade by trade</div></div>
+        {% if crude_stats.open_trades %}
+        <div class="card"><div class="k">Open position</div>
+          <div class="v {{ 'green' if crude_stats.open_net>0 else ('red' if crude_stats.open_net<0 else '') }}">&#8377;{{ "{:,.2f}".format(crude_stats.open_net) }}</div>
+          <div class="sub-k">marked at the last 1-minute close</div></div>
+        {% endif %}
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
+        <button type="button" id="crude-backfill" class="btn-secondary">Refresh backfill</button>
+        <span id="crude-backfill-status" class="muted"></span>
+        <span class="muted">Latest session {{ crude_stats.latest.trade_date }}: {{ crude_stats.latest.status }}
+          ({{ crude_stats.latest.tradingsymbol or '&mdash;' }}), updated {{ crude_stats.latest.updated_at }}</span>
+      </div>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if crude_trades %}
+      <table class="perf">
+        <thead><tr><th>Date</th><th>#</th><th>Contract</th><th>Signal</th><th>Entry &rarr; Exit</th>
+          <th>Entry</th><th>Stop / Target</th><th>Exit</th><th>Points</th><th>R</th>
+          <th>Gross &#8377;</th><th>Charges</th><th>Net &#8377;</th><th>Reason</th></tr></thead>
+        <tbody>
+        {% for t in crude_trades %}
+          <tr>
+            <td>{{ t.trade_date }}</td><td>{{ t.seq }}</td><td class="muted">{{ t.tradingsymbol }}</td>
+            <td>{{ t.signal_ts[11:16] }}</td>
+            <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+            <td>{{ "%.0f"|format(t.entry_price) }}</td>
+            <td class="muted">{{ "%.2f"|format(t.stop_price) }} / {{ "%.2f"|format(t.target_price) }}</td>
+            <td>{{ "%.2f"|format(t.exit_price) }}</td>
+            <td>{{ "%.2f"|format(t.points) }}</td>
+            <td>{{ "%.2f"|format(t.r_multiple) }}</td>
+            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(t.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.net_rs or 0) }}</td>
+            <td>{% if t.status == 'open' %}<span class="amber">open</span>{% else %}{{ t.exit_reason }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="empty">No trades in this date range.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Contract</th><th>Prev close</th><th>Signals</th>
+          <th>Trades</th><th>Gross &#8377;</th><th>Charges</th><th>Net &#8377;</th></tr></thead>
+        <tbody>
+        {% for r in crude_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td>
+            <td class="{{ 'amber' if r.status == 'live' else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+            <td class="muted">{{ r.tradingsymbol or '&mdash;' }}</td>
+            <td>{{ "%.0f"|format(r.pdc) if r.pdc is not none else '&mdash;' }}</td>
+            <td>{{ r.n_signals }}</td>
+            <td>{{ r.n_trades }}{% if r.open_trades %} <span class="amber">(open)</span>{% endif %}</td>
+            <td>&#8377;{{ "{:,.2f}".format(r.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Paper only; this book never calls a broker order API. "Signals" counts
+        rule fires in the session, including ones skipped because a position was open or the
+        next bar was missing.</p>
+    {% endif %}
+
+    {% elif active_live_tab == 'proposer_sensex' %}
     <h1>SENSEX Proposer (paper)</h1>
     <p class="sub">SENSEX Proposer, current rule set, 25 lots. Side comes from the Market
       Predictor's 09:00 regime row; a Strong Bull/Bear print above 45% confidence overrides it;
@@ -944,6 +1054,44 @@
     {% endif %}
   </main>
 </div>
+{% if active_live_tab == 'crude_macd_st' %}
+<script>
+  const crudeButton = document.getElementById('crude-backfill');
+  const crudeStatus = document.getElementById('crude-backfill-status');
+  if (crudeButton) {
+    crudeButton.addEventListener('click', async () => {
+      crudeButton.disabled = true;
+      let completed = 0;
+      try {
+        while (true) {
+          crudeStatus.textContent = 'Backfilling... ' + completed + ' sessions completed';
+          const response = await fetch('/labs/api/crude_macd_st/backfill?limit=20', {
+            method: 'POST',
+          });
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          completed += payload.done.length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            crudeStatus.textContent = 'Completed ' + completed + '; errors: ' + errors.join(', ');
+            break;
+          }
+          if (!payload.remaining) {
+            crudeStatus.textContent = 'Backfill complete: ' + completed + ' sessions';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        crudeStatus.textContent = 'Backfill failed: ' + error.message;
+        crudeButton.disabled = false;
+      }
+    });
+  }
+</script>
+{% endif %}
 {% if active_live_tab == 'proposer_sensex' %}
 <script>
   const proposerButton = document.getElementById('proposer-backfill');

@@ -116,3 +116,38 @@ def sensex_round_trip_charges(entry_premium: float, exit_premium: float, qty: in
         "raw_total": total,
         "total": round(total, 2),
     }
+
+
+# ── MCX non-agricultural futures (CRUDEOIL) round-trip charges ──────────────
+# Zerodha schedule as used by the Strategy Tester's `mcx_futures` model
+# (configs/charges.yaml, read 2026-09-19). No slippage.
+MCX_BROKERAGE_PCT = 0.0003       # 0.03% or ₹20 per executed order, whichever is lower
+MCX_BROKERAGE_CAP = 20.0
+MCX_CTT_SELL = 0.0001            # CTT 0.01% on the sell side
+MCX_EXCH_TXN = 0.000021          # MCX transaction charges 0.0021% of turnover
+MCX_STAMP_BUY = 0.00002          # 0.002% on the buy side
+
+
+def mcx_futures_round_trip_charges(buy_price: float, sell_price: float, qty: int) -> dict:
+    """One MCX futures round trip. qty is in units (CRUDEOIL: 1 lot = 100)."""
+    buy_value = float(buy_price) * int(qty)
+    sell_value = float(sell_price) * int(qty)
+    turnover = buy_value + sell_value
+    brokerage = (min(buy_value * MCX_BROKERAGE_PCT, MCX_BROKERAGE_CAP)
+                 + min(sell_value * MCX_BROKERAGE_PCT, MCX_BROKERAGE_CAP))
+    ctt = MCX_CTT_SELL * sell_value
+    txn = MCX_EXCH_TXN * turnover
+    sebi = SEBI * turnover
+    stamp = MCX_STAMP_BUY * buy_value
+    gst = GST * (brokerage + txn + sebi)
+    total = brokerage + ctt + txn + sebi + stamp + gst
+    return {
+        "brokerage": round(brokerage, 2),
+        "ctt": round(ctt, 2),
+        "exch_txn": round(txn, 2),
+        "sebi": round(sebi, 4),
+        "stamp": round(stamp, 2),
+        "gst": round(gst, 2),
+        "raw_total": total,
+        "total": round(total, 2),
+    }
