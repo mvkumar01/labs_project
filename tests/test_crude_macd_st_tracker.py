@@ -270,3 +270,65 @@ def test_dashboard_renders_the_crude_tab(monkeypatch):
     html = app.test_client().get("/labs/live?tab=crude_macd_st").get_data(as_text=True)
     assert "CRUDEOIL MACD + Supertrend flip" in html
     assert "&#8377;1,651.10" in html and "target" in html
+    assert "Capital deployed" in html
+
+
+# ── capital deployed ─────────────────────────────────────────────────────────
+class MarginKite(FakeKite):
+    def __init__(self, frame, margin):
+        super().__init__(frame)
+        self.margin = margin
+        self.margin_calls = 0
+
+    def order_margins(self, orders):
+        self.margin_calls += 1
+        assert orders[0]["exchange"] == "MCX" and orders[0]["quantity"] == 1
+        return [{"total": self.margin}]
+
+
+def _trades(conn, day):
+    return conn.execute("SELECT entry_ts, entry_price, notional_rs, margin_rs, margin_source "
+                        "FROM crude_macd_st_trades WHERE trade_date=? ORDER BY seq",
+                        (day,)).fetchall()
+
+
+def _day_with_trades(seed_from=11):
+    days = _weekdays("2026-07-01", 20)
+    for seed in range(seed_from, seed_from + 50):
+        frame = _history(days, seed=seed)
+        trades = tracker.replay(frame)[1]
+        if (trades["trade_date"] == days[-1]).any():
+            return days, frame, trades[trades["trade_date"] == days[-1]]
+    raise AssertionError("no synthetic session with a trade")
+
+
+def test_backfilled_trades_use_the_estimated_margin(tmp_path, monkeypatch):
+    monkeypatch.setitem(tracker._INSTRUMENTS, "date", None)
+    days, frame, _ = _day_with_trades()
+    kite = MarginKite(frame, 250_000.0)
+    conn = _conn(tmp_path)
+    after = datetime.fromisoformat(days[-1]) + timedelta(days=1, hours=10)
+    tracker.run_day(days[-1], kite=kite, now=after, connection=conn)
+    rows = _trades(conn, days[-1])
+    assert rows and kite.margin_calls == 0           # today's quote never used for history
+    for _, entry, notional, margin, source in rows:
+        assert notional == round(entry * 100, 2)
+        assert margin == round(notional * tracker.EST_MARGIN_RATE, 2)
+        assert source == tracker.EST_MARGIN_SOURCE
+
+
+def test_live_trade_keeps_the_margin_quoted_at_entry(tmp_path, monkeypatch):
+    monkeypatch.setitem(tracker._INSTRUMENTS, "date", None)
+    days, frame, expected = _day_with_trades()
+    first = expected.iloc[0]
+    conn = _conn(tmp_path)
+    kite = MarginKite(frame, 291_537.5)
+    seen = first["entry_ts"].to_pydatetime() + timedelta(minutes=1, seconds=5)
+    tracker.run_day(days[-1], kite=kite, now=seen, connection=conn)
+    row = _trades(conn, days[-1])[0]
+    assert row[3] == 291_537.5 and row[4] == "kite_at_entry"
+    kite.margin = 999_999.0                          # a later quote must not replace it
+    later = datetime.fromisoformat(days[-1]) + timedelta(hours=23, minutes=35)
+    tracker.run_day(days[-1], kite=kite, now=later, connection=conn)
+    after_row = [r for r in _trades(conn, days[-1]) if r[0] == row[0]][0]
+    assert after_row[3] == 291_537.5 and after_row[4] == "kite_at_entry"

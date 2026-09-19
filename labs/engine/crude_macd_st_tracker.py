@@ -59,6 +59,12 @@ REPLAY_LOOKBACK_DAYS = 60        # calendar days of history replayed before a se
 FINAL_AFTER = time(23, 40)       # a session is frozen once the loop runs past this
 KITE_CHUNK_DAYS = 55             # Kite minute history is limited to 60 days per call
 NS_PER_MIN = 60_000_000_000
+# Capital deployed = the margin Kite blocks for one lot (NRML). Live trades store Kite's
+# order_margins quote taken when the trade first appears. Kite has no historical margins,
+# so earlier trades use this share of notional: Kite's quote for CRUDEOIL26OCTFUT on
+# 2026-09-19 (SPAN 2,80,000 + exposure 11,537.50 = 2,91,537.50 on 9,230 x 100 notional).
+EST_MARGIN_RATE = 0.3159
+EST_MARGIN_SOURCE = "est_31.59pct_20260919"
 
 
 class CrudeInputError(RuntimeError):
@@ -129,6 +135,10 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    trade_columns = {row[1] for row in conn.execute("PRAGMA table_info(crude_macd_st_trades)")}
+    for column, ddl in (("notional_rs", "REAL"), ("margin_rs", "REAL"), ("margin_source", "TEXT")):
+        if column not in trade_columns:
+            conn.execute(f"ALTER TABLE crude_macd_st_trades ADD COLUMN {column} {ddl}")
     conn.commit()
 
 
@@ -558,6 +568,40 @@ def _priced(trades: pd.DataFrame) -> list[dict]:
     return out
 
 
+def _kite_margin(kite, tradingsymbol: str) -> float | None:
+    """Margin Kite would block now for one lot bought NRML; None if the quote fails."""
+    try:
+        quote = kite.order_margins([{
+            "exchange": EXCHANGE, "tradingsymbol": tradingsymbol, "transaction_type": "BUY",
+            "variety": "regular", "product": "NRML", "order_type": "MARKET",
+            "quantity": LOTS,
+        }])
+        total = float(quote[0]["total"])
+        return total if math.isfinite(total) and total > 0 else None
+    except Exception:                                             # noqa: BLE001
+        return None
+
+
+def _attach_capital(conn, trade_date: str, tradingsymbol: str, trades: list[dict],
+                    kite=None) -> None:
+    """Notional and margin per trade. A margin already stored for the same entry is kept,
+    so a live quote taken at entry is never replaced by a later one or by the estimate."""
+    known = {r[0]: (r[1], r[2]) for r in conn.execute(
+        "SELECT entry_ts, margin_rs, margin_source FROM crude_macd_st_trades "
+        "WHERE trade_date=? AND margin_rs IS NOT NULL", (trade_date,))}
+    for t in trades:
+        t["notional_rs"] = round(float(t["entry_price"]) * QTY, 2)
+        if t["entry_ts"] in known:
+            t["margin_rs"], t["margin_source"] = known[t["entry_ts"]]
+            continue
+        margin = _kite_margin(kite, tradingsymbol) if kite is not None else None
+        if margin is not None:
+            t["margin_rs"], t["margin_source"] = round(margin, 2), "kite_at_entry"
+        else:
+            t["margin_rs"] = round(t["notional_rs"] * EST_MARGIN_RATE, 2)
+            t["margin_source"] = EST_MARGIN_SOURCE
+
+
 def _persist(conn, trade_date: str, status: str, contract: dict | None, summary: dict,
              trades: list[dict], error: str | None = None) -> None:
     now = datetime.now(IST).isoformat(timespec="seconds")
@@ -565,12 +609,13 @@ def _persist(conn, trade_date: str, status: str, contract: dict | None, summary:
     conn.executemany(
         "INSERT INTO crude_macd_st_trades (trade_date,seq,tradingsymbol,signal_ts,entry_ts,exit_ts,"
         "entry_price,exit_price,stop_price,target_price,stop_dist,r_multiple,points,qty,gross_rs,"
-        "charges_rs,net_rs,status,exit_reason,bars_held) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "charges_rs,net_rs,status,exit_reason,bars_held,notional_rs,margin_rs,margin_source) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         [(trade_date, t["seq"], contract["tradingsymbol"], t["signal_ts"], t["entry_ts"],
           t["exit_ts"], t["entry_price"], t["exit_price"], t["stop_price"], t["target_price"],
           t["stop_dist"], t["r_multiple"], t["points"], QTY, t["gross_rs"], t["charges_rs"],
-          t["net_rs"], t["status"], t["exit_reason"], t["bars_held"]) for t in trades])
+          t["net_rs"], t["status"], t["exit_reason"], t["bars_held"], t.get("notional_rs"),
+          t.get("margin_rs"), t.get("margin_source")) for t in trades])
     conn.execute(
         "INSERT OR REPLACE INTO crude_macd_st_daily (trade_date,status,tradingsymbol,expiry,pdc,"
         "valid_bars,n_signals,n_trades,open_trades,wins,gross_rs,charges_rs,net_rs,qty,"
@@ -630,6 +675,9 @@ def run_day(trade_date: str | None = None, *, kite=None, now: datetime | None = 
         }
         todays = trades[trades["trade_date"] == trade_date] if len(trades) else trades
         priced = _priced(todays)
+        # Kite's margin quote is today's, so it is only taken for trades of the running session.
+        _attach_capital(conn, trade_date, contract["tradingsymbol"], priced,
+                        kite if in_progress else None)
         status = "live" if in_progress else "final"
         _persist(conn, trade_date, status, contract, summary, priced)
         return {"trade_date": trade_date, "status": status,

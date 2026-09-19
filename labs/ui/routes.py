@@ -865,7 +865,8 @@ def live_strategy():
                 trade_cur = conn.execute(
                     "SELECT trade_date,seq,tradingsymbol,signal_ts,entry_ts,exit_ts,entry_price,"
                     "exit_price,stop_price,target_price,stop_dist,r_multiple,points,qty,gross_rs,"
-                    "charges_rs,net_rs,status,exit_reason,bars_held FROM crude_macd_st_trades "
+                    "charges_rs,net_rs,status,exit_reason,bars_held,notional_rs,margin_rs,margin_source "
+                    "FROM crude_macd_st_trades "
                     f"WHERE 1=1 {date_clause} ORDER BY trade_date DESC, seq DESC LIMIT 500",
                     date_params,
                 )

@@ -130,7 +130,8 @@
       {% if crude_trades %}
       <table class="perf">
         <thead><tr><th>Date</th><th>#</th><th>Contract</th><th>Signal</th><th>Entry &rarr; Exit</th>
-          <th>Entry</th><th>Stop / Target</th><th>Exit</th><th>Points</th><th>R</th>
+          <th>Entry</th><th title="Margin Kite blocks for 1 lot (NRML); notional below">Capital deployed</th>
+          <th>Stop / Target</th><th>Exit</th><th>Points</th><th>R</th>
           <th>Gross &#8377;</th><th>Charges</th><th>Net &#8377;</th><th>Reason</th></tr></thead>
         <tbody>
         {% for t in crude_trades %}
@@ -139,6 +140,9 @@
             <td>{{ t.signal_ts[11:16] }}</td>
             <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
             <td>{{ "%.0f"|format(t.entry_price) }}</td>
+            <td title="{{ 'Kite margin quote at entry' if t.margin_source == 'kite_at_entry' else 'Estimate: 31.59% of notional (Kite quote for CRUDEOIL26OCTFUT on 19 Sept 2026)' }}">
+              {% if t.margin_rs is not none %}{{ '' if t.margin_source == 'kite_at_entry' else '~' }}&#8377;{{ "{:,.0f}".format(t.margin_rs) }}{% else %}&mdash;{% endif %}
+              {% if t.notional_rs is not none %}<div class="muted" style="font-size:11px">notional &#8377;{{ "{:,.0f}".format(t.notional_rs) }}</div>{% endif %}</td>
             <td class="muted">{{ "%.2f"|format(t.stop_price) }} / {{ "%.2f"|format(t.target_price) }}</td>
             <td>{{ "%.2f"|format(t.exit_price) }}</td>
             <td>{{ "%.2f"|format(t.points) }}</td>
@@ -175,6 +179,10 @@
         {% endfor %}
         </tbody>
       </table>
+      <p class="note">Capital deployed is the margin Kite blocks for one lot bought NRML. For
+        trades from 21 Sept it is Kite's own margin quote taken when the trade is entered;
+        Kite has no historical margins, so earlier trades (marked ~) are estimated at 31.59% of
+        notional, Kite's quote for CRUDEOIL26OCTFUT on 19 Sept 2026.</p>
       <p class="note">Paper only; this book never calls a broker order API. "Signals" counts
         rule fires in the session, including ones skipped because a position was open or the
         next bar was missing.</p>

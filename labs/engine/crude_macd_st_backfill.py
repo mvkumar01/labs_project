@@ -41,7 +41,7 @@ def run_backfill(*, start_date: str = DEFAULT_START, end_date: str | None = None
         from auth.session_manager import get_kite
         kite = get_kite()
     done, errors = [], {}
-    batch = pending[:max(1, min(int(limit), 60))]
+    batch = pending[:max(1, int(limit))]
     for session in batch:
         try:
             result = run_day(session, kite=kite, rebuild=rebuild)
@@ -58,12 +58,5 @@ if __name__ == "__main__":
     import sys
     start = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_START
     rebuild = "--rebuild" in sys.argv
-    total = {"done": [], "errors": {}}
-    while True:
-        res = run_backfill(start_date=start, limit=60, rebuild=rebuild)
-        total["done"] += res["done"]
-        total["errors"].update(res["errors"])
-        if res["errors"] or not res["remaining"]:
-            break
-        rebuild = False
-    print(json.dumps(total, indent=2, default=str))
+    print(json.dumps(run_backfill(start_date=start, limit=100_000, rebuild=rebuild),
+                     indent=2, default=str))
