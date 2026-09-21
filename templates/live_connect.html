@@ -1,3 +1,4 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,15 +7,13 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Live — Connect Broker</title>
   <link rel="stylesheet" href="/static/live.css">
+  {{ theme_head() }}
 </head>
 <body>
 <div class="page">
   <header class="live-topbar">
-    <span class="live-logo">BOTS LIVE <span class="tag">paper-shell, real-money stack</span></span>
-    <nav>
-      <a href="/live/">Status</a>
-      <a href="/labs">Paper Labs</a>
-    </nav>
+    <span class="live-logo">BOTS LIVE</span>
+    {{ live_nav('broker', is_admin|default(false)) }}
   </header>
   <main>
     <h1>Connect Broker</h1>

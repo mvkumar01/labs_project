@@ -1,3 +1,4 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,20 +6,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Backtest - Labs</title>
   <link rel="stylesheet" href="/static/labs.css">
+  {{ theme_head() }}
 </head>
 <body>
 <div class="page">
   <header class="topbar">
     <span class="logo">Labs</span>
-    <nav>
-      <a href="/labs">Dashboard</a>
-      <a href="/live/login">Login</a>
-      <a href="/labs/backtest">Backtest</a>
-      <a href="/labs/simulation">Live Simulation</a>
-      <a href="/labs/live">Live</a>
-      <a href="/labs/calibration">Calibration</a>
-      <a href="/labs/new" class="btn-primary">+ New Bot</a>
-    </nav>
+    {{ labs_nav('backtest') }}
   </header>
 
   <main>

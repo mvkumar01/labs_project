@@ -3,7 +3,7 @@
 
   const API = "/labs/simulation/api";
   const SESSION_KEY = "labsSimulationSessionId";
-  const colors = ["#28d7c0", "#f4ad45", "#7c9cff", "#f26b8a", "#9d7cff", "#67d68a", "#d6cf67"];
+  const colors = [labsColor("#28d7c0"), labsColor("#f4ad45"), labsColor("#7c9cff"), labsColor("#f26b8a"), labsColor("#9d7cff"), labsColor("#67d68a"), labsColor("#d6cf67")];
   const overlayPrefixes = ["SMA", "EMA", "VWAP", "BB", "Supertrend"];
   let sessionId = localStorage.getItem(SESSION_KEY);
   let bootstrap = null;
@@ -23,17 +23,24 @@
   const timeText = iso => iso ? new Date(iso).toLocaleTimeString("en-IN", {timeZone: "Asia/Kolkata", hour12: false}) : "--";
 
   const chart = LightweightCharts.createChart($("chart"), chartOptions());
-  const candleSeries = chart.addCandlestickSeries({upColor: "#20c77a", downColor: "#f05252", borderVisible: false, wickUpColor: "#20c77a", wickDownColor: "#f05252", priceLineVisible: true});
-  const oscillatorChart = LightweightCharts.createChart($("oscillator-chart"), {...chartOptions(), rightPriceScale: {borderColor: "#253141"}, timeScale: {visible: false}});
+  const candleSeries = chart.addCandlestickSeries({upColor: labsColor("#20c77a"), downColor: labsColor("#f05252"), borderVisible: false, wickUpColor: labsColor("#20c77a"), wickDownColor: labsColor("#f05252"), priceLineVisible: true});
+  const oscillatorChart = LightweightCharts.createChart($("oscillator-chart"), {...chartOptions(), rightPriceScale: {borderColor: labsColor("#253141")}, timeScale: {visible: false}});
+
+  window.labsThemeLive = true;
+  window.addEventListener("labs-theme", () => {
+    chart.applyOptions(chartOptions());
+    oscillatorChart.applyOptions({...chartOptions(), rightPriceScale: {borderColor: labsColor("#253141")}, timeScale: {visible: false}});
+    candleSeries.applyOptions({upColor: labsColor("#20c77a"), downColor: labsColor("#f05252"), wickUpColor: labsColor("#20c77a"), wickDownColor: labsColor("#f05252")});
+  });
 
   function chartOptions() {
     return {
       autoSize: true,
-      layout: {background: {color: "#101720"}, textColor: "#7890a8", fontFamily: "IBM Plex Mono"},
-      grid: {vertLines: {color: "#182331"}, horzLines: {color: "#182331"}},
+      layout: {background: {color: labsColor("#101720")}, textColor: labsColor("#7890a8"), fontFamily: "IBM Plex Mono"},
+      grid: {vertLines: {color: labsColor("#182331")}, horzLines: {color: labsColor("#182331")}},
       crosshair: {mode: LightweightCharts.CrosshairMode.Normal},
-      rightPriceScale: {borderColor: "#253141"},
-      timeScale: {borderColor: "#253141", timeVisible: true, secondsVisible: false, rightOffset: 4},
+      rightPriceScale: {borderColor: labsColor("#253141")},
+      timeScale: {borderColor: labsColor("#253141"), timeVisible: true, secondsVisible: false, rightOffset: 4},
       localization: {locale: "en-IN"},
     };
   }
@@ -283,11 +290,11 @@
     priceLines.forEach(line => candleSeries.removePriceLine(line)); priceLines = [];
     const markers = [];
     if (snapshot) {
-      snapshot.state.orders.filter(o => o.status === "FILLED").forEach(o => markers.push({time: epoch(o.updated_at), position: o.side === "BUY" ? "belowBar" : "aboveBar", color: o.side === "BUY" ? "#20c77a" : "#f05252", shape: o.side === "BUY" ? "arrowUp" : "arrowDown", text: `${o.side} ${o.filled_qty} @ ${o.filled_price}`}));
+      snapshot.state.orders.filter(o => o.status === "FILLED").forEach(o => markers.push({time: epoch(o.updated_at), position: o.side === "BUY" ? "belowBar" : "aboveBar", color: o.side === "BUY" ? labsColor("#20c77a") : labsColor("#f05252"), shape: o.side === "BUY" ? "arrowUp" : "arrowDown", text: `${o.side} ${o.filled_qty} @ ${o.filled_price}`}));
       snapshot.state.positions.forEach(p => {
-        addPriceLine(p.avg_price, "Entry", "#5b8cff"); if (p.stop_loss) addPriceLine(p.stop_loss, "SL", "#f05252"); if (p.target) addPriceLine(p.target, "Target", "#20c77a");
+        addPriceLine(p.avg_price, "Entry", labsColor("#5b8cff")); if (p.stop_loss) addPriceLine(p.stop_loss, "SL", labsColor("#f05252")); if (p.target) addPriceLine(p.target, "Target", labsColor("#20c77a"));
       });
-      snapshot.state.orders.filter(o => ["OPEN", "TRIGGER_PENDING"].includes(o.status)).forEach(o => addPriceLine(o.limit_price || o.trigger_price, o.order_type, "#f4ad45"));
+      snapshot.state.orders.filter(o => ["OPEN", "TRIGGER_PENDING"].includes(o.status)).forEach(o => addPriceLine(o.limit_price || o.trigger_price, o.order_type, labsColor("#f4ad45")));
     }
     candleSeries.setMarkers(markers.filter(m => m.time).sort((a, b) => a.time - b.time));
     $("bar-progress").textContent = `${data.visible_count_1m || 0} / ${data.total_count_1m || 0} one-minute candles visible`;

@@ -53,9 +53,12 @@ def test_approval_is_blocked_without_a_green_shadow_candidate(tmp_path, monkeypa
 
 
 def test_calibration_navigation_is_present_on_main_labs_pages():
+    # One shared nav (templates/_chrome.html) is used by every Labs page.
+    assert "'/labs/calibration', 'Calibration'" in (ROOT / "templates" / "_chrome.html").read_text(
+        encoding="utf-8")
     for template in ("labs.html", "backtest.html", "live_strategy.html"):
         markup = (ROOT / "templates" / template).read_text(encoding="utf-8")
-        assert 'href="/labs/calibration"' in markup
+        assert "{{ labs_nav(" in markup
 
 
 def test_outcome_metrics_use_strict_window_and_positive_adverse_magnitude():

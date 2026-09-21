@@ -11,7 +11,7 @@ import pytz
 
 from config.labs_config import DATA_DIR, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
 from labs.simulation.config import (
-    ALPHAIMB_KITE_TOKEN,
+    LABS_KITE_TOKEN,
     INSTRUMENTS,
     SIMULATION_DATA_DIR,
     ensure_private_dirs,
@@ -186,7 +186,7 @@ class CompositeMarketDataProvider(MarketDataProvider):
 
 
 def simulation_kite():
-    """Build a data-only Kite session from the current alphaIMB token."""
+    """Build a data-only Kite session from the labs Kite token."""
     api_key, access_token, _ = simulation_kite_auth()
     from kiteconnect import KiteConnect
 
@@ -195,12 +195,12 @@ def simulation_kite():
     return kite
 
 
-def simulation_kite_auth(token_path: Path = ALPHAIMB_KITE_TOKEN) -> tuple[str, str, Path]:
-    """Resolve credentials without copying alphaIMB's rotating access token."""
+def simulation_kite_auth(token_path: Path = LABS_KITE_TOKEN) -> tuple[str, str, Path]:
+    """Resolve credentials from the labs token file (config/zerodha_token.json)."""
     token_path = Path(token_path)
     if not token_path.is_file():
         raise MarketDataUnavailable(
-            f"Kite data token missing; expected {ALPHAIMB_KITE_TOKEN}"
+            f"Kite data token missing; expected {LABS_KITE_TOKEN}"
         )
     token = json.loads(token_path.read_text(encoding="utf-8-sig"))
     api_key = str(token.get("api_key") or "").strip()

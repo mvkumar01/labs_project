@@ -5,7 +5,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const current = payload.metrics.current.trends || [];
   const candidate = payload.metrics.candidate.trends || [];
   const charts = [];
-  const colors = { current: "#818cf8", candidate: "#4ade80", adverse: "#f87171" };
+  const colors = { current: labsColor("#818cf8"), candidate: labsColor("#4ade80"), adverse: labsColor("#f87171") };
 
   function filtered() {
     const from = document.getElementById("calChartFrom")?.value || "";
@@ -28,8 +28,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }));
     const chart = new Chart(canvas, {type: "line", data: {labels, datasets}, options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: {title: {display: true, text: title, color: "#e2e8f0"}, legend: {labels: {color: "#cbd5e1"}}, zoom: {zoom: {wheel: {enabled: true}, pinch: {enabled: true}, mode: "x"}, pan: {enabled: true, mode: "x"}}},
-      scales: {x: {ticks: {color: "#94a3b8", maxRotation: 45}}, y: {ticks: {color: "#94a3b8"}, grid: {color: "#2d3148"}}},
+      plugins: {title: {display: true, text: title, color: labsColor("#e2e8f0")}, legend: {labels: {color: labsColor("#cbd5e1")}}, zoom: {zoom: {wheel: {enabled: true}, pinch: {enabled: true}, mode: "x"}, pan: {enabled: true, mode: "x"}}},
+      scales: {x: {ticks: {color: labsColor("#94a3b8"), maxRotation: 45}}, y: {ticks: {color: labsColor("#94a3b8")}, grid: {color: labsColor("#2d3148")}}},
     }});
     chart.$calFields = fields;
     charts.push(chart);
@@ -49,7 +49,7 @@ document.addEventListener("DOMContentLoaded", () => {
     charts.push(new Chart(comparisonCanvas, {type: "bar", data: {labels: rows.map(row => row.metric.replaceAll("_", " ")), datasets: [
       {label: "Current", data: rows.map(row => row.current), backgroundColor: colors.current},
       {label: "Candidate", data: rows.map(row => row.candidate), backgroundColor: colors.candidate},
-    ]}, options: {responsive: true, maintainAspectRatio: false, plugins: {title: {display: true, text: "Candidate vs Current", color: "#e2e8f0"}, legend: {labels: {color: "#cbd5e1"}}}, scales: {x: {ticks: {color: "#94a3b8"}}, y: {ticks: {color: "#94a3b8"}, grid: {color: "#2d3148"}}}}}));
+    ]}, options: {responsive: true, maintainAspectRatio: false, plugins: {title: {display: true, text: "Candidate vs Current", color: labsColor("#e2e8f0")}, legend: {labels: {color: labsColor("#cbd5e1")}}}, scales: {x: {ticks: {color: labsColor("#94a3b8")}}, y: {ticks: {color: labsColor("#94a3b8")}, grid: {color: labsColor("#2d3148")}}}}}));
   }
   document.getElementById("calResetZoom")?.addEventListener("click", () => charts.forEach(chart => chart.resetZoom?.()));
   function applyDateRange() {

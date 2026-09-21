@@ -154,11 +154,12 @@ def test_capture_parses_five_class_votes(tmp_path):
     assert frame[frame["kind"] == "regime"].iloc[0]["conf"] == 44.0
 
 
-def test_ui_and_paper_loop_are_wired():
+def test_book_is_retired_from_ui_and_loops():
+    """Retired 2026-09-22: engine and history are kept, nothing runs or shows it."""
     root = Path(__file__).resolve().parents[1]
     routes = (root / "labs" / "ui" / "routes.py").read_text(encoding="utf-8")
     template = (root / "templates" / "live_strategy.html").read_text(encoding="utf-8")
     loop = (root / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
     daily = (root / "pa_paper_tracker.py").read_text(encoding="utf-8")
-    assert "proposer_sensex" in routes and "proposer" in template
-    assert "proposer_sensex_tracker" in loop and "proposer_sensex_tracker" in daily
+    assert "proposer" not in routes and "proposer" not in template
+    assert "proposer_sensex_tracker" not in loop and "proposer_sensex_tracker" not in daily

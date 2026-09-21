@@ -143,6 +143,7 @@ def test_paper_runtime_and_ui_are_wired():
     routes = (root / "labs" / "ui" / "routes.py").read_text(encoding="utf-8")
     loop = (root / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
 
-    assert "09:20 Iron Fly" in template
+    assert '"theta_iron_fly": "09:20 Iron Fly"' in routes
+    assert "active_live_tab == 'theta_iron_fly'" in template
     assert "/api/theta_iron_fly/backfill" in routes
     assert "run_theta_iron_fly_day" in loop

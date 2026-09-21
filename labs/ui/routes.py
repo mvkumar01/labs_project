@@ -353,6 +353,21 @@ def _parse_legs(form) -> list[dict]:
 
 
 # ── Live (persistent paper strategy tracker) ─────────────────────────────────
+# Tabs shown on /labs/live, in display order. "overview" is the card dashboard.
+LIVE_TABS = {
+    "overview": "Overview",
+    "nifty": "Alpha v2.11",
+    "alpha_v211b": "Alpha 2.11 replay (B)",
+    "alpha_v212": "Alpha v2.12",
+    "alpha_cpr": "Alpha CPR",
+    "theta_straddle": "09:20 Theta Straddle",
+    "theta_iron_fly": "09:20 Iron Fly",
+    "crude_macd_st": "Crude MACD/ST",
+    "baskets": "v2.11 Baskets",
+    "sensex_alpha": "Sensex_alpha",
+}
+
+
 @labs_bp.route("/live")
 def live_strategy():
     """Daily PAPER performance of Alpha champion books. Read-only,
@@ -361,34 +376,24 @@ def live_strategy():
     from labs.engine.paper_strategy_tracker import CONTRACT_VARIANTS, PRIMARY_VARIANT
     date_from, date_to = _live_date_range()
     date_clause, date_params = _live_date_clause(date_from, date_to)
-    active_live_tab = request.args.get("tab", "nifty")
-    if active_live_tab not in {
-        "nifty", "alpha_v211a", "alpha_v211b", "alpha_v212", "alpha_v213",
-        "alpha_cpr",
-        "theta_straddle", "theta_iron_fly",
-        "proposer_sensex", "crude_macd_st",
-        "sensex_alpha", "sensex_alpha_inverted",
-        "sensex_v211", "sensex_v211_inverted", "baskets",
-    }:
-        active_live_tab = "nifty"
+    active_live_tab = request.args.get("tab", "overview")
+    if active_live_tab not in LIVE_TABS:
+        active_live_tab = "overview"
     rows, trades, stats = [], [], {}
     tier_side_pnl = []
     comparison_variant_totals = {}
     comparison_by_date = {}
     sensex_rows, sensex_trades, sensex_stats = [], [], {}
-    sensex_v211_rows, sensex_v211_trades, sensex_v211_stats = [], [], {}
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
     theta_rows, theta_trades, theta_stats = [], [], {}
-    proposer_rows, proposer_trades, proposer_stats = [], [], {}
     crude_rows, crude_trades, crude_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
-        "alpha_v211a": "v2.11A",
         "alpha_v211b": "2.11 - champion replay (B)",
         "alpha_v212": "v2.12",
-        "alpha_v213": "v2.13",
         "alpha_cpr": "CPR",
     }.get(active_live_tab, "")
+    overview_cards = []
     basket_defs, basket_totals, basket_by_date = {}, {}, {}
     basket_pending, basket_error = 0, None
     try:
@@ -512,10 +517,9 @@ def live_strategy():
             comparison_variant_totals = {}
             comparison_by_date = {}
 
-        # v2.11A, v2.12 and v2.13 are separate paper ledgers backed by their respective
+        # 2.11 (B), v2.12 and CPR are separate ledgers backed by their respective
         # canonical replay engines. Only load the selected tab's tables.
-        if active_live_tab in {"alpha_v211a", "alpha_v211b", "alpha_v212",
-                               "alpha_v213", "alpha_cpr"}:
+        if active_live_tab in {"alpha_v211b", "alpha_v212", "alpha_cpr"}:
             overlay_prefix = active_live_tab
             try:
                 overlay_cur = conn.execute(
@@ -800,57 +804,6 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     iron_fly_stats = {"error": str(exc)}
 
-        if active_live_tab == "proposer_sensex":
-            try:
-                cur = conn.execute(
-                    "SELECT trade_date,status,expiry_code,regime_open,side_day,side_source,"
-                    "risk_off_from,n_trades,priced_trades,first_trade_premium_rs,day_target_rs,"
-                    "day_done_by_target,gross_rs,charges_rs,net_rs,gross_ltp_rs,qty,"
-                    "strategy_version,error,updated_at FROM proposer_daily WHERE 1=1 "
-                    f"{date_clause} ORDER BY trade_date DESC LIMIT 120",
-                    date_params,
-                )
-                cols = [column[0] for column in cur.description]
-                proposer_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-                if proposer_rows:
-                    traded = [row for row in proposer_rows if row["n_trades"]]
-                    wins = [row for row in traded if float(row["net_rs"] or 0) > 0]
-                    proposer_stats = {
-                        "days": len(proposer_rows),
-                        "traded_days": len(traded),
-                        "win_days": len(wins),
-                        "win_pct": round(100 * len(wins) / max(len(traded), 1), 1),
-                        "trades": sum(int(row["n_trades"] or 0) for row in proposer_rows),
-                        "gross_total": round(sum(
-                            float(row["gross_rs"] or 0) for row in proposer_rows), 2),
-                        "charges_total": round(sum(
-                            float(row["charges_rs"] or 0) for row in proposer_rows), 2),
-                        "net_total": round(sum(
-                            float(row["net_rs"] or 0) for row in proposer_rows), 2),
-                        "gross_ltp_total": round(sum(
-                            float(row["gross_ltp_rs"] or 0) for row in proposer_rows), 2),
-                        "target_days": sum(
-                            1 for row in proposer_rows if row["day_done_by_target"]),
-                        "first_date": proposer_rows[-1]["trade_date"],
-                        "last_date": proposer_rows[0]["trade_date"],
-                        "latest": proposer_rows[0],
-                    }
-                    trade_cur = conn.execute(
-                        "SELECT seq,signal,side,strike,tradingsymbol,expiry_code,entry_ts,"
-                        "exit_ts,entry_spot,exit_spot,rsi3,entry_ask,exit_bid,entry_ltp,"
-                        "exit_ltp,option_pnl_pts,gross_rs,charges_rs,net_rs,gross_ltp_rs,"
-                        "quote_status,exit_rule FROM proposer_trades WHERE trade_date=? "
-                        "ORDER BY seq",
-                        (proposer_rows[0]["trade_date"],),
-                    )
-                    trade_cols = [column[0] for column in trade_cur.description]
-                    proposer_trades = [
-                        dict(zip(trade_cols, row)) for row in trade_cur.fetchall()
-                    ]
-            except Exception as exc:
-                if "no such table" not in str(exc):
-                    proposer_stats = {"error": str(exc)}
-
         if active_live_tab == "crude_macd_st":
             try:
                 cur = conn.execute(
@@ -910,18 +863,10 @@ def live_strategy():
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
         try:
-            sx_inverted = active_live_tab == "sensex_alpha_inverted"
-            # Names interchanged per user request: each tab reads the OTHER
-            # table, so "Sensex_alpha" now shows the formerly-mislabeled inverted
-            # data and "Sensex_alpha inverted" shows the normal book.
-            sx_daily_table = (
-                "sensex_alpha_daily" if sx_inverted
-                else "sensex_alpha_inverted_daily"
-            )
-            sx_trades_table = (
-                "sensex_alpha_trades" if sx_inverted
-                else "sensex_alpha_inverted_trades"
-            )
+            # The "Sensex_alpha" tab shows the inverted-execution book (tab names
+            # were interchanged on request); the non-inverted book is retired.
+            sx_daily_table = "sensex_alpha_inverted_daily"
+            sx_trades_table = "sensex_alpha_inverted_trades"
             sx_cur = conn.execute(
                 "SELECT trade_date,status,prev_close,range_lower,range_upper,latest_mark,"
                 "latest_spot,latest_alpha,position_side,n_trades,spot_pnl_pts,"
@@ -979,73 +924,12 @@ def live_strategy():
                     dict(zip(sx_trade_cols, row)) for row in sx_trade_cur.fetchall()
                 ]
         except Exception as exc:
-            if active_live_tab in {
-                "sensex_alpha", "sensex_alpha_inverted"
-            } and "no such table" not in str(exc):
+            if active_live_tab == "sensex_alpha" and "no such table" not in str(exc):
                 sensex_stats = {"error": str(exc)}
 
-        # Same v2.11 NIFTY signals, separately executed in SENSEX ATM options.
-        try:
-            sv_inverted = active_live_tab == "sensex_v211_inverted"
-            sv_daily_table = (
-                "sensex_v211_inverted_daily" if sv_inverted
-                else "sensex_v211_daily"
-            )
-            sv_trades_table = (
-                "sensex_v211_inverted_trades" if sv_inverted
-                else "sensex_v211_trades"
-            )
-            sv_cur = conn.execute(
-                "SELECT trade_date,status,tier,gap_dir,expiry_code,n_trades,"
-                "option_gross_rs,option_priced_trades,option_unavailable_trades "
-                f"FROM {sv_daily_table} WHERE 1=1 {date_clause} "
-                "ORDER BY trade_date DESC LIMIT 120",
-                date_params,
-            )
-            sv_cols = [column[0] for column in sv_cur.description]
-            sensex_v211_rows = [dict(zip(sv_cols, row)) for row in sv_cur.fetchall()]
-            _attach_daily_trade_sides(conn, sensex_v211_rows, sv_trades_table)
-            if sensex_v211_rows:
-                latest_sv = sensex_v211_rows[0]
-                sensex_v211_stats = {
-                    "days": len(sensex_v211_rows),
-                    "trades": sum(
-                        int(row["n_trades"] or 0) for row in sensex_v211_rows
-                    ),
-                    "option_total": round(
-                        sum(
-                            float(row["option_gross_rs"] or 0)
-                            for row in sensex_v211_rows
-                        ),
-                        2,
-                    ),
-                    "priced_trades": sum(
-                        int(row["option_priced_trades"] or 0)
-                        for row in sensex_v211_rows
-                    ),
-                    "unavailable_trades": sum(
-                        int(row["option_unavailable_trades"] or 0)
-                        for row in sensex_v211_rows
-                    ),
-                    "latest": latest_sv,
-                }
-                sv_trade_cur = conn.execute(
-                    "SELECT seq,status,side,strike,tradingsymbol,expiry_code,entry_ts,"
-                    "exit_ts,entry_sensex,exit_sensex,entry_bid,entry_ask,exit_bid,"
-                    "exit_ask,option_pnl_pts,option_gross_rs,quote_status,entry_rule,"
-                    f"exit_reason FROM {sv_trades_table} "
-                    "WHERE trade_date=? ORDER BY seq",
-                    (latest_sv["trade_date"],),
-                )
-                sv_trade_cols = [column[0] for column in sv_trade_cur.description]
-                sensex_v211_trades = [
-                    dict(zip(sv_trade_cols, row)) for row in sv_trade_cur.fetchall()
-                ]
-        except Exception as exc:
-            if active_live_tab in {
-                "sensex_v211", "sensex_v211_inverted"
-            } and "no such table" not in str(exc):
-                sensex_v211_stats = {"error": str(exc)}
+        if active_live_tab == "overview":
+            from labs.services.book_overview import build_overview
+            overview_cards = build_overview(conn)
 
         # ── Basket replay (v2.11 signals re-priced as multi-leg structures) ──
         try:
@@ -1112,12 +996,11 @@ def live_strategy():
         comparison_variant_totals=comparison_variant_totals,
         comparison_by_date=comparison_by_date,
         active_live_tab=active_live_tab,
+        live_tabs=LIVE_TABS,
+        overview_cards=overview_cards,
         sensex_rows=sensex_rows,
         sensex_trades=sensex_trades,
         sensex_stats=sensex_stats,
-        sensex_v211_rows=sensex_v211_rows,
-        sensex_v211_trades=sensex_v211_trades,
-        sensex_v211_stats=sensex_v211_stats,
         overlay_rows=overlay_rows,
         overlay_trades=overlay_trades,
         overlay_stats=overlay_stats,
@@ -1125,9 +1008,6 @@ def live_strategy():
         theta_rows=theta_rows,
         theta_trades=theta_trades,
         theta_stats=theta_stats,
-        proposer_rows=proposer_rows,
-        proposer_trades=proposer_trades,
-        proposer_stats=proposer_stats,
         crude_rows=crude_rows,
         crude_trades=crude_trades,
         crude_stats=crude_stats,
@@ -1163,26 +1043,6 @@ def theta_straddle_backfill():
 def theta_iron_fly_backfill():
     """Backfill bounded batches of paper-only defined-risk iron-fly sessions."""
     from labs.engine.theta_iron_fly_backfill import DEFAULT_START, run_backfill
-    try:
-        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
-    except (TypeError, ValueError):
-        limit = 5
-    try:
-        result = run_backfill(
-            start_date=request.args.get("start", DEFAULT_START),
-            end_date=request.args.get("end"),
-            limit=limit,
-            rebuild=request.args.get("rebuild", "0") == "1",
-        )
-        return jsonify(result)
-    except Exception as exc:
-        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
-
-
-@labs_bp.route("/api/proposer_sensex/backfill", methods=["POST"])
-def proposer_sensex_backfill():
-    """Backfill bounded batches of paper-only SENSEX Proposer sessions."""
-    from labs.engine.proposer_sensex_backfill import DEFAULT_START, run_backfill
     try:
         limit = min(max(int(request.args.get("limit", 5)), 1), 20)
     except (TypeError, ValueError):
@@ -1276,37 +1136,6 @@ def alpha_cpr_backfill():
 def alpha_v211b_backfill():
     """Replay bounded v2.11 history with PC50 CALL entries suppressed."""
     from labs.engine.alpha_v211b_backfill import DEFAULT_START, run_backfill
-    try:
-        limit = min(int(request.args.get("limit", 5)), 10)
-    except (TypeError, ValueError):
-        limit = 5
-    start = request.args.get("start") or DEFAULT_START
-    end = request.args.get("end") or None
-    try:
-        result = run_backfill(
-            start_date=start,
-            end_date=end,
-            limit=limit,
-            rebuild=request.args.get("rebuild") == "1",
-        )
-        return jsonify({
-            "ok": True,
-            "done": len(result["done"]),
-            "dates": result["done"],
-            "remaining": result["remaining"],
-            "errors": result["errors"],
-        })
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@labs_bp.route("/api/alpha_v213/backfill", methods=["POST"])
-def alpha_v213_backfill():
-    """Replay up to `limit` pending Alpha v2.13 days (default from 2026-06-01)
-    into alpha_v213_daily/_trades, reusing v2.12's per-day champion ranges.
-    Bounded per call so a PA web request never runs long; keep calling while
-    `remaining` > 0. Paper data only — no orders."""
-    from labs.engine.alpha_v213_backfill import DEFAULT_START, run_backfill
     try:
         limit = min(int(request.args.get("limit", 5)), 10)
     except (TypeError, ValueError):

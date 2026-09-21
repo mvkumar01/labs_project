@@ -1,8 +1,10 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Live administration</title><link rel="stylesheet" href="/static/live.css">
-<link rel="stylesheet" href="/static/live_admin.css"></head>
-<body><div class="page"><header class="live-topbar"><span class="live-logo">Live administration</span><nav><a href="/live/">Live status</a><a href="#routes">Routes</a><a href="#accounts">Accounts</a><a href="#audit">Audit</a></nav></header><main>
+<link rel="stylesheet" href="/static/live_admin.css">
+  {{ theme_head() }}</head>
+<body><div class="page"><header class="live-topbar"><span class="live-logo">Live administration</span>{{ live_nav('admin', true) }}</header><main>
 <h1>Accounts and order routing</h1>
 <p class="sub">Assign each broker connection a verified proxy route. Save broker allowlist changes in Kite or SmartAPI first. Proxy URLs are encrypted and write-only.</p>
 {% if error %}<p class="reconcile-warning" role="alert">{{ error }}</p>{% endif %}

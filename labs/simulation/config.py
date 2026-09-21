@@ -7,7 +7,8 @@ from config.labs_config import BASE_DIR
 SIMULATION_DATA_DIR = BASE_DIR / "data" / "simulation" / "1min"
 SIMULATION_STATE_DIR = BASE_DIR / "storage" / "simulation"
 SIMULATION_DB_PATH = BASE_DIR / "storage" / "simulation.db"
-ALPHAIMB_KITE_TOKEN = Path.home() / "alphaIMB" / "zerodha_access_token.json"
+# Labs' own daily Kite token (auth/generate_token.py), never alphaIMB's.
+LABS_KITE_TOKEN = BASE_DIR / "config" / "zerodha_token.json"
 
 STARTING_CAPITAL = 1_000_000.0
 SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h")

@@ -149,8 +149,8 @@ def test_tracker_persists_separate_replay_b_ledger(monkeypatch) -> None:
     html = app.test_client().get(
         "/labs/live?tab=alpha_v211b"
     ).get_data(as_text=True)
-    assert "Alpha 2.11 - champion replay (B)" in html
-    assert "PC50 CALL decisions do not enter a trade" in html
+    assert "Alpha 2.11 replay (B)" in html
+    assert "PC50 CALL decisions" not in html        # rules are not published
     assert "PUT" in html
 
 
@@ -182,10 +182,10 @@ def test_registered_as_live_tab_and_paper_runner() -> None:
     template = (ROOT / "templates" / "live_strategy.html").read_text(
         encoding="utf-8"
     )
-    assert '"alpha_v211b"' in inspect.getsource(__import__("labs.ui.routes", fromlist=["live_strategy"]).live_strategy)
+    from labs.ui.routes import LIVE_TABS
+    assert LIVE_TABS["alpha_v211b"] == "Alpha 2.11 replay (B)"
     assert "alpha_v211b_backfill" in routes_source
-    assert "tab='alpha_v211b'" in template
-    assert "PC50 CALL decisions do not enter a trade" in template
+    assert "'alpha_v211b'" in template
     for runner in ("pa_paper_tracker.py", "pa_paper_tracker_loop.py"):
         source = (ROOT / runner).read_text(encoding="utf-8")
         assert "alpha_v211b_tracker" in source

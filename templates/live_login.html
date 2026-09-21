@@ -1,3 +1,4 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Live — Login</title>
   <link rel="stylesheet" href="/static/live.css">
+  {{ theme_head() }}
 </head>
 <body>
 <div class="login-wrap">
@@ -33,5 +35,6 @@
     </p>
   </div>
 </div>
+<div style="position:fixed;top:12px;right:12px">{{ theme_toggle() }}</div>
 </body>
 </html>

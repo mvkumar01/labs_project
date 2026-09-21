@@ -126,8 +126,8 @@ def test_ui_and_paper_loop_are_wired():
     routes = (root / "labs" / "ui" / "routes.py").read_text(encoding="utf-8")
     loop = (root / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
 
-    assert "09:20 Theta Straddle" in template
-    assert "Estimated capital" in template
+    assert '"theta_straddle": "09:20 Theta Straddle"' in routes
+    assert "active_live_tab == 'theta_straddle'" in template
     assert "/api/theta_straddle/backfill" in routes
     assert "run_theta_straddle_day" in loop
 

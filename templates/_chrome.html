@@ -1,0 +1,72 @@
+{# Shared page chrome: theme tokens, the theme toggle and the navigation used by every
+   Labs and Live page, so link names and order are identical everywhere. #}
+
+{% macro theme_head() -%}
+<link rel="stylesheet" href="/static/theme.css">
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('labs-theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+    } catch (e) {}
+  })();
+  // Canvas charts cannot read CSS variables: resolve a palette colour for the current theme.
+  function labsColor(hex) {
+    var v = getComputedStyle(document.documentElement)
+      .getPropertyValue('--c-' + hex.replace('#', '').toLowerCase()).trim();
+    return v || hex;
+  }
+  function labsToggleTheme() {
+    var root = document.documentElement;
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('labs-theme', next); } catch (e) {}
+    labsThemeLabel();
+    window.dispatchEvent(new CustomEvent('labs-theme', {detail: next}));
+    // Pages whose charts are drawn once redraw by reloading; live pages re-colour in place.
+    if (!window.labsThemeLive && document.querySelector('canvas')) location.reload();
+  }
+  function labsThemeLabel() {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    document.querySelectorAll('.theme-toggle').forEach(function (b) {
+      b.textContent = light ? '☾ Dark' : '☀ Light';
+    });
+  }
+  document.addEventListener('DOMContentLoaded', labsThemeLabel);
+</script>
+{%- endmacro %}
+
+{% macro theme_toggle() -%}
+<button type="button" class="theme-toggle" onclick="labsToggleTheme()" title="Switch between dark and light theme">&#9728; Light</button>
+{%- endmacro %}
+
+
+
+{% macro labs_nav(active='') -%}
+{% set links = [
+  ('dashboard', '/labs', 'Dashboard'),
+  ('alpha', '/labs/live', 'Alpha Labs'),
+  ('backtest', '/labs/backtest', 'Backtest'),
+  ('simulation', '/labs/simulation', 'Live Simulation'),
+  ('calibration', '/labs/calibration', 'Calibration'),
+  ('live', '/live/login', 'Live Trading'),
+] %}
+<nav>
+  {% for key, href, label in links %}
+  <a href="{{ href }}"{% if key == active %} class="active"{% endif %}>{{ label }}</a>
+  {% endfor %}
+  <a href="/labs/new" class="btn-primary">+ New Bot</a>
+  {{ theme_toggle() }}
+</nav>
+{%- endmacro %}
+
+{% macro live_nav(active='', is_admin=false) -%}
+<nav>
+  <a href="/live/"{% if active == 'status' %} class="active"{% endif %}>Status</a>
+  <a href="/live/configure"{% if active == 'configure' %} class="active"{% endif %}>Configure</a>
+  <a href="/live/connect"{% if active == 'broker' %} class="active"{% endif %}>Broker</a>
+  {% if is_admin %}<a href="/live/admin"{% if active == 'admin' %} class="active"{% endif %}>Administration</a>{% endif %}
+  <a href="/labs">Labs</a>
+  {{ theme_toggle() }}
+</nav>
+{%- endmacro %}

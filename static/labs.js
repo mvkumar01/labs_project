@@ -253,7 +253,7 @@ async function loadEquityChart() {
   }
 
   if (!data.length) {
-    canvas.parentElement.innerHTML += '<p style="color:#64748b;font-size:13px">No trades yet.</p>';
+    canvas.parentElement.innerHTML += '<p style="color:var(--c-64748b);font-size:13px">No trades yet.</p>';
     canvas.style.display = "none";
     return;
   }
@@ -261,7 +261,7 @@ async function loadEquityChart() {
   const labels = data.map(d => d.date);
   const values = data.map(d => d.cumulative_pnl_rs);
   const lastVal = values[values.length - 1];
-  const lineColor = lastVal >= 0 ? "#4ade80" : "#f87171";
+  const lineColor = lastVal >= 0 ? labsColor("#4ade80") : labsColor("#f87171");
 
   new Chart(canvas, {
     type: "line",
@@ -290,15 +290,15 @@ async function loadEquityChart() {
       },
       scales: {
         x: {
-          ticks: { color: "#64748b", maxTicksLimit: 12 },
-          grid:  { color: "#1e2235" },
+          ticks: { color: labsColor("#64748b"), maxTicksLimit: 12 },
+          grid:  { color: labsColor("#1e2235") },
         },
         y: {
           ticks: {
-            color: "#64748b",
+            color: labsColor("#64748b"),
             callback: v => "₹" + v.toLocaleString("en-IN", { maximumFractionDigits: 0 }),
           },
-          grid: { color: "#1e2235" },
+          grid: { color: labsColor("#1e2235") },
         },
       },
     },
@@ -321,13 +321,13 @@ async function loadTradeLog() {
     const res = await fetch(`/labs/api/${BOT_ID}/trades?limit=${tradeLogLimit}`);
     trades = await res.json();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="11" style="color:#f87171">Failed to load.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="color:var(--c-f87171)">Failed to load.</td></tr>';
     if (btn) btn.disabled = false;
     return;
   }
 
   if (!trades.length) {
-    tbody.innerHTML = '<tr><td colspan="11" style="color:#64748b">No trades yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="color:var(--c-64748b)">No trades yet.</td></tr>';
     if (btn) btn.style.display = "none";
     return;
   }
@@ -349,7 +349,7 @@ async function loadTradeLog() {
         <td>${t.exit_ltp.toFixed(2)}</td>
         <td class="${cls}">${pnlPts > 0 ? "+" : ""}${pnlPts.toFixed(1)}</td>
         <td>${grossRs > 0 ? "+" : ""}${grossRs.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
-        <td style="color:#94a3b8">−${charges.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
+        <td style="color:var(--c-94a3b8)">−${charges.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
         <td class="${cls}">₹${netRs > 0 ? "+" : ""}${netRs.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</td>
         <td>${t.exit_reason}</td>
       <td>${t.holding_mins}</td>
@@ -381,19 +381,19 @@ async function loadSignalLog() {
     const res = await fetch(`/labs/api/${BOT_ID}/signals?limit=${signalLogLimit}`);
     signals = await res.json();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:#f87171">Failed to load.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--c-f87171)">Failed to load.</td></tr>';
     if (btn) btn.disabled = false;
     return;
   }
 
   if (!signals.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:#64748b">No signals yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--c-64748b)">No signals yet.</td></tr>';
     if (btn) btn.style.display = "none";
     return;
   }
 
   tbody.innerHTML = signals.map(s => {
-    const actedLabel = s.acted ? '<span class="badge badge-active">Yes</span>' : '<span style="color:#64748b">No</span>';
+    const actedLabel = s.acted ? '<span class="badge badge-active">Yes</span>' : '<span style="color:var(--c-64748b)">No</span>';
     const typeColor  = s.signal_type === "CE" ? "green" : (s.signal_type === "PE" ? "red" : "");
     return `
       <tr>
@@ -402,7 +402,7 @@ async function loadSignalLog() {
         <td>${parseFloat(s.bar_close).toFixed(0)}</td>
         <td>${s.rsi !== null ? parseFloat(s.rsi).toFixed(1) : "—"}</td>
         <td>${actedLabel}</td>
-      <td style="color:#64748b">${s.skip_reason || "—"}</td>
+      <td style="color:var(--c-64748b)">${s.skip_reason || "—"}</td>
       </tr>`;
   }).join("");
 
@@ -451,13 +451,13 @@ async function loadBacktestRanges() {
     const res = await fetch("/labs/api/backtest/data-ranges");
     backtestRanges = await res.json();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:#f87171">Failed to scan data.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--c-f87171)">Failed to scan data.</td></tr>';
     return;
   }
 
   const rows = Object.entries(backtestRanges.underlyings || {});
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:#64748b">No market data found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--c-64748b)">No market data found.</td></tr>';
     return;
   }
 
@@ -547,7 +547,7 @@ function renderBacktestResults(result) {
         <td>${_money(d.gross_pnl)}</td><td>${_money(d.charges)}</td>
         <td class="${d.net_pnl > 0 ? "green" : (d.net_pnl < 0 ? "red" : "")}">${_money(d.net_pnl)}</td>
       </tr>
-    `).join("") : '<tr><td colspan="5" style="color:#64748b">No day-wise P&L.</td></tr>';
+    `).join("") : '<tr><td colspan="5" style="color:var(--c-64748b)">No day-wise P&L.</td></tr>';
   }
 
   const skippedBody = document.getElementById("backtestSkippedBody");
@@ -555,7 +555,7 @@ function renderBacktestResults(result) {
     const rows = _groupSkippedReasons(result.skipped_days || []);
     skippedBody.innerHTML = rows.length ? rows.map(r => `
       <tr><td>${r.date || ""}</td><td>${r.reason || ""}</td><td>${r.detail || ""}</td><td>${r.count}</td></tr>
-    `).join("") : '<tr><td colspan="4" style="color:#64748b">No skipped days.</td></tr>';
+    `).join("") : '<tr><td colspan="4" style="color:var(--c-64748b)">No skipped days.</td></tr>';
   }
 
   const tradeBody = document.getElementById("backtestTradeBody");
@@ -574,7 +574,7 @@ function renderBacktestResults(result) {
           <td>${_money(t.pnl_rs)}</td><td>${_money(t.charges)}</td>
           <td class="${cls}">${_money(net)}</td><td>${t.exit_reason}</td><td>${t.holding_mins}</td>
         </tr>`;
-    }).join("") : '<tr><td colspan="14" style="color:#64748b">No trades generated.</td></tr>';
+    }).join("") : '<tr><td colspan="14" style="color:var(--c-64748b)">No trades generated.</td></tr>';
   }
 }
 

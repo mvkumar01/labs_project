@@ -14,7 +14,7 @@ def test_v212_live_view_is_not_frozen_at_june() -> None:
     # Assert the membership, not the literal formatting of the set, so adding
     # another overlay book (e.g. alpha_cpr) cannot fail this guard spuriously.
     assert "overlay_prefix = active_live_tab" in routes
-    for tab in ('"alpha_v211a"', '"alpha_v212"', '"alpha_v213"'):
+    for tab in ('"alpha_v211b"', '"alpha_v212"', '"alpha_cpr"'):
         assert tab in routes, tab
     assert 'f"FROM {overlay_prefix}_daily WHERE trade_date >= \'2026-06-01\' "' in routes
     assert "date_clause" in routes
@@ -22,9 +22,8 @@ def test_v212_live_view_is_not_frozen_at_june() -> None:
     assert 'name="date_to"' in template
     assert "Summary and history use this range" in template
     assert "df-from" not in template
-    assert "tab='alpha_v213'" in template
-    assert "tab='alpha_v211a'" in template
-    assert "Alpha v2.11A" in template
+    assert "live_tabs.items()" in template
+    assert "Alpha v2.11A" not in template
     assert "Champion 2" not in template
     assert "trade_date < '2026-07-01'" not in routes
     assert "June coverage" not in template

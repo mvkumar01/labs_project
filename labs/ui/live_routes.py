@@ -46,6 +46,16 @@ log = logging.getLogger("live.routes")
 
 live_bp = Blueprint("live", __name__, url_prefix="/live")
 
+
+@live_bp.context_processor
+def _nav_context():
+    """Every Live page shows the same nav; Administration only for admins."""
+    try:
+        user_id = current_user_id()
+        return {"is_admin": bool(user_id) and cp.is_admin(user_id)}
+    except Exception:                                   # noqa: BLE001 - nav must never 500
+        return {"is_admin": False}
+
 SUPPORTED_BROKERS = {
     "zerodha": {
         "label": "Zerodha Kite Connect",
@@ -525,14 +535,12 @@ STRATEGY_PRESETS = {
     "champion_v213": ("champion_replay", "v2.13"),
 }
 STRATEGY_LABELS = {
-    "legacy_v211":   "Alpha v2.11 — legacy signal engine",
-    "champion_v211": "Alpha v2.11 — champion replay",
-    "champion_v211b": "Alpha 2.11 - champion replay (B)",
-    "champion_v212": "Alpha v2.12 — champion + entry-spot recovery",
-    "champion_v212_close_confirmed": (
-        "Alpha v2.12 close-confirmed — exit only on adverse 1m close"
-    ),
-    "champion_v213": "Alpha v2.13 — v2.11 risk authority + recovery overlay",
+    "legacy_v211":   "Alpha v2.11 (legacy)",
+    "champion_v211": "Alpha v2.11",
+    "champion_v211b": "Alpha 2.11 replay (B)",
+    "champion_v212": "Alpha v2.12",
+    "champion_v212_close_confirmed": "Alpha v2.12 (close-confirmed)",
+    "champion_v213": "Alpha v2.13",
 }
 
 

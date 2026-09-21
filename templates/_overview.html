@@ -1,0 +1,83 @@
+{# Overview: one card per running book (data from labs/services/book_overview.py). #}
+{% macro money(v, signed=true) -%}
+  {%- if v is none -%}&mdash;{%- else -%}
+  {{ ('+' if signed and v > 0 else ('-' if v < 0 else '')) }}&#8377;{{ "{:,.0f}".format(v|abs) }}
+  {%- endif -%}
+{%- endmacro %}
+{% set live_cards = overview_cards | rejectattr('error', 'defined') | list %}
+{% set today_total = live_cards | sum(attribute='today_net') %}
+{% set grand_total = live_cards | sum(attribute='total_net') %}
+
+<style>
+  .ov-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:4px 0 18px}
+  .ov-head h1{margin:0}
+  .ov-kpis{display:flex;gap:28px;flex-wrap:wrap}
+  .ov-kpi .k{font-size:12px;color:var(--c-94a3b8);text-transform:uppercase;letter-spacing:.04em}
+  .ov-kpi .v{font-size:22px;font-weight:600;margin-top:2px}
+  .ov-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:18px}
+  .ov-card{background:var(--c-1a1d27);border:1px solid var(--c-2d3148);border-radius:14px;padding:22px 24px;display:flex;flex-direction:column}
+  .ov-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+  .ov-title{font-size:18px;font-weight:600;color:var(--c-e2e8f0)}
+  .ov-meta{color:var(--c-94a3b8);font-size:13px;margin-top:4px}
+  .ov-pill{font-size:13px;font-weight:600;padding:3px 12px;border-radius:6px;white-space:nowrap}
+  .ov-pill.run{background:var(--c-14532d);color:var(--c-4ade80)}
+  .ov-pill.wait{background:var(--c-1e2235);color:var(--c-94a3b8)}
+  .ov-pill.pos{background:var(--c-1e2235);color:var(--c-e2e8f0);font-weight:600}
+  .ov-pill.pos.open{background:var(--c-1e3a5f);color:var(--c-93c5fd)}
+  .ov-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;font-size:15px}
+  .ov-row .l{color:var(--c-cbd5e1)}
+  .ov-row .r{font-weight:600;font-size:17px}
+  .ov-row .r small{font-weight:400;color:var(--c-94a3b8);font-size:13px}
+  .ov-sep{border-top:1px solid var(--c-2d3148);margin:10px 0 6px}
+  .ov-btn{display:block;text-align:center;margin-top:16px;padding:10px;border:1px solid var(--c-2d3148);border-radius:8px;color:var(--c-e2e8f0);font-weight:600;text-decoration:none;background:var(--c-0f1117)}
+  .ov-btn:hover{border-color:var(--c-64748b);text-decoration:none}
+  .ov-pos{color:var(--c-4ade80)}.ov-neg{color:var(--c-f87171)}
+  .ov-foot{color:var(--c-94a3b8);font-size:12px;margin-top:18px}
+</style>
+
+<div class="ov-head">
+  <h1>{{ live_tabs[active_live_tab] }}</h1>
+  <div class="ov-kpis">
+    <div class="ov-kpi"><div class="k">Today, all books</div>
+      <div class="v {{ 'ov-pos' if today_total > 0 else ('ov-neg' if today_total < 0 else '') }}">{{ money(today_total) }}</div></div>
+    <div class="ov-kpi"><div class="k">Total P&amp;L, all books</div>
+      <div class="v {{ 'ov-pos' if grand_total > 0 else ('ov-neg' if grand_total < 0 else '') }}">{{ money(grand_total) }}</div></div>
+    <div class="ov-kpi"><div class="k">Books running</div>
+      <div class="v">{{ live_cards | length }}</div></div>
+  </div>
+</div>
+
+<div class="ov-grid">
+{% for c in overview_cards %}
+  <div class="ov-card">
+    <div class="ov-top">
+      <div>
+        <div class="ov-title">{{ c.label }}</div>
+        <div class="ov-meta">{{ c.size }} &middot; {{ c.instrument }}</div>
+      </div>
+      <span class="ov-pill {{ 'run' if c.status == 'Running' else 'wait' }}">{{ c.status }}</span>
+    </div>
+
+    {% if c.error is defined %}
+      <div class="ov-row"><span class="l">No sessions recorded yet</span></div>
+    {% else %}
+    <div style="margin-top:14px">
+      <div class="ov-row"><span class="l">Today</span>
+        <span class="r {{ 'ov-pos' if c.today_net > 0 else ('ov-neg' if c.today_net < 0 else '') }}">{{ money(c.today_net) }}</span></div>
+      <div class="ov-row"><span class="l">Position</span>
+        <span class="ov-pill pos {{ 'open' if c.position != 'Flat' else '' }}">{{ c.position }}{% if c.open_net %} &middot; {{ money(c.open_net) }}{% endif %}</span></div>
+      <div class="ov-row"><span class="l">Win days</span>
+        <span class="r">{% if c.win_pct is not none %}{{ c.win_pct }}% <small>{{ c.win_days }}/{{ c.active_days }}</small>{% else %}&mdash;{% endif %}</span></div>
+    </div>
+    <div class="ov-sep"></div>
+    <div class="ov-row"><span class="l" title="Largest single commitment: premium paid, margin or defined-risk capital">Capital deployed</span>
+      <span class="r">{{ money(c.capital, false) }}</span></div>
+    <div class="ov-row"><span class="l">Total P&amp;L</span>
+      <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net) }}{% if c.return_pct is not none %} ({{ "%+.1f"|format(c.return_pct) }}%){% endif %}</span></div>
+    <div class="ov-meta" style="margin-top:2px">{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
+    {% endif %}
+    <a class="ov-btn" href="{{ url_for('labs.live_strategy', tab=c.key) }}">View Details</a>
+  </div>
+{% endfor %}
+</div>
+<p class="ov-foot">Net of charges. Capital deployed is each book's largest single commitment (premium paid, margin, or defined-risk capital); the percentage is total P&amp;L on that capital.</p>

@@ -24,6 +24,8 @@ def _render(**ctx):
         overlay_rows=[], overlay_trades=[], overlay_stats={},
         overlay_version="v2.12",
         date_from=None, date_to=None,
+        live_tabs=__import__("labs.ui.routes", fromlist=["LIVE_TABS"]).LIVE_TABS,
+        overview_cards=[],
     )
     base.update(ctx)
     with app.test_request_context():
@@ -32,7 +34,7 @@ def _render(**ctx):
 
 def test_baskets_tab_renders_empty_state():
     html = _render()
-    assert "v2.11 Baskets — signals as multi-leg structures" in html
+    assert "<h1>v2.11 Baskets</h1>" in html
     assert "No basket rows yet" in html
 
 
@@ -60,5 +62,5 @@ def test_baskets_tab_renders_populated():
 
 def test_routes_whitelist_baskets_tab():
     routes = (ROOT / "labs" / "ui" / "routes.py").read_text(encoding="utf-8")
-    assert '"baskets",' in routes
+    assert '"baskets": "v2.11 Baskets"' in routes
     assert "/api/baskets/refresh" in routes

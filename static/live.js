@@ -126,7 +126,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!orders || !orders.length) {
-      tb.innerHTML = '<tr><td colspan="7" style="color:#64748b">No orders yet.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="7" style="color:var(--c-64748b)">No orders yet.</td></tr>';
       return;
     }
     orders.forEach(function (o) {
@@ -156,7 +156,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!trades || !trades.length) {
-      tb.innerHTML = '<tr><td colspan="12" style="color:#64748b">No completed trades for this date.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="12" style="color:var(--c-64748b)">No completed trades for this date.</td></tr>';
       return;
     }
     trades.forEach(function (t) {

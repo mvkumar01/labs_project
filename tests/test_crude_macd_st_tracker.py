@@ -268,7 +268,7 @@ def test_dashboard_renders_the_crude_tab(monkeypatch):
     app.register_blueprint(labs_bp)
     monkeypatch.setattr("storage.db.get_conn", lambda: conn)
     html = app.test_client().get("/labs/live?tab=crude_macd_st").get_data(as_text=True)
-    assert "CRUDEOIL MACD + Supertrend flip" in html
+    assert "<h1>Crude MACD/ST</h1>" in html
     assert "&#8377;1,651.10" in html and "target" in html
     assert "Capital deployed" in html
 

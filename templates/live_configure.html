@@ -1,3 +1,4 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,16 +7,13 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Live — Configure</title>
   <link rel="stylesheet" href="/static/live.css">
+  {{ theme_head() }}
 </head>
 <body>
 <div class="page">
   <header class="live-topbar">
-    <span class="live-logo">BOTS LIVE <span class="tag">paper-shell, real-money stack</span></span>
-    <nav>
-      <a href="/live/">Status</a>
-      <a href="/live/connect">Broker</a>
-      <a href="/labs">Paper Labs</a>
-    </nav>
+    <span class="live-logo">BOTS LIVE</span>
+    {{ live_nav('configure', is_admin|default(false)) }}
   </header>
   <main>
     <h1>Configure</h1>
@@ -55,7 +53,7 @@
             <option value="{{ key }}" {{ 'selected' if strategy == key else '' }}>{{ label }}</option>
             {% endfor %}
           </select>
-          <div class="hint">Alpha 2.11 champion replay (B) follows v2.11 but skips CALL entries on PC50 days. v2.12 records every entry-anchor touch from completed 1-minute candles. v2.12 close-confirmed exits only when that completed candle closes on the adverse side; a touch that closes favourable remains HOLD. v2.13 uses its buffered tick stop and v2.11 risk authority. Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
+          <div class="hint">Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
         </div>
 
         <div class="field">

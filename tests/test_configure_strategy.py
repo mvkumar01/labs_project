@@ -85,9 +85,9 @@ def test_configure_renders_one_strategy_select_without_bot_variant(client):
     assert 'name="exec_mode"' not in page
     assert 'name="om_r2_enabled"' not in page
     assert "Alpha v2.11" in page
-    assert "Alpha 2.11 - champion replay (B)" in page
+    assert "Alpha 2.11 replay (B)" in page
     assert "Alpha v2.12" in page
-    assert "Alpha v2.12 close-confirmed" in page
+    assert "Alpha v2.12 (close-confirmed)" in page
     assert "Alpha v2.13" in page
     assert "Switch only while FLAT" in page
 

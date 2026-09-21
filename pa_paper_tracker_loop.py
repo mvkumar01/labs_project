@@ -34,35 +34,23 @@ def _in_mcx_session(now: datetime) -> bool:
 
 def main() -> None:
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
-    from labs.engine.alpha_v211a_tracker import run_day as run_v211a_day
     from labs.engine.alpha_v211b_tracker import run_day as run_v211b_day
     from labs.engine.alpha_v212_tracker import run_day as run_v212_day
-    from labs.engine.alpha_v213_tracker import run_day as run_v213_day
-    from labs.engine.sensex_alpha_tracker import run_day as run_sensex_day
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
-    from labs.engine.sensex_v211_tracker import run_day as run_sensex_v211_day
-    from labs.engine.sensex_v211_inverted_tracker import run_day as run_sensex_v211_inverted_day
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
-    from labs.engine.proposer_sensex_tracker import run_day as run_proposer_sensex_day
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
         "nifty": None,
-        "alpha_v211a": None,
         "alpha_v211b": None,
         "alpha_v212": None,
-        "alpha_v213": None,
-        "sensex_alpha": None,
         "sensex_alpha_inverted": None,
-        "sensex_v211": None,
-        "sensex_v211_inverted": None,
         "alpha_cpr": None,
         "theta_straddle": None,
         "theta_iron_fly": None,
-        "proposer_sensex": None,
         "crude_macd_st": None,
     }
     while True:
@@ -70,18 +58,12 @@ def main() -> None:
         if _in_session(now):
             for name, runner in (
                 ("nifty", run_nifty_day),
-                ("alpha_v211a", run_v211a_day),
                 ("alpha_v211b", run_v211b_day),
                 ("alpha_v212", run_v212_day),
-                ("alpha_v213", run_v213_day),
-                ("sensex_alpha", run_sensex_day),
                 ("sensex_alpha_inverted", run_sensex_inverted_day),
-                ("sensex_v211", run_sensex_v211_day),
-                ("sensex_v211_inverted", run_sensex_v211_inverted_day),
                 ("alpha_cpr", run_cpr_day),
                 ("theta_straddle", run_theta_straddle_day),
                 ("theta_iron_fly", run_theta_iron_fly_day),
-                ("proposer_sensex", run_proposer_sensex_day),
             ):
                 try:
                     res = runner(now.date().isoformat())

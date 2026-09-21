@@ -1,3 +1,4 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -8,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/simulation.css">
+  {{ theme_head() }}
   <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
@@ -15,11 +17,11 @@
   <header class="sim-topbar">
     <a class="sim-brand" href="/labs"><span>LABS</span> REPLAY</a>
     <div class="market-state"><i></i><span id="replay-status">READY</span></div>
-    <nav><a href="/labs">Dashboard</a><a href="/labs/backtest">Backtest</a><a href="/labs/live">Alpha Labs</a><a href="/live/login">Live Trading</a></nav>
+    {{ labs_nav('simulation') }}
   </header>
 
   <section class="sim-commandbar">
-    <label><span>Mode</span><select id="simulation-mode"><option value="HISTORICAL">Historical Replay</option><option value="LIVE_PAPER">Live Paper</option></select></label>
+    <label><span>Mode</span><select id="simulation-mode"><option value="HISTORICAL">Historical Replay</option><option value="LIVE_PAPER">Live Market</option></select></label>
     <label class="instrument-search"><span>Instrument</span><select id="instrument"></select></label>
     <label id="date-field"><span>Historical day</span><input id="trade-date" type="date"></label>
     <button id="fetch-data" class="ghost" type="button">Fetch / verify data</button>
@@ -69,7 +71,7 @@
         <details><summary>Execution settings</summary><div class="field-grid"><label>Slippage mode<select id="slippage-mode"><option value="points">Points</option><option value="bps">Basis points</option></select></label><label>Value<input id="slippage-value" type="number" value="0" min="0" step="0.01"></label></div></details>
         <button id="place-order" class="place buy" type="submit">PLACE BUY ORDER</button>
       </form>
-      <p class="ticket-note">Simulation only. Live Paper runs only while this page stays open and awake. No broker order API is called.</p>
+      <p class="ticket-note">Simulation only. Live Market mode runs only while this page stays open and awake. No broker order API is called.</p>
     </aside>
   </main>
 

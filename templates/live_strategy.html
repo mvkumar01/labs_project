@@ -1,66 +1,50 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Live — Alpha v2.11 paper tracker</title>
+  <title>Alpha Labs</title>
   <link rel="stylesheet" href="/static/labs.css">
+  {{ theme_head() }}
   <style>
     .cards{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
-    .card{background:#1b2230;border:1px solid #2b3445;border-radius:10px;padding:12px 16px;min-width:120px}
-    .card .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.04em}
+    .card{background:var(--c-1b2230);border:1px solid var(--c-2b3445);border-radius:10px;padding:12px 16px;min-width:120px}
+    .card .k{font-size:12px;color:var(--c-8a93a6);text-transform:uppercase;letter-spacing:.04em}
     .card .v{font-size:22px;font-weight:600;margin-top:4px}
-    .green{color:#16a34a}.red{color:#dc2626}.muted{color:#8a93a6}.amber{color:#f59e0b}
+    .green{color:var(--c-16a34a)}.red{color:var(--c-dc2626)}.muted{color:var(--c-8a93a6)}.amber{color:var(--c-f59e0b)}
     table.perf{width:100%;border-collapse:collapse;margin-top:8px}
-    table.perf th,table.perf td{padding:6px 10px;border-bottom:1px solid #232b3a;text-align:right;font-size:13px}
+    table.perf th,table.perf td{padding:6px 10px;border-bottom:1px solid var(--c-232b3a);text-align:right;font-size:13px}
     table.perf th:first-child,table.perf td:first-child{text-align:left}
-    .sub{color:#8a93a6;font-size:13px;margin:4px 0 12px}
-    .note{color:#8a93a6;font-size:12px;margin-top:18px;line-height:1.5}
-    canvas{max-width:100%;background:#1b2230;border:1px solid #2b3445;border-radius:10px;margin-top:8px}
+    .sub{color:var(--c-8a93a6);font-size:13px;margin:4px 0 12px}
+    .note{color:var(--c-8a93a6);font-size:12px;margin-top:18px;line-height:1.5}
+    canvas{max-width:100%;background:var(--c-1b2230);border:1px solid var(--c-2b3445);border-radius:10px;margin-top:8px}
     .section-title{margin:28px 0 4px;font-size:15px;font-weight:600}
-    .cmp-note{color:#8a93a6;font-size:12px;margin:6px 0 10px;line-height:1.5}
-    .unavail{color:#8a93a6}
-    .card .sub-k{font-size:11px;color:#8a93a6;margin-top:6px}
-    .live-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 20px;border-bottom:1px solid #2b3445}
-    .live-tabs a{padding:9px 14px;color:#8a93a6;text-decoration:none;border-bottom:2px solid transparent}
-    .live-tabs a.active{color:#f3f4f6;border-bottom-color:#16a34a}
-    .formula{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:#111827;
-      border:1px solid #2b3445;border-radius:8px;padding:10px 12px;font-size:13px;margin:10px 0}
+    .cmp-note{color:var(--c-8a93a6);font-size:12px;margin:6px 0 10px;line-height:1.5}
+    .unavail{color:var(--c-8a93a6)}
+    .card .sub-k{font-size:11px;color:var(--c-8a93a6);margin-top:6px}
+    .live-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 20px;border-bottom:1px solid var(--c-2b3445)}
+    .live-tabs a{padding:9px 14px;color:var(--c-8a93a6);text-decoration:none;border-bottom:2px solid transparent}
+    .live-tabs a.active{color:var(--c-f3f4f6);border-bottom-color:var(--c-16a34a)}
+    .formula{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--c-111827);
+      border:1px solid var(--c-2b3445);border-radius:8px;padding:10px 12px;font-size:13px;margin:10px 0}
   </style>
 </head>
 <body>
 <div class="page">
   <header class="topbar">
     <span class="logo">Labs</span>
-    <nav>
-      <a href="/labs">Dashboard</a>
-      <a href="/live/login">Login</a>
-      <a href="/labs/backtest">Backtest</a>
-      <a href="/labs/live" class="active">Live</a>
-      <a href="/labs/calibration">Calibration</a>
-      <a href="/labs/new" class="btn-primary">+ New Bot</a>
-    </nav>
+    {{ labs_nav('alpha') }}
   </header>
 
   <main>
     <div class="live-tabs">
-      <a href="{{ url_for('labs.live_strategy', tab='nifty', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'nifty' else '' }}">Alpha v2.11</a>
-      <a href="{{ url_for('labs.live_strategy', tab='alpha_v211a', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v211a' else '' }}">Alpha v2.11A</a>
-      <a href="{{ url_for('labs.live_strategy', tab='alpha_v211b', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v211b' else '' }}">Alpha 2.11 replay (B)</a>
-      <a href="{{ url_for('labs.live_strategy', tab='alpha_v212', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v212' else '' }}">Alpha v2.12</a>
-      <a href="{{ url_for('labs.live_strategy', tab='alpha_v213', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_v213' else '' }}">Alpha v2.13</a>
-      <a href="{{ url_for('labs.live_strategy', tab='alpha_cpr', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'alpha_cpr' else '' }}">Alpha CPR</a>
-      <a href="{{ url_for('labs.live_strategy', tab='theta_straddle', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_straddle' else '' }}">09:20 Theta Straddle</a>
-      <a href="{{ url_for('labs.live_strategy', tab='theta_iron_fly', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'theta_iron_fly' else '' }}">09:20 Iron Fly</a>
-      <a href="{{ url_for('labs.live_strategy', tab='proposer_sensex', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'proposer_sensex' else '' }}">Sensex Proposer</a>
-      <a href="{{ url_for('labs.live_strategy', tab='crude_macd_st', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'crude_macd_st' else '' }}">Crude MACD/ST</a>
-      <a href="{{ url_for('labs.live_strategy', tab='baskets', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'baskets' else '' }}">v2.11 Baskets</a>
-      <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha' else '' }}">Sensex_alpha</a>
-      <a href="{{ url_for('labs.live_strategy', tab='sensex_alpha_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_alpha_inverted' else '' }}">Sensex_alpha inverted</a>
-      <a href="{{ url_for('labs.live_strategy', tab='sensex_v211', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_v211' else '' }}">Sensex_v2.11</a>
-      <a href="{{ url_for('labs.live_strategy', tab='sensex_v211_inverted', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'sensex_v211_inverted' else '' }}">Alpha v2.11 inverted</a>
+      {% for key, label in live_tabs.items() %}
+      <a href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == key else '' }}">{{ label }}</a>
+      {% endfor %}
     </div>
 
+    {% if active_live_tab != 'overview' %}
     <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
       <input type="hidden" name="tab" value="{{ active_live_tab }}">
       <strong>Date filter</strong>
@@ -70,24 +54,13 @@
       <a href="{{ url_for('labs.live_strategy', tab=active_live_tab) }}" class="btn-secondary">Reset</a>
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
+    {% endif %}
 
-    {% if active_live_tab == 'crude_macd_st' %}
-    <h1>CRUDEOIL MACD + Supertrend flip, long (paper)</h1>
-    <p class="sub">Strategy Tester run crudeoil/ui_20260919_084538_9143, rank 194. Buy one lot
-      (100 barrels) of the front CRUDEOIL future when, on the same completed 5-minute bar, the
-      MACD(12,26,9) histogram crosses below zero and Supertrend(7,2) flips down, provided the
-      1-minute close is above the previous session's close. Fill at the next 1-minute open.
-      Stop 1.5&times;ATR(14, 5-minute) below entry, target 0.5R, no time stop, flat at the
-      23:29 bar. One position at a time; 30-minute cooldown between signals.</p>
+    {% if active_live_tab == 'overview' %}
+    {% include '_overview.html' %}
 
-    <div class="formula">
-      Backfilled from 1 June 2026; live from 21 September 2026. MCX session 09:00&ndash;23:29,
-      updated every minute from completed Kite 1-minute candles. The front contract is the
-      nearest listed expiry after the session (rolled on its expiry day); Kite does not list
-      expired contracts, so history before 21 Sept replays on CRUDEOIL26SEPFUT, as the
-      research did. The replay matches the Tester's 39 trades exactly. Charges: Zerodha MCX
-      futures (brokerage, CTT, exchange, SEBI, stamp, GST), no slippage.
-    </div>
+    {% elif active_live_tab == 'crude_macd_st' %}
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
 
     {% if crude_stats.get('error') %}
       <p class="empty">Crude book unavailable ({{ crude_stats.error }}).</p>
@@ -179,126 +152,10 @@
         {% endfor %}
         </tbody>
       </table>
-      <p class="note">Capital deployed is the margin Kite blocks for one lot bought NRML. For
-        trades from 21 Sept it is Kite's own margin quote taken when the trade is entered;
-        Kite has no historical margins, so earlier trades (marked ~) are estimated at 31.59% of
-        notional, Kite's quote for CRUDEOIL26OCTFUT on 19 Sept 2026.</p>
-      <p class="note">Paper only; this book never calls a broker order API. "Signals" counts
-        rule fires in the session, including ones skipped because a position was open or the
-        next bar was missing.</p>
-    {% endif %}
-
-    {% elif active_live_tab == 'proposer_sensex' %}
-    <h1>SENSEX Proposer (paper)</h1>
-    <p class="sub">SENSEX Proposer, current rule set, 25 lots. Side comes from the Market
-      Predictor's 09:00 regime row; a Strong Bull/Bear print above 45% confidence overrides it;
-      entries are five-minute checkpoints after RSI(3) touches its 20/80 band; the contract is
-      the nearest weekly, rounded ATM &#8723;200 ITM. Exits: 2.5% daily target on the premium
-      paid for the day's first trade (which ends the session), +40 spot points, &minus;30%
-      premium floor, micro-trend reversal, opposite strong print, 15:25.</p>
-
-    <div class="formula">
-      Paper execution is ask-in / bid-out plus SENSEX charges; the gross-LTP column prices the
-      same trades at LTP for comparison. The micro-trend exit is evaluated on one-minute data,
-      so its timing is approximate.
-    </div>
-
-    {% if proposer_stats.get('error') %}
-      <p class="empty">Proposer book unavailable ({{ proposer_stats.error }}).</p>
-    {% elif not proposer_rows %}
-      <p class="empty">No Proposer sessions recorded in this date range.</p>
-      <button type="button" id="proposer-backfill" class="btn-secondary">Backfill from 22 June</button>
-      <span id="proposer-backfill-status" class="muted"></span>
-    {% else %}
-      <div class="cards">
-        <div class="card"><div class="k">Net P&amp;L</div>
-          <div class="v {{ 'green' if proposer_stats.net_total>0 else ('red' if proposer_stats.net_total<0 else '') }}">&#8377;{{ "{:,.2f}".format(proposer_stats.net_total) }}</div>
-          <div class="sub-k">ask-in / bid-out after &#8377;{{ "{:,.2f}".format(proposer_stats.charges_total) }} charges</div></div>
-        <div class="card"><div class="k">Gross at LTP</div>
-          <div class="v {{ 'green' if proposer_stats.gross_ltp_total>0 else ('red' if proposer_stats.gross_ltp_total<0 else '') }}">&#8377;{{ "{:,.2f}".format(proposer_stats.gross_ltp_total) }}</div>
-          <div class="sub-k">Pramanaa's convention, for comparison</div></div>
-        <div class="card"><div class="k">Trades</div>
-          <div class="v">{{ proposer_stats.trades }}</div>
-          <div class="sub-k">over {{ proposer_stats.traded_days }} traded sessions</div></div>
-        <div class="card"><div class="k">Win days</div>
-          <div class="v">{{ proposer_stats.win_pct }}%</div>
-          <div class="sub-k">{{ proposer_stats.win_days }}/{{ proposer_stats.traded_days }} sessions</div></div>
-        <div class="card"><div class="k">Daily target hit</div>
-          <div class="v">{{ proposer_stats.target_days }}</div>
-          <div class="sub-k">sessions ended by the 2.5% target</div></div>
-      </div>
-
-      <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
-        <button type="button" id="proposer-backfill" class="btn-secondary">Refresh backfill</button>
-        <span id="proposer-backfill-status" class="muted"></span>
-      </div>
-
-      {% if proposer_trades %}
-      <h2 style="margin-top:24px">Latest session &mdash; {{ proposer_stats.latest.trade_date }}</h2>
-      <table class="perf">
-        <thead><tr><th>#</th><th>Signal</th><th>Contract</th><th>Entry &rarr; Exit</th><th>RSI3</th>
-          <th>Ask in</th><th>Bid out</th><th>LTP in/out</th><th>Gross &#8377;</th><th>Charges</th>
-          <th>Net &#8377;</th><th>Exit</th></tr></thead>
-        <tbody>
-        {% for t in proposer_trades %}
-          <tr>
-            <td>{{ t.seq }}</td><td>{{ t.signal }}</td>
-            <td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.side) }}</td>
-            <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] }}</td>
-            <td>{{ "%.1f"|format(t.rsi3) if t.rsi3 is not none else '&mdash;' }}</td>
-            <td>{{ "%.2f"|format(t.entry_ask) if t.entry_ask is not none else '&mdash;' }}</td>
-            <td>{{ "%.2f"|format(t.exit_bid) if t.exit_bid is not none else '&mdash;' }}</td>
-            <td class="muted">{{ "%.2f"|format(t.entry_ltp) }} / {{ "%.2f"|format(t.exit_ltp) }}</td>
-            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.gross_rs or 0) }}</td>
-            <td class="muted">&#8377;{{ "{:,.2f}".format(t.charges_rs or 0) }}</td>
-            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.net_rs or 0) }}</td>
-            <td>{{ t.exit_rule }}{% if t.quote_status != 'priced' %} <span class="unavail">({{ t.quote_status }})</span>{% endif %}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-
-      <h2 style="margin-top:24px">Daily history</h2>
-      <table class="perf">
-        <thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Side</th><th>Expiry</th>
-          <th>Trades</th><th>First premium</th><th>Target &#8377;</th><th>Gross &#8377;</th>
-          <th>Charges</th><th>Net &#8377;</th><th>Gross LTP &#8377;</th></tr></thead>
-        <tbody>
-        {% for r in proposer_rows %}
-          <tr>
-            <td>{{ r.trade_date }}</td>
-            <td class="{{ 'amber' if r.status == 'unavailable' else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
-            <td>{{ r.regime_open or '&mdash;' }}</td>
-            <td title="{{ r.side_source or '' }}">{{ r.side_day or '&mdash;' }}{% if r.risk_off_from %} <span class="amber">risk_off</span>{% endif %}</td>
-            <td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td>
-            <td>&#8377;{{ "{:,.0f}".format(r.first_trade_premium_rs or 0) }}</td>
-            <td>&#8377;{{ "{:,.0f}".format(r.day_target_rs or 0) }}{% if r.day_done_by_target %} &check;{% endif %}</td>
-            <td>&#8377;{{ "{:,.2f}".format(r.gross_rs or 0) }}</td>
-            <td class="muted">&#8377;{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
-            <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
-            <td class="muted">&#8377;{{ "{:,.2f}".format(r.gross_ltp_rs or 0) }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      <p class="note">Paper only; this book never calls a broker order API. Predictor rows are
-        stored per session and the book fails closed when they are missing rather than guessing
-        a regime.</p>
     {% endif %}
 
     {% elif active_live_tab == 'theta_straddle' %}
-    <h1>NIFTY 09:20 ATM short straddle (paper)</h1>
-    <p class="sub">At the first common executable quote from 09:20 to 09:25 IST,
-      sell one nearest-weekly ATM CE and one ATM PE. Buy both legs back at the
-      first common executable quote from 15:15 to 15:20 IST. Entry uses bid and
-      exit uses ask, so the replay includes the spread rather than optimistic LTP marks.</p>
-
-    <div class="formula">
-      Estimated capital = entry NIFTY spot × 65 × 10% after straddle offset.
-      This is a stable historical estimate, not broker-exact SPAN margin.
-      Premium received is reported separately and is not treated as capital.
-    </div>
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
 
     {% if theta_stats.get('error') %}
       <p class="empty">Theta straddle unavailable ({{ theta_stats.error }}).</p>
@@ -314,7 +171,7 @@
           <div class="sub-k">after ₹{{ "{:,.2f}".format(theta_stats.charges_total) }} charges</div></div>
         <div class="card"><div class="k">Gross P&amp;L</div>
           <div class="v {{ 'green' if theta_stats.gross_total>0 else ('red' if theta_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(theta_stats.gross_total) }}</div>
-          <div class="sub-k">bid sold · ask covered · 65 qty per leg</div></div>
+          <div class="sub-k">65 qty per leg</div></div>
         <div class="card"><div class="k">Avg estimated capital</div>
           <div class="v">₹{{ "{:,.0f}".format(theta_stats.avg_capital) }}</div>
           <div class="sub-k">peak ₹{{ "{:,.0f}".format(theta_stats.max_capital) }} · not broker SPAN</div></div>
@@ -377,21 +234,10 @@
         {% endfor %}
         </tbody>
       </table>
-      <p class="note">Capital is estimated consistently for historical comparison because archived broker SPAN snapshots are unavailable. Charges include two orders per leg, exchange and regulatory fees, GST, stamp duty on each cover buy, and 0.15% STT on each opening option sale. Paper only; this strategy never calls a broker order API.</p>
     {% endif %}
 
     {% elif active_live_tab == 'theta_iron_fly' %}
-    <h1>NIFTY 09:20 ATM iron fly (paper)</h1>
-    <p class="sub">Sell the nearest-weekly ATM CE and PE, and buy protective
-      wings 400 points away. Take profit when charge-adjusted basket P&amp;L reaches
-      20% of the opening net credit; otherwise close at the first common
-      executable quote from 15:00 to 15:05 IST.</p>
-
-    <div class="formula">
-      Defined-risk capital = (400-point wing width − opening net credit points) × 65.
-      All four legs must share an executable minute: shorts use bid in / ask out;
-      protective wings use ask in / bid out.
-    </div>
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
 
     {% if iron_fly_stats.get('error') %}
       <p class="empty">Iron fly unavailable ({{ iron_fly_stats.error }}).</p>
@@ -479,44 +325,17 @@
         {% endfor %}
         </tbody>
       </table>
-      <p class="note">The summary above is recalculated from the available completed sessions in the selected date range, using executable bid/ask prices and four-leg charges. This is a short research sample, not a performance guarantee. The wings define expiry risk, but execution, volatility and intraday mark risk remain. Paper only; no broker order API is called.</p>
     {% endif %}
 
-    {% elif active_live_tab in ['alpha_v211a', 'alpha_v211b', 'alpha_v212', 'alpha_v213', 'alpha_cpr'] %}
-    {% set is_v211a = active_live_tab == 'alpha_v211a' %}
+    {% elif active_live_tab in ['alpha_v211b', 'alpha_v212', 'alpha_cpr'] %}
     {% set is_v211b = active_live_tab == 'alpha_v211b' %}
-    {% set is_v213 = active_live_tab == 'alpha_v213' %}
     {% set is_cpr = active_live_tab == 'alpha_cpr' %}
-    {% if is_cpr %}
-    <h1>Alpha CPR — alpha entries, CPR structural exits (paper)</h1>
-    <p class="sub">Alpha v2.11 fires the entry and then has no further say: every alpha exit
-      (tier SL/TP, stall) and every v2.11 spot exit (trail, wall, PC250 spot TP/SL, drift) is off.
-      A position leaves only on the previous day's CPR/pivot level above or below its entry spot,
-      or at EOD. Levels closer than 20 points are walked out to the next one.
-      <b>Lots vary</b> so rupee risk per trade is near-constant
-      (Rs 9,750 target, 1-15 lots) — a wider stop takes fewer lots.
-      Nearest-expiry NIFTY ITM-200, priced at <b>exact-minute ask in / bid out</b>.
-      Net P&amp;L includes charges.
-      <br><em>Paper-trade candidate.</em> Research profit factor is ~1.2 on a points basis; most of
-      the rupee edge came from the sizing overlay, so treat this tab as the out-of-sample test of
-      whether that survives.</p>
-    {% elif is_v211b %}
-    <h1>Alpha 2.11 - champion replay (B) (paper)</h1>
-    <p class="sub">Canonical Alpha v2.11 decision and exit rules with one isolated gate:
-      <b>PC50 CALL decisions do not enter a trade.</b> PC50 PUT and every PC250/PC400
-      decision remain unchanged. One nearest-expiry NIFTY ITM-200 option lot,
-      priced at <b>exact-minute ask in / bid out</b>. Net P&amp;L includes charges.</p>
-    {% else %}
-    <h1>Alpha {{ overlay_version }} — {{ 'low-VIX PC400/DOWN PUT trail' if is_v211a else ('v2.11 risk authority + recovery overlay' if is_v213 else 'entry-spot recovery') }} (paper)</h1>
-    <p class="sub">{% if is_v211a %}Alpha v2.11 with one isolated exit overlay: when opening VIX is below 17, PC400 gap-DOWN PUT arms a NIFTY spot trail at +30 points and exits after a 20-point retrace.{% else %}{{ 'The complete Alpha v2.11 lifecycle stays authoritative while' if is_v213 else 'Alpha v2.11 signals plus' }} an original-entry-spot stop and same-side recovery.{% endif %}
-      One nearest-expiry NIFTY ITM-200 option lot, priced at <b>exact-minute ask in / bid out</b>.
-      Net P&amp;L includes charges.</p>
-    {% endif %}
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
 
     {% if overlay_stats.get('error') %}
       <p class="empty">Alpha {{ overlay_version }} unavailable ({{ overlay_stats.error }}).</p>
     {% elif not overlay_rows %}
-      <p class="empty">No Alpha {{ overlay_version }} paper sessions recorded yet. The live paper loop will populate this tab.</p>
+      <p class="empty">No Alpha {{ overlay_version }} sessions recorded yet. The live loop will populate this tab.</p>
     {% else %}
       {% set v = overlay_stats.latest %}
       <div class="cards">
@@ -525,7 +344,7 @@
           <div class="sub-k">after ₹{{ "{:,.2f}".format(overlay_stats.charges_total) }} charges</div></div>
         <div class="card"><div class="k">Gross executable P&amp;L</div>
           <div class="v {{ 'green' if overlay_stats.gross_total>0 else ('red' if overlay_stats.gross_total<0 else '') }}">₹{{ "{:,.2f}".format(overlay_stats.gross_total) }}</div>
-          <div class="sub-k">ask entry · bid exit · one 65-unit lot</div></div>
+          <div class="sub-k">one lot</div></div>
         <div class="card"><div class="k">Coverage</div>
           <div class="v" style="font-size:20px">{{ overlay_stats.first_date }} → {{ overlay_stats.last_date }}</div>
           <div class="sub-k">{{ overlay_stats.days }} recorded sessions · archive + live</div></div>
@@ -535,7 +354,7 @@
         <div class="card"><div class="k">Win days</div>
           <div class="v">{{ overlay_stats.win_pct }}%</div>
           <div class="sub-k">{{ overlay_stats.win_days }}/{{ overlay_stats.active_days }} completed active days</div></div>
-        <div class="card"><div class="k">Spot strategy P&amp;L</div>
+        <div class="card"><div class="k">Spot P&amp;L</div>
           <div class="v {{ 'green' if overlay_stats.spot_total>0 else ('red' if overlay_stats.spot_total<0 else '') }}">{{ "%+.2f"|format(overlay_stats.spot_total) }} pts</div>
           <div class="sub-k">before option pricing and costs</div></div>
       </div>
@@ -590,36 +409,14 @@
         </tbody>
       </table>
 
-      <p class="note">
-        {% if is_v211a %}
-        v2.11A changes only low-VIX PC400 gap-DOWN PUT exits: arm after 30 favourable NIFTY spot points, then trail 20 points from the best spot. Missing VIX, VIX at or above 17, and every other tier/direction/side retain the original v2.11 exits. The original Alpha exit remains the control book in the Alpha v2.11 tab.
-        {% elif is_v211b %}
-        Replay B changes only the entry decision: CALL entries are suppressed when the locked tier is PC50. The book remains flat at that decision and may take a later valid PUT. PC50 PUT and all PC250/PC400 entries and exits retain canonical v2.11 behavior.
-        {% elif is_v213 %}
-        v2.13 keeps a shadow v2.11 lifecycle authoritative. The entry-spot overlay may exit and recover only while that lifecycle remains active; a v2.11 trail, Alpha exit, target, wall, drift stop, or EOD exit closes the active overlay segment and cancels pending recovery.
-        {% else %}
-        v2.12 changes only risk handling: every original signal-entry spot is the stop. A touch triggers an exit
-        valued at that one-minute candle's close, then arms same-side recovery at the original level; re-entry requires a one-minute touch and
-        a close back on the favourable side. Normal Alpha stop/target invalidation cancels a pending recovery.
-        All v2.11 range, signal, trail and target rules remain unchanged. The full research comparison was
-        +10,170.3 spot points versus v2.11's +7,948.8 (+2,221.4), MaxDD 150 versus 170, and 12/12 positive months.
-        {% endif %}
-        This page's executable sample is limited to the recorded archive/live sessions shown above.
-        Paper only — never places real orders.
-      </p>
     {% endif %}
 
-    {% elif active_live_tab in ['sensex_alpha', 'sensex_alpha_inverted'] %}
-    {% set sx_inverted = active_live_tab == 'sensex_alpha_inverted' %}
-    <h1>Sensex_alpha{{ ' inverted' if sx_inverted else '' }} — own Alpha (paper)</h1>
-    <p class="sub">Independent SENSEX OI-imbalance book. {{ 'Option side swapped CALL↔PUT; ' if sx_inverted else 'Inverted direction, ' }}one position at a time,
-      ATM nearest-expiry option execution at <b>ask in / bid out</b>. LTP is never used as an execution fallback.</p>
-    <div class="formula">Sensex's own abs alpha reverted</div>
-
+    {% elif active_live_tab == 'sensex_alpha' %}
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
     {% if sensex_stats.get('error') %}
       <p class="empty">Sensex_alpha unavailable ({{ sensex_stats.error }}).</p>
     {% elif not sensex_rows %}
-      <p class="empty">No Sensex_alpha paper sessions recorded yet. The live paper loop starts it on the next valid market session.</p>
+      <p class="empty">No Sensex_alpha sessions recorded yet. The live loop starts it on the next valid market session.</p>
     {% else %}
       {% set sx = sensex_stats.latest %}
       <div class="cards">
@@ -628,8 +425,6 @@
           <div class="sub-k">{{ sx.latest_mark[11:16] if sx.latest_mark else '—' }} · spot {{ "{:,.0f}".format(sx.latest_spot) }}</div></div>
         <div class="card"><div class="k">Position</div><div class="v">{{ sx.position_side or 'FLAT' }}</div>
           <div class="sub-k">{{ sx.status }} · exp {{ sx.expiry_code }}</div></div>
-        <div class="card"><div class="k">Locked range</div><div class="v" style="font-size:18px">{{ "{:,.0f}".format(sx.range_lower) }}–{{ "{:,.0f}".format(sx.range_upper) }}</div>
-          <div class="sub-k">prev close {{ "{:,.0f}".format(sx.prev_close) }} · baseline {{ sx.baseline_date }}</div></div>
         <div class="card"><div class="k">Spot P&amp;L</div>
           <div class="v {{ 'green' if sensex_stats.spot_total>0 else ('red' if sensex_stats.spot_total<0 else '') }}">{{ "%+.2f"|format(sensex_stats.spot_total) }} pts</div></div>
         <div class="card"><div class="k">Option P&amp;L (bid/ask)</div>
@@ -638,13 +433,6 @@
         <div class="card"><div class="k">Win days</div>
           <div class="v">{{ sensex_stats.win_pct }}%</div>
           <div class="sub-k">{{ sensex_stats.win_days }} completed positive days</div></div>
-        <div class="card"><div class="k">Liquidity lock</div>
-          <div class="v" style="font-size:18px">{{ (sx.selected_expiry_type or 'legacy')|upper }} · {{ sx.expiry_code }}</div>
-          <div class="sub-k">
-            {% if sx.liquidity_mark %}{{ sx.liquidity_mark[11:16] }} · {% endif %}
-            weekly OI {{ "{:,.0f}".format(sx.weekly_in_band_oi or 0) }} ·
-            monthly OI {{ "{:,.0f}".format(sx.monthly_in_band_oi or 0) }}
-          </div></div>
       </div>
 
       {% if sensex_trades %}
@@ -691,101 +479,10 @@
         </tbody>
       </table>
 
-      <p class="note">
-        Rules: exact five-minute marks from 09:15 IST; prior-day settled codeB SENSEX baseline;
-        previous close ±1,200 configurable points;
-        {% if sx_inverted %}+30 upward cross → BUY CALL; −30 downward cross → BUY PUT;
-        {% else %}+30 upward cross → BUY PUT; −30 downward cross → BUY CALL;{% endif %}
-        exit at |Alpha|=100, reversal through zero, or hard 15:25 square-off. One position only.
-        Alpha and execution are locked to whichever has greater opening in-range OI:
-        nearest weekly or monthly. The selected expiry uses its matching settled-OI baseline.
-        {% if sx_inverted %}The inversion changes only CALL/PUT execution; signal timestamps and exits remain unchanged.{% endif %}
-        Spot P&amp;L is directional index movement. Option P&amp;L is gross one-lot executable-quote P&amp;L
-        (entry ask, exit bid); missing quotes remain explicitly unavailable and never fall back to LTP.
-      </p>
-    {% endif %}
-
-    {% elif active_live_tab in ['sensex_v211', 'sensex_v211_inverted'] %}
-    {% set sv_inverted = active_live_tab == 'sensex_v211_inverted' %}
-    <h1>Alpha v2.11{{ ' inverted' if sv_inverted else '' }} — NIFTY signals, SENSEX options (paper)</h1>
-    <p class="sub">The Alpha v2.11 signal timing and exits are unchanged. Execution {{ 'swaps CALL↔PUT in' if sv_inverted else 'switches to' }}
-      one nearest-expiry ATM SENSEX option lot at <b>ask in / bid out</b>. LTP is never used as a fallback.</p>
-
-    {% if sensex_v211_stats.get('error') %}
-      <p class="empty">Sensex_v2.11 unavailable ({{ sensex_v211_stats.error }}).</p>
-    {% elif not sensex_v211_rows %}
-      <p class="empty">No Sensex_v2.11 paper sessions recorded yet. The live paper loop starts it on the next valid market session.</p>
-    {% else %}
-      {% set sv = sensex_v211_stats.latest %}
-      <div class="cards">
-        <div class="card"><div class="k">Gross option P&amp;L</div>
-          <div class="v {{ 'green' if sensex_v211_stats.option_total>0 else ('red' if sensex_v211_stats.option_total<0 else '') }}">₹{{ "{:,.0f}".format(sensex_v211_stats.option_total) }}</div>
-          <div class="sub-k">one SENSEX lot · gross executable quotes</div></div>
-        <div class="card"><div class="k">Sessions / trades</div>
-          <div class="v">{{ sensex_v211_stats.days }} / {{ sensex_v211_stats.trades }}</div>
-          <div class="sub-k">latest {{ sv.trade_date if sv else '—' }}</div></div>
-        <div class="card"><div class="k">Quote coverage</div>
-          <div class="v">{{ sensex_v211_stats.priced_trades }}/{{ sensex_v211_stats.trades }}</div>
-          <div class="sub-k">{{ sensex_v211_stats.unavailable_trades }} unavailable · no LTP fallback</div></div>
-        <div class="card"><div class="k">Latest session</div>
-          <div class="v" style="font-size:18px">{{ sv.status if sv else '—' }}</div>
-          <div class="sub-k">{% if sv %}{{ sv.tier or '—' }} · {{ sv.gap_dir or '—' }} · exp {{ sv.expiry_code or '—' }}{% else %}—{% endif %}</div></div>
-      </div>
-
-      {% if sensex_v211_trades %}
-      <h2 style="margin-top:24px">Latest session — {{ sv.trade_date }}</h2>
-      <table class="perf">
-        <thead><tr><th>#</th><th>Side</th><th>SENSEX ATM</th><th>Entry / Exit</th><th>SENSEX in/out</th>
-          <th>Ask in / Bid out</th><th>Option ₹</th><th>Signal / Exit</th></tr></thead>
-        <tbody>
-        {% for t in sensex_v211_trades %}
-          <tr>
-            <td>{{ t.seq }}</td><td>{{ t.side }}</td><td>{{ t.strike }}</td>
-            <td>{{ t.entry_ts[11:16] }} → {{ t.exit_ts[11:16] }}</td>
-            <td>{{ "{:,.0f}".format(t.entry_sensex) }} → {{ "{:,.0f}".format(t.exit_sensex) }}</td>
-            {% if t.quote_status == 'priced' %}
-              <td>{{ "%.2f"|format(t.entry_ask) }} → {{ "%.2f"|format(t.exit_bid) }}</td>
-              <td class="{{ 'green' if t.option_gross_rs>0 else ('red' if t.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(t.option_gross_rs) }}</td>
-            {% else %}
-              <td class="unavail">— ({{ t.quote_status }})</td><td class="unavail">—</td>
-            {% endif %}
-            <td>{{ t.side }} / <span class="{{ 'amber' if t.exit_reason == 'holding' else 'muted' }}">{{ 'HOLDING' if t.exit_reason == 'holding' else t.exit_reason }}</span></td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-
-      <h2 style="margin-top:24px">Daily history</h2>
-      <table class="perf">
-        <thead><tr><th>Date</th><th>Status</th><th>Side</th><th>Tier</th><th>Gap</th><th>Expiry</th><th>Trades</th><th>Quotes</th><th>Gross option ₹</th></tr></thead>
-        <tbody>
-        {% for r in sensex_v211_rows %}
-          <tr>
-            <td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status == 'open' else 'muted' }}">{{ 'live' if r.status == 'open' else r.status }}</td>
-            <td>{{ r.trade_sides or '—' }}</td><td>{{ r.tier or '—' }}</td><td>{{ r.gap_dir or '—' }}</td><td>{{ r.expiry_code or '—' }}</td>
-            <td>{{ r.n_trades }}</td><td>{{ r.option_priced_trades }}/{{ r.n_trades }}</td>
-            <td class="{{ 'green' if r.option_gross_rs>0 else ('red' if r.option_gross_rs<0 else '') }}">₹{{ "{:,.0f}".format(r.option_gross_rs or 0) }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-
-      <p class="note">
-        Rules: signal generation is unchanged Alpha v2.11 NIFTY champion logic. For every NIFTY signal trade,
-        this paper book buys the nearest-expiry ATM SENSEX option {{ 'opposite to' if sv_inverted else 'matching' }} the NIFTY signal side
-        ({% if sv_inverted %}CALL signal → SENSEX PUT, PUT signal → SENSEX CALL{% else %}CALL signal → SENSEX CALL, PUT signal → SENSEX PUT{% endif %}), one lot only. Entry requires the exact
-        SENSEX option ask at the signal mark and exit requires the exact bid at the exit mark. Missing quotes
-        remain explicitly unavailable; LTP is never substituted.
-      </p>
     {% endif %}
 
     {% elif active_live_tab == 'baskets' %}
-    <h1>v2.11 Baskets — signals as multi-leg structures (paper)</h1>
-    <p class="sub">Every recorded v2.11 signal trade re-priced as alternative option baskets —
-      pick structures under CALL and PUT separately and compare. Legs fill at <b>exact-minute
-      ask (buy) / bid (sell)</b>, charges per leg, one 65-unit lot per leg. Missing quotes are
-      explicitly unavailable — never an LTP fallback. Paper only.</p>
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
 
     {% if basket_error %}
       <p class="empty">Baskets unavailable ({{ basket_error }}).</p>
@@ -864,17 +561,6 @@
       </table>
       </div>
 
-      <p class="note">
-        Timing is the recorded v2.11 champion ledger (same entries, exits, and sides as the Alpha v2.11 tab) —
-        only the instrument changes. Strikes are set from each trade's entry spot: ATM = nearest 50,
-        ITM/OTM = ±200 points. Rationale: on a breakeven spot stop a naked long option still loses
-        (theta / IV / spread), while a delta≈1 synthetic books ≈0 by construction and a debit spread
-        hard-caps the loss. The plain synthetic carries an UNCAPPED short leg (and its margin); the
-        three-leg protected synthetic buys an OTM200 hedge against that short leg, capping the
-        structural tail risk at roughly the 200-point gap for the extra hedge debit.
-        SELL legs are priced bid-in / ask-out. Charges are applied per leg, so multi-leg baskets pay
-        a multiple of a single option's charges.
-      </p>
       {% endif %}
 
       <script>
@@ -913,17 +599,15 @@
     {% endif %}
 
     {% else %}
-    <h1>Live — Alpha v2.11 (paper)</h1>
-    <p class="sub">Persistent paper run of the live champion (Run F + RECO W1/W3/C1),
-       1 lot, priced off shared-store option LTP. <b>Net P&amp;L includes charges.</b></p>
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
 
     {% if stats.get('error') %}
       <p class="empty">Tracker not initialised yet ({{ stats.error }}). It populates after the first EOD run.</p>
     {% elif not rows %}
-      <p class="empty">No paper sessions recorded yet. Runs daily after market close.</p>
+      <p class="empty">No sessions recorded yet. Runs daily after market close.</p>
     {% else %}
 
-    <p class="section-title">Primary — ITM 200, This week</p>
+    <p class="section-title">Summary</p>
     <div class="cards">
       <div class="card"><div class="k">Net P&amp;L (after charges)</div>
         <div class="v {{ 'green' if stats.net_total>0 else ('red' if stats.net_total<0 else '') }}">₹{{ "{:,.0f}".format(stats.net_total) }}</div></div>
@@ -976,12 +660,6 @@
 
     {# ── Contract P&L comparison ───────────────────────────────────────────── #}
     <p class="section-title" style="margin-top:32px">Contract P&amp;L comparison</p>
-    <p class="cmp-note">
-      All four variants replay the <b>identical Alpha signals and entry/exit timestamps</b>.
-      Only the option contract differs (strike offset and expiry week).
-      — marks days where the expiry or an exact quote was unavailable; those days do <b>not</b> contribute to the total.
-      Spot-point P&amp;L (strategy metric) is shown separately in the daily history table above.
-    </p>
 
     {% if not comparison_variant_totals %}
       <p class="muted" style="font-size:13px">Comparison not backfilled yet — runs automatically on next EOD cycle.</p>
@@ -1049,15 +727,6 @@
       </tbody>
     </table>
 
-    <p class="note">
-      Strategy = live Alpha champion v2.11, replayed on the
-      same 5-min OI snapshots + locked hybrid range the real bot uses. 1 lot ({{ 65 }} qty). Primary option:
-      nearest-expiry 200-point ITM (CALL: ATM−200 CE; PUT: ATM+200 PE) at exact Alpha mark LTP.
-      Comparison uses identical signals with four contracts: ATM/ITM-200 × This-week/Next-week expiry.
-      Net P&amp;L deducts brokerage + STT + exchange + GST + SEBI + stamp.
-      Spot P&amp;L (pts) is the research-validated strategy metric; option P&amp;L is a modelling approximation.
-      Paper only — never places real orders.
-    </p>
     {% endif %}
     {% endif %}
   </main>
@@ -1095,44 +764,6 @@
       } catch (error) {
         crudeStatus.textContent = 'Backfill failed: ' + error.message;
         crudeButton.disabled = false;
-      }
-    });
-  }
-</script>
-{% endif %}
-{% if active_live_tab == 'proposer_sensex' %}
-<script>
-  const proposerButton = document.getElementById('proposer-backfill');
-  const proposerStatus = document.getElementById('proposer-backfill-status');
-  if (proposerButton) {
-    proposerButton.addEventListener('click', async () => {
-      proposerButton.disabled = true;
-      let completed = 0;
-      try {
-        while (true) {
-          proposerStatus.textContent = 'Backfilling... ' + completed + ' sessions completed';
-          const response = await fetch('/labs/api/proposer_sensex/backfill?limit=5', {
-            method: 'POST',
-          });
-          const payload = await response.json();
-          if (!response.ok || payload.error) {
-            throw new Error(payload.error || ('HTTP ' + response.status));
-          }
-          completed += payload.done.length + (payload.unavailable || []).length;
-          const errors = Object.keys(payload.errors || {});
-          if (errors.length) {
-            proposerStatus.textContent = 'Completed ' + completed + '; errors: ' + errors.join(', ');
-            break;
-          }
-          if (!payload.remaining) {
-            proposerStatus.textContent = 'Backfill complete: ' + completed + ' sessions';
-            window.location.reload();
-            break;
-          }
-        }
-      } catch (error) {
-        proposerStatus.textContent = 'Backfill failed: ' + error.message;
-        proposerButton.disabled = false;
       }
     });
   }
@@ -1187,8 +818,8 @@
     const pad = 24, span = (mx - mn) || 1;
     const x = i => pad + i * (W - 2*pad) / Math.max(curve.length - 1, 1);
     const y = v => H - pad - (v - mn) * (H - 2*pad) / span;
-    ctx.strokeStyle = '#2b3445'; ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W-pad, y(0)); ctx.stroke();
-    ctx.strokeStyle = '#16a34a'; ctx.lineWidth = 2; ctx.beginPath();
+    ctx.strokeStyle = labsColor("#2b3445"); ctx.beginPath(); ctx.moveTo(pad, y(0)); ctx.lineTo(W-pad, y(0)); ctx.stroke();
+    ctx.strokeStyle = labsColor("#16a34a"); ctx.lineWidth = 2; ctx.beginPath();
     curve.forEach((p,i) => { i ? ctx.lineTo(x(i), y(p.cum)) : ctx.moveTo(x(i), y(p.cum)); }); ctx.stroke();
   }
 </script>

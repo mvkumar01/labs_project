@@ -1,3 +1,4 @@
+{% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,27 +7,19 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>Live — Status</title>
   <link rel="stylesheet" href="/static/live.css">
+  {{ theme_head() }}
 </head>
 <body>
 <div class="page">
   <header class="live-topbar">
-    <span class="live-logo">BOTS LIVE <span class="tag">paper-shell, real-money stack</span></span>
-    <nav>
-      <a href="/live/configure">Configure</a>
-      <a href="/live/connect">Broker</a>
-      {% if is_admin %}<a href="/live/admin">Administration</a>{% endif %}
-      <a href="/labs">Paper Labs</a>
-      <form method="POST" action="/live/logout" style="display:inline;">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-ghost" style="padding:5px 12px;">Lock</button>
-      </form>
-    </nav>
+    <span class="live-logo">BOTS LIVE</span>
+    {{ live_nav('status', is_admin|default(false)) }}
   </header>
   <main>
     <h1>Live Status</h1>
     <p class="sub">
       {{ connection.broker|upper }} · {{ connection.account_label }} ·
-      <span id="conn-status" style="color:#64748b;">{{ connection.status }}</span>
+      <span id="conn-status" style="color:var(--c-64748b);">{{ connection.status }}</span>
     </p>
     <div id="zerodha-relogin-banner"
          class="session-warning"
@@ -136,7 +129,7 @@
           <tr><th>Time</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Status</th><th>P&amp;L</th><th>Mode</th></tr>
         </thead>
         <tbody id="orders-body">
-          <tr><td colspan="7" style="color:#64748b;">Loading…</td></tr>
+          <tr><td colspan="7" style="color:var(--c-64748b);">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -183,7 +176,7 @@
           </tr>
         </thead>
         <tbody id="trades-body">
-          <tr><td colspan="12" style="color:#64748b;">Loading...</td></tr>
+          <tr><td colspan="12" style="color:var(--c-64748b);">Loading...</td></tr>
         </tbody>
       </table>
     </div>
