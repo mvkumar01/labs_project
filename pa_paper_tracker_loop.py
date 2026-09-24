@@ -36,6 +36,7 @@ def main() -> None:
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
     from labs.engine.alpha_v211b_tracker import run_day as run_v211b_day
     from labs.engine.alpha_v212_tracker import run_day as run_v212_day
+    from labs.engine.alpha_v212b10_tracker import run_day as run_v212b10_day
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
@@ -47,6 +48,7 @@ def main() -> None:
         "nifty": None,
         "alpha_v211b": None,
         "alpha_v212": None,
+        "alpha_v212b10": None,
         "sensex_alpha_inverted": None,
         "alpha_cpr": None,
         "theta_straddle": None,
@@ -60,6 +62,7 @@ def main() -> None:
                 ("nifty", run_nifty_day),
                 ("alpha_v211b", run_v211b_day),
                 ("alpha_v212", run_v212_day),
+                ("alpha_v212b10", run_v212b10_day),
                 ("sensex_alpha_inverted", run_sensex_inverted_day),
                 ("alpha_cpr", run_cpr_day),
                 ("theta_straddle", run_theta_straddle_day),

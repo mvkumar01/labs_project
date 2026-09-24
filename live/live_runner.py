@@ -45,6 +45,7 @@ from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
 from live.engine import champion_decider, champion_inputs, minute_ticks
+from live.engine.champion_sim import V212_B10_EXIT_BUFFER
 from market_data.expiry import select_symbol_for_expiry
 log = logging.getLogger("live.runner")
 
@@ -73,6 +74,7 @@ class ChampionLivePolicy:
     next_open_fallback: bool
     boundary_tick_close: bool = False
     suppress_pc50_call_entries: bool = False
+    entry_spot_exit_buffer: float = 0.0
 
 
 def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
@@ -91,6 +93,11 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     the minute that just ended executes at :00-:05 instead of at :49 (the
     2026-08-17 09:25 decision landed at 09:26:49).
 
+    v2.12_b10 is close-confirmed on that same boundary clock, but its stop
+    needs the minute to close V212_B10_EXIT_BUFFER points beyond the anchor;
+    recovery is still at the anchor. The paper book imports the same constant,
+    so paper and live cannot disagree on the barrier.
+
     v2.13 is the explicit additive-risk variant and alone retains a buffered
     intraminute tick stop and the next-open fallback.
     """
@@ -98,8 +105,11 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     return ChampionLivePolicy(
         fast_stop_overlay=additive,
         next_open_fallback=additive,
-        boundary_tick_close=strategy_version == "v2.12_closed_confirmed",
+        boundary_tick_close=strategy_version in (
+            "v2.12_closed_confirmed", "v2.12_b10"),
         suppress_pc50_call_entries=strategy_version == "v2.11b",
+        entry_spot_exit_buffer=(
+            V212_B10_EXIT_BUFFER if strategy_version == "v2.12_b10" else 0.0),
     )
 
 
@@ -1348,9 +1358,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     strategy_version = svc.get_config(user_id, conn_id, "strategy_version")
     v212_recovery = strategy_version == "v2.12"
     v212_close_confirmed = strategy_version == "v2.12_closed_confirmed"
+    v212_b10 = strategy_version == "v2.12_b10"
     v213_additive = strategy_version == "v2.13"
     live_policy = champion_live_policy(strategy_version)
-    recovery_replay = v212_recovery or v212_close_confirmed or v213_additive
+    recovery_replay = (v212_recovery or v212_close_confirmed or v212_b10
+                       or v213_additive)
 
     # v2.12 decisions are canonical and have no live-only timing overlay.
     # Bot A/v22 PC400 trail is a per-cycle spot exit, not an alpha-bar exit.
@@ -1499,8 +1511,10 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         )
         target = champion_decider.champion_target(
             trade_date, now_ist=_now_ist(),
-            enable_entry_spot_recovery=(v212_recovery or v212_close_confirmed),
-            entry_spot_close_confirmed=v212_close_confirmed,
+            enable_entry_spot_recovery=(
+                v212_recovery or v212_close_confirmed or v212_b10),
+            entry_spot_close_confirmed=(v212_close_confirmed or v212_b10),
+            entry_spot_exit_buffer=live_policy.entry_spot_exit_buffer,
             suppress_pc50_call_entries=live_policy.suppress_pc50_call_entries,
             enable_v211_risk_authority=v213_additive,
             live_execution_spot=live_execution_spot,

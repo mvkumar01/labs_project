@@ -253,7 +253,7 @@ def test_ohlc_by_minute_gap_fills_only_missing_minutes() -> None:
         assert merged["09:25"] == extra["09:25"]
 
 
-def test_collector_row_wins_over_the_tick_stand_in(monkeypatch) -> None:
+def test_collector_row_wins_over_the_tick_stand_in(monkeypatch, tmp_path) -> None:
     """Once the real candle lands it replaces the tick-built minute.
 
     That is what stops the stand-in becoming a second source of record: the
@@ -270,6 +270,14 @@ def test_collector_row_wins_over_the_tick_stand_in(monkeypatch) -> None:
     monkeypatch.setattr(champion_inputs, "_labs_sig", lambda d: ("test-sig",))
     monkeypatch.setattr(champion_inputs, "_labs_spot_ohlc", lambda d: published)
     monkeypatch.setattr(champion_inputs, "_OHLC_BY_MINUTE_CACHE", {})
+    # Seal the two fallback sources too, or real data for this date (legacy
+    # alphaIMB OHLC, shared-store spot) leaks into the "unpublished" minute.
+    monkeypatch.setattr(champion_inputs, "ALPHA_DATA_DIR", tmp_path)
+
+    def _no_shared_store(*args, **kwargs):
+        raise FileNotFoundError("sealed for test")
+
+    monkeypatch.setattr(champion_inputs, "load_options_frame", _no_shared_store)
 
     # The runner still offers BOTH minutes, including its stand-in for 09:25.
     merged = champion_inputs.ohlc_by_minute(

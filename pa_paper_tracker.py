@@ -13,6 +13,7 @@ if __name__ == "__main__":
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
     from labs.engine.alpha_v211b_tracker import run_day as run_v211b_day
     from labs.engine.alpha_v212_tracker import run_day as run_v212_day
+    from labs.engine.alpha_v212b10_tracker import run_day as run_v212b10_day
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
@@ -28,6 +29,12 @@ if __name__ == "__main__":
     # Alpha-CPR is an unproven paper candidate and runs LAST behind a guard:
     # a missing CPR prev-session or quote must never abort the established
     # books above, which have already persisted by this point.
+    # Alpha v2.12 B10 is new and guarded the same way: it must never abort
+    # the established books, which have already persisted by this point.
+    try:
+        results["alpha_v212b10"] = run_v212b10_day(arg)
+    except Exception as exc:
+        results["alpha_v212b10"] = f"{type(exc).__name__}: {exc}"
     try:
         results["alpha_cpr"] = run_cpr_day(arg)
     except Exception as exc:

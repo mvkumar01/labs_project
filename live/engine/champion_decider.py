@@ -60,6 +60,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
                     override: dict | None = None,
                     enable_entry_spot_recovery: bool = False,
                     entry_spot_close_confirmed: bool = False,
+                    entry_spot_exit_buffer: float = 0.0,
                     suppress_pc50_call_entries: bool = False,
                     enable_v211_risk_authority: bool = False,
                     live_execution_spot: float | None = None,
@@ -161,6 +162,7 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
             day["lower"], day["upper"],
             enable_entry_spot_recovery=enable_entry_spot_recovery,
             entry_spot_close_confirmed=entry_spot_close_confirmed,
+            entry_spot_exit_buffer=entry_spot_exit_buffer,
             suppress_pc50_call_entries=suppress_pc50_call_entries,
             close_eod=False, return_state=True, entries_until_ts=cutoff)
 

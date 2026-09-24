@@ -274,7 +274,19 @@ def _price_segment(segment: dict, expiry_code: str, quotes: dict) -> dict:
     }
 
 
-def replay_v212(trade_date: str, override: dict | None = None) -> dict:
+def replay_v212(
+    trade_date: str,
+    override: dict | None = None,
+    *,
+    close_confirmed: bool = False,
+    exit_buffer: float = 0.0,
+) -> dict:
+    """Replay one day through the v2.12 overlay.
+
+    The defaults are canonical v2.12 (touch rule, stop at the anchor).
+    `close_confirmed` / `exit_buffer` exist for sibling books that reuse this
+    exact pipeline -- Alpha v2.12 B10 passes True / V212_B10_EXIT_BUFFER.
+    """
     day = _resolve_day(trade_date, override)
     if day is None or day.get("bucket") == "SKIP":
         if day is None:
@@ -329,6 +341,8 @@ def replay_v212(trade_date: str, override: dict | None = None) -> dict:
         day["lower"],
         day["upper"],
         enable_entry_spot_recovery=True,
+        entry_spot_close_confirmed=close_confirmed,
+        entry_spot_exit_buffer=exit_buffer,
         entries_until_ts=cutoff,
     )
     # Recovery cancellations carry no economic position or option fill.

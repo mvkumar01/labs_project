@@ -35,6 +35,11 @@ TRAIL_ARM = 40
 TRAIL_LOCK = 20
 V211A_DN_PUT_TRAIL_ARM = 30
 V211A_DN_PUT_TRAIL_RETRACE = 20
+# Alpha v2.12 B10: an entry-spot stop fires only when the completed
+# one-minute close breaches the original anchor by this many spot points.
+# Recovery still re-enters at the anchor itself. Imported by BOTH the paper
+# tracker and the live runner, so the two books can never drift apart.
+V212_B10_EXIT_BUFFER = 10.0
 EOD_EXIT_MINUTE = 15 * 60 + 25
 
 # v7.6 ALPHA_STALL (PC50 gap-UP CALL)
@@ -233,6 +238,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              suppress_pc50_call_entries=False,
              enable_entry_spot_recovery=False,
              entry_spot_close_confirmed=False,
+             entry_spot_exit_buffer=0.0,
              # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
              no_alpha_exits=False,
              cpr_levels=None,
@@ -276,6 +282,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     original entry anchor; a PUT stop is confirmed at/above the anchor. A
     candle that merely touches the anchor and closes back on the favourable
     side remains HOLD, avoiding v2.12's synthetic same-candle exit/re-entry.
+
+    `entry_spot_exit_buffer` moves only the overlay's STOP barrier (Alpha
+    v2.12 B10 passes V212_B10_EXIT_BUFFER with close confirmation). A CALL
+    stops when the completed close is at/below anchor - buffer; a PUT at/
+    above anchor + buffer. Recovery still re-enters when a candle crosses
+    back through the anchor itself. At 0.0 the overlay is unchanged.
 
     Alpha-CPR paper overlay (all flags default OFF — v2.11 / v2.12 / v2.13 and
     the live runner are byte-for-byte unchanged when they are not passed):
@@ -505,13 +517,19 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                 active_at_end = True
                 for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
                     if active_at_end:
+                        # The stop barrier sits entry_spot_exit_buffer
+                        # points beyond the anchor (0 except for B10).
+                        stop_level = (
+                            esp - entry_spot_exit_buffer if pos == "call"
+                            else esp + entry_spot_exit_buffer
+                        )
                         hit = (
-                            (pos == "call" and bl <= esp)
-                            or (pos == "put" and bh >= esp)
+                            (pos == "call" and bl <= stop_level)
+                            or (pos == "put" and bh >= stop_level)
                         )
                         favourable_close = (
-                            (pos == "call" and bc > esp)
-                            or (pos == "put" and bc < esp)
+                            (pos == "call" and bc > stop_level)
+                            or (pos == "put" and bc < stop_level)
                         )
                         if hit and entry_spot_close_confirmed and favourable_close:
                             continue
