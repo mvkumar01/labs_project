@@ -57,9 +57,10 @@ def test_paper_replay_is_b10_plus_the_replay_b_filter(monkeypatch) -> None:
 
     assert seen == {"close_confirmed": True,
                     "exit_buffer": V212_B10_EXIT_BUFFER,
-                    "suppress_pc50_call_entries": True}
+                    "suppress_pc50_call_entries": True,
+                    "check_entry_bar": True}
     assert out["context"]["strategy_version"] == \
-        "Alpha v2.14 (v2.11 replay (B) + B10)"
+        "Alpha v2.14 B (v2.11 replay (B) + B10)"
 
 
 # -- live ---------------------------------------------------------------------
@@ -70,6 +71,7 @@ def test_live_policy_for_v214() -> None:
     assert p.boundary_tick_close is True
     assert p.fast_stop_overlay is False
     assert p.next_open_fallback is False
+    assert p.entry_spot_check_entry_bar is True
 
 
 def test_sources_keep_their_own_behaviour() -> None:
@@ -77,6 +79,9 @@ def test_sources_keep_their_own_behaviour() -> None:
     assert b10.suppress_pc50_call_entries is False
     assert replay_b.entry_spot_exit_buffer == 0.0
     assert replay_b.boundary_tick_close is False
+    assert replay_b.entry_spot_check_entry_bar is False
+    for other in ("v2.11", "v2.12", "v2.12_closed_confirmed", "v2.13"):
+        assert champion_live_policy(other).entry_spot_check_entry_bar is False
 
 
 def test_live_preset_and_label() -> None:
@@ -131,7 +136,7 @@ def test_tracker_persists_its_own_ledger_with_causal_fills(monkeypatch) -> None:
     app.register_blueprint(labs_bp)
     monkeypatch.setattr("storage.db.get_conn", lambda: conn)
     html = app.test_client().get("/labs/live?tab=alpha_v214").get_data(as_text=True)
-    assert "Alpha v2.14" in html
+    assert "Alpha v2.14 B" in html
     assert "v2.11 replay (B) + B10" in html
 
 
@@ -139,8 +144,10 @@ def test_registered_as_live_tab_and_paper_runner() -> None:
     from labs.ui.routes import LIVE_TABS
     from labs.services.book_overview import BOOKS
 
-    assert LIVE_TABS["alpha_v214"] == "Alpha v2.14"
-    assert BOOKS["alpha_v214"]["label"] == "Alpha v2.14"
+    assert LIVE_TABS["alpha_v214"] == "Alpha v2.14 B"
+    assert BOOKS["alpha_v214"]["label"] == "Alpha v2.14 B"
+    assert LIVE_TABS["alpha_v212b10"] == "Alpha v2.14 A"
+    assert BOOKS["alpha_v212b10"]["label"] == "Alpha v2.14 A"
     template = (ROOT / "templates" / "live_strategy.html").read_text(encoding="utf-8")
     assert "'alpha_v214'" in template
     for runner in ("pa_paper_tracker.py", "pa_paper_tracker_loop.py"):

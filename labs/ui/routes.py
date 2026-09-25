@@ -359,8 +359,8 @@ LIVE_TABS = {
     "nifty": "Alpha v2.11",
     "alpha_v211b": "Alpha 2.11 replay (B)",
     "alpha_v212": "Alpha v2.12",
-    "alpha_v212b10": "Alpha v2.12 B10",
-    "alpha_v214": "Alpha v2.14",
+    "alpha_v212b10": "Alpha v2.14 A",
+    "alpha_v214": "Alpha v2.14 B",
     "alpha_cpr": "Alpha CPR",
     "theta_straddle": "09:20 Theta Straddle",
     "theta_iron_fly": "09:20 Iron Fly",
@@ -393,8 +393,8 @@ def live_strategy():
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
         "alpha_v212": "v2.12",
-        "alpha_v212b10": "v2.12 B10",
-        "alpha_v214": "v2.14",
+        "alpha_v212b10": "v2.14 A",
+        "alpha_v214": "v2.14 B",
         "alpha_cpr": "CPR",
     }.get(active_live_tab, "")
     overview_cards = []

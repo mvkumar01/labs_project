@@ -1,4 +1,4 @@
-"""Alpha v2.14 paper tracker: v2.11 replay (B) + B10.
+"""Alpha v2.14 B paper tracker: v2.11 replay (B) + B10 (Alpha v2.14 A).
 
 Two proven pieces, nothing new:
   * v2.11 replay (B)'s entry filter -- PC50 CALL decisions stay flat; PC50 PUT
@@ -27,12 +27,12 @@ from labs.engine.alpha_v212_tracker import (
 from labs.engine.alpha_v212b10_tracker import _status, causal_fill_times
 from labs.engine.paper_strategy_tracker import IST
 from live.engine import champion_inputs
-from live.engine.champion_sim import V212_B10_EXIT_BUFFER
+from live.engine.champion_sim import V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR
 from storage.db import get_conn
 
 
 STRATEGY_VERSION = (
-    "alpha_v2.14_no_pc50_call_b10_close_buffer10_itm200_bidask_causal_next_minute"
+    "alpha_v2.14b_no_pc50_call_b10_close_buffer10_entrybar_itm200_bidask_causal_next_minute"
 )
 
 
@@ -99,17 +99,19 @@ def replay_v214(trade_date: str, override: dict | None = None) -> dict:
             close_confirmed=True,
             exit_buffer=V212_B10_EXIT_BUFFER,
             suppress_pc50_call_entries=True,
+            check_entry_bar=V214_CHECK_ENTRY_BAR,
         )
     except AlphaV212InputError as exc:
         raise AlphaV214InputError(str(exc)) from exc
     context = dict(replay.get("context") or {})
     context.update(
         {
-            "strategy_version": "Alpha v2.14 (v2.11 replay (B) + B10)",
+            "strategy_version": "Alpha v2.14 B (v2.11 replay (B) + B10)",
             "decision_filter": "no_pc50_call",
             "pc50_call_entries_allowed": False,
             "stop_rule": "close_confirmed",
             "exit_buffer_pts": V212_B10_EXIT_BUFFER,
+            "check_entry_bar": V214_CHECK_ENTRY_BAR,
             "fill_model": "causal_next_minute",
         }
     )
@@ -215,7 +217,7 @@ def run_day(
             for index, trade in enumerate(unavailable)
         )
         raise AlphaV214InputError(
-            f"Alpha v2.14 pricing incomplete for {trade_date}: "
+            f"Alpha v2.14 B pricing incomplete for {trade_date}: "
             f"{detail}; existing rows retained"
         )
     if persist:

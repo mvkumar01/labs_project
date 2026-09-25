@@ -106,7 +106,8 @@ def test_paper_book_uses_the_shared_constant(monkeypatch) -> None:
     b10.replay_v212b10("2026-09-15")
 
     assert seen == {"close_confirmed": True,
-                    "exit_buffer": V212_B10_EXIT_BUFFER}
+                    "exit_buffer": V212_B10_EXIT_BUFFER,
+                    "check_entry_bar": True}
 
 
 def test_live_policy_for_b10() -> None:
@@ -115,6 +116,7 @@ def test_live_policy_for_b10() -> None:
     assert p.boundary_tick_close is True       # decides at the :00 boundary
     assert p.fast_stop_overlay is False        # never an intraminute tick stop
     assert p.next_open_fallback is False
+    assert p.entry_spot_check_entry_bar is True    # v2.14 A: entry-bar fix
 
 
 @pytest.mark.parametrize("version", [

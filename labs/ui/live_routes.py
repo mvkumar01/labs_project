@@ -542,8 +542,8 @@ STRATEGY_LABELS = {
     "champion_v211b": "Alpha 2.11 replay (B)",
     "champion_v212": "Alpha v2.12",
     "champion_v212_close_confirmed": "Alpha v2.12 (close-confirmed)",
-    "champion_v212_b10": "Alpha v2.12 B10 (10-pt stop buffer)",
-    "champion_v214": "Alpha v2.14 (v2.11 replay (B) + B10)",
+    "champion_v212_b10": "Alpha v2.14 A (B10: 10-pt stop buffer)",
+    "champion_v214": "Alpha v2.14 B (v2.11 replay (B) + B10)",
     "champion_v213": "Alpha v2.13",
 }
 

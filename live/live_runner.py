@@ -45,7 +45,7 @@ from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
 from live.engine import champion_decider, champion_inputs, minute_ticks
-from live.engine.champion_sim import V212_B10_EXIT_BUFFER
+from live.engine.champion_sim import V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR
 from market_data.expiry import select_symbol_for_expiry
 log = logging.getLogger("live.runner")
 
@@ -75,6 +75,7 @@ class ChampionLivePolicy:
     boundary_tick_close: bool = False
     suppress_pc50_call_entries: bool = False
     entry_spot_exit_buffer: float = 0.0
+    entry_spot_check_entry_bar: bool = False
 
 
 def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
@@ -99,7 +100,8 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     so paper and live cannot disagree on the barrier.
 
     v2.14 is v2.11 replay (B) + B10: v2.12_b10 exactly, with v2.11b's PC50 CALL
-    entry suppression.
+    entry suppression. Both (shown as Alpha v2.14 A / B) also watch the entry
+    bar's own minutes, closing the overlay's post-entry blind spot.
 
     v2.13 is the explicit additive-risk variant and alone retains a buffered
     intraminute tick stop and the next-open fallback.
@@ -113,6 +115,7 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
             b10 or strategy_version == "v2.12_closed_confirmed"),
         suppress_pc50_call_entries=strategy_version in ("v2.11b", "v2.14"),
         entry_spot_exit_buffer=V212_B10_EXIT_BUFFER if b10 else 0.0,
+        entry_spot_check_entry_bar=V214_CHECK_ENTRY_BAR if b10 else False,
     )
 
 
@@ -1519,6 +1522,7 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                 v212_recovery or v212_close_confirmed or v212_b10),
             entry_spot_close_confirmed=(v212_close_confirmed or v212_b10),
             entry_spot_exit_buffer=live_policy.entry_spot_exit_buffer,
+            entry_spot_check_entry_bar=live_policy.entry_spot_check_entry_bar,
             suppress_pc50_call_entries=live_policy.suppress_pc50_call_entries,
             enable_v211_risk_authority=v213_additive,
             live_execution_spot=live_execution_spot,

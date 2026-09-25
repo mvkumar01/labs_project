@@ -1,4 +1,4 @@
-"""Alpha v2.12 B10 paper tracker: v2.12 with a 10-point stop buffer, honest fills.
+"""Alpha v2.14 A (formerly v2.12 B10): v2.12 with a 10-point stop buffer, honest fills.
 
 Decisions -- the production champion replay, unchanged except for the
 entry-spot overlay's stop barrier (shared constant V212_B10_EXIT_BUFFER, the
@@ -48,12 +48,12 @@ from labs.engine.alpha_v212_tracker import (
 )
 from labs.engine.paper_strategy_tracker import IST
 from live.engine import champion_inputs
-from live.engine.champion_sim import V212_B10_EXIT_BUFFER
+from live.engine.champion_sim import V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR
 from storage.db import get_conn
 
 
 STRATEGY_VERSION = (
-    "alpha_v2.12_b10_close_buffer10_itm200_bidask_causal_next_minute"
+    "alpha_v2.14a_b10_close_buffer10_entrybar_itm200_bidask_causal_next_minute"
 )
 
 _ONE_MINUTE = pd.Timedelta(minutes=1)
@@ -178,15 +178,17 @@ def replay_v212b10(trade_date: str, override: dict | None = None) -> dict:
             override,
             close_confirmed=True,
             exit_buffer=V212_B10_EXIT_BUFFER,
+            check_entry_bar=V214_CHECK_ENTRY_BAR,
         )
     except AlphaV212InputError as exc:
         raise AlphaV212B10InputError(str(exc)) from exc
     context = dict(replay.get("context") or {})
     context.update(
         {
-            "strategy_version": "Alpha v2.12 B10",
+            "strategy_version": "Alpha v2.14 A",
             "stop_rule": "close_confirmed",
             "exit_buffer_pts": V212_B10_EXIT_BUFFER,
+            "check_entry_bar": V214_CHECK_ENTRY_BAR,
             "fill_model": "causal_next_minute",
         }
     )
@@ -302,7 +304,7 @@ def run_day(
             for index, trade in enumerate(unavailable)
         )
         raise AlphaV212B10InputError(
-            f"Alpha v2.12 B10 pricing incomplete for {trade_date}: "
+            f"Alpha v2.14 A pricing incomplete for {trade_date}: "
             f"{detail}; existing rows retained"
         )
     if persist:

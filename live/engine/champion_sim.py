@@ -40,6 +40,9 @@ V211A_DN_PUT_TRAIL_RETRACE = 20
 # Recovery still re-enters at the anchor itself. Imported by BOTH the paper
 # tracker and the live runner, so the two books can never drift apart.
 V212_B10_EXIT_BUFFER = 10.0
+# Alpha v2.14 A/B watch the entry bar's own minutes (entry_spot_check_entry_bar).
+# Shared by paper and live for the same reason as the buffer above.
+V214_CHECK_ENTRY_BAR = True
 EOD_EXIT_MINUTE = 15 * 60 + 25
 
 # v7.6 ALPHA_STALL (PC50 gap-UP CALL)
@@ -239,6 +242,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              enable_entry_spot_recovery=False,
              entry_spot_close_confirmed=False,
              entry_spot_exit_buffer=0.0,
+             entry_spot_check_entry_bar=False,
+             entry_spot_anchor_at_fill=False,
              # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
              no_alpha_exits=False,
              cpr_levels=None,
@@ -288,6 +293,19 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     stops when the completed close is at/below anchor - buffer; a PUT at/
     above anchor + buffer. Recovery still re-enters when a candle crosses
     back through the anchor itself. At 0.0 the overlay is unchanged.
+
+    `entry_spot_check_entry_bar` closes the overlay's blind spot after a fresh
+    Alpha entry. The overlay scans bar T's minutes T..T+4 before bar T's entry
+    is taken, so a position entered at T was first checked on T+5..T+9 and the
+    five minutes right after every entry went unwatched (2026-09-25: a PUT
+    closed 11 points past its barrier at 14:01 and was only stopped on the
+    14:05 close, 50 points away). With the flag, the entry bar is revisited
+    for the overlay alone -- no Alpha state, exits or entries run twice.
+
+    `entry_spot_anchor_at_fill` anchors a fresh Alpha entry at the snapshot's
+    own spot (the price the option was bought at, ~T:00) instead of candle
+    T's close, which is only known at T:59. Every spot reference of that
+    position (overlay, trail, spot P&L) then starts from the real fill.
 
     Alpha-CPR paper overlay (all flags default OFF — v2.11 / v2.12 / v2.13 and
     the live runner are byte-for-byte unchanged when they are not passed):
@@ -384,7 +402,16 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             else (alpha >= 0 or alpha <= -100)
         )
 
-    for i in range(1, len(adf)):
+    i = 0
+    revisit = False
+    while True:
+        # overlay_only: a second pass over the bar just entered, running the
+        # entry-spot overlay alone (entry_spot_check_entry_bar).
+        overlay_only, revisit = revisit, False
+        if not overlay_only:
+            i += 1
+            if i >= len(adf):
+                break
         p = adf.iloc[i - 1]
         c = adf.iloc[i]
         pa = float(p["alpha"])
@@ -403,23 +430,24 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         if abs(ca) > 200:
             continue
 
-        if cb:
+        if cb and not overlay_only:
             if not crr and ca < T:
                 crr = True
             if crr and pa <= T and ca > T:
                 cb = False
                 crr = False
-        if pb:
+        if pb and not overlay_only:
             if not prr and ca > -T:
                 prr = True
             if prr and pa >= -T and ca < -T:
                 pb = False
                 prr = False
 
-        if pos == "call" and pos_max_alpha is not None and ca > pos_max_alpha:
+        if (pos == "call" and pos_max_alpha is not None and ca > pos_max_alpha
+                and not overlay_only):
             pos_max_alpha = ca
 
-        if (pos == "put" and tier == "PC400" and not is_up
+        if (pos == "put" and tier == "PC400" and not is_up and not overlay_only
                 and enable_v711_drift_protective and drift_min_alpha is not None):
             if ca < drift_min_alpha:
                 drift_min_alpha = ca
@@ -429,7 +457,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
         # Flat after an entry-spot stop: Alpha invalidation has priority.
         # Re-entry requires a one-minute touch plus a favourable-side close.
-        if enable_entry_spot_recovery and recovery_waiting:
+        if enable_entry_spot_recovery and recovery_waiting and not overlay_only:
             if not partial_bar and recovery_alpha_exit(recovery_pos, ca, recovery_sl_override):
                 trades.append(dict(
                     pnl=0.0, reason="RECOVERY_CANCEL_ALPHA", pos=recovery_pos,
@@ -598,6 +626,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                     entry_alpha = None
                     pos_max_alpha = None
                     continue
+            if overlay_only:
+                continue
 
             # ── Alpha-CPR structural stop / target ───────────────────────────
             # Hard intra-bar levels resolved at entry, evaluated on the 1-min
@@ -808,8 +838,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         # Alpha-crossover entries (Rule 1/2/3, D2) are 5-min-grid only — never on
         # a stops-only partial bar. (Entry-spot recovery RE-ENTRY is handled above
         # in the recovery block and DOES fire intra-bar.)
-        if pos is None and not partial_bar:
+        if pos is None and not partial_bar and not overlay_only:
             sp = ohlc.get_spot(c["timestamp"]) or float(c["spot"])
+            if entry_spot_anchor_at_fill:
+                sp = float(c["spot"])
             entered = False
             new_pos = None
             rule_tag = None
@@ -948,6 +980,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
                 if rule_tag != "D2":
                     d2_pending = False; d2_nbw = None; d2_prev_oi = None
+                if entry_spot_check_entry_bar and enable_entry_spot_recovery:
+                    revisit = True
 
     # EOD close (backtest/EOD) OR return the in-flight position (replay-to-now)
     open_state = None

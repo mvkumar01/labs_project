@@ -331,7 +331,9 @@
     {% set is_v211b = active_live_tab == 'alpha_v211b' %}
     {% set is_cpr = active_live_tab == 'alpha_cpr' %}
     <h1>{{ live_tabs[active_live_tab] }}</h1>
-    {% if active_live_tab == 'alpha_v214' %}
+    {% if active_live_tab == 'alpha_v212b10' %}
+    <p class="sub">v2.12 + 10-pt stop buffer (B10), formerly Alpha v2.12 B10</p>
+    {% elif active_live_tab == 'alpha_v214' %}
     <p class="sub">v2.11 replay (B) + B10</p>
     {% endif %}
 
