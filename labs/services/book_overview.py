@@ -26,6 +26,7 @@ BOOKS = {
     "alpha_v211b": {"label": "Alpha 2.11 replay (B)", "instrument": "NIFTY options", "size": "1 lot"},
     "alpha_v212": {"label": "Alpha v2.12", "instrument": "NIFTY options", "size": "1 lot"},
     "alpha_v212b10": {"label": "Alpha v2.12 B10", "instrument": "NIFTY options", "size": "1 lot"},
+    "alpha_v214": {"label": "Alpha v2.14", "instrument": "NIFTY options", "size": "1 lot"},
     "alpha_cpr": {"label": "Alpha CPR", "instrument": "NIFTY options", "size": "1-15 lots"},
     "theta_straddle": {"label": "09:20 Theta Straddle", "instrument": "NIFTY options", "size": "1 lot per leg"},
     "theta_iron_fly": {"label": "09:20 Iron Fly", "instrument": "NIFTY options", "size": "1 lot per leg"},
@@ -140,6 +141,8 @@ def build_overview(conn: sqlite3.Connection, today: str | None = None) -> list[d
         "alpha_v212b10": lambda: _option_buy_book(
             conn, "alpha_v212b10", "alpha_v212b10_daily",
             "alpha_v212b10_trades", today),
+        "alpha_v214": lambda: _option_buy_book(
+            conn, "alpha_v214", "alpha_v214_daily", "alpha_v214_trades", today),
         "alpha_cpr": lambda: _option_buy_book(conn, "alpha_cpr", "alpha_cpr_daily",
                                               "alpha_cpr_trades", today, lots_col="lots"),
         "theta_straddle": lambda: _short_premium(conn, "theta_straddle", "theta_straddle_daily", today),

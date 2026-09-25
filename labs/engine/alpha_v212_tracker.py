@@ -280,12 +280,15 @@ def replay_v212(
     *,
     close_confirmed: bool = False,
     exit_buffer: float = 0.0,
+    suppress_pc50_call_entries: bool = False,
 ) -> dict:
     """Replay one day through the v2.12 overlay.
 
     The defaults are canonical v2.12 (touch rule, stop at the anchor).
     `close_confirmed` / `exit_buffer` exist for sibling books that reuse this
     exact pipeline -- Alpha v2.12 B10 passes True / V212_B10_EXIT_BUFFER.
+    `suppress_pc50_call_entries` is v2.11 replay (B)'s entry filter; Alpha
+    v2.14 is B10 with it switched on.
     """
     day = _resolve_day(trade_date, override)
     if day is None or day.get("bucket") == "SKIP":
@@ -343,6 +346,7 @@ def replay_v212(
         enable_entry_spot_recovery=True,
         entry_spot_close_confirmed=close_confirmed,
         entry_spot_exit_buffer=exit_buffer,
+        suppress_pc50_call_entries=suppress_pc50_call_entries,
         entries_until_ts=cutoff,
     )
     # Recovery cancellations carry no economic position or option fill.

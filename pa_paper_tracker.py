@@ -14,6 +14,7 @@ if __name__ == "__main__":
     from labs.engine.alpha_v211b_tracker import run_day as run_v211b_day
     from labs.engine.alpha_v212_tracker import run_day as run_v212_day
     from labs.engine.alpha_v212b10_tracker import run_day as run_v212b10_day
+    from labs.engine.alpha_v214_tracker import run_day as run_v214_day
     from labs.engine.sensex_alpha_inverted_tracker import run_day as run_sensex_inverted_day
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
@@ -35,6 +36,11 @@ if __name__ == "__main__":
         results["alpha_v212b10"] = run_v212b10_day(arg)
     except Exception as exc:
         results["alpha_v212b10"] = f"{type(exc).__name__}: {exc}"
+    # Alpha v2.14 (v2.11 replay (B) + B10) is new and guarded the same way.
+    try:
+        results["alpha_v214"] = run_v214_day(arg)
+    except Exception as exc:
+        results["alpha_v214"] = f"{type(exc).__name__}: {exc}"
     try:
         results["alpha_cpr"] = run_cpr_day(arg)
     except Exception as exc:

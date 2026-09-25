@@ -533,6 +533,7 @@ STRATEGY_PRESETS = {
         "champion_replay", "v2.12_closed_confirmed"
     ),
     "champion_v212_b10": ("champion_replay", "v2.12_b10"),
+    "champion_v214": ("champion_replay", "v2.14"),
     "champion_v213": ("champion_replay", "v2.13"),
 }
 STRATEGY_LABELS = {
@@ -542,6 +543,7 @@ STRATEGY_LABELS = {
     "champion_v212": "Alpha v2.12",
     "champion_v212_close_confirmed": "Alpha v2.12 (close-confirmed)",
     "champion_v212_b10": "Alpha v2.12 B10 (10-pt stop buffer)",
+    "champion_v214": "Alpha v2.14 (v2.11 replay (B) + B10)",
     "champion_v213": "Alpha v2.13",
 }
 
@@ -555,6 +557,8 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
         return "champion_v213"
     if de == "champion_replay" and sv == "v2.12_b10":
         return "champion_v212_b10"
+    if de == "champion_replay" and sv == "v2.14":
+        return "champion_v214"
     if de == "champion_replay" and sv == "v2.12_closed_confirmed":
         return "champion_v212_close_confirmed"
     if de == "champion_replay" and sv == "v2.12":

@@ -98,18 +98,21 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     recovery is still at the anchor. The paper book imports the same constant,
     so paper and live cannot disagree on the barrier.
 
+    v2.14 is v2.11 replay (B) + B10: v2.12_b10 exactly, with v2.11b's PC50 CALL
+    entry suppression.
+
     v2.13 is the explicit additive-risk variant and alone retains a buffered
     intraminute tick stop and the next-open fallback.
     """
     additive = strategy_version == "v2.13"
+    b10 = strategy_version in ("v2.12_b10", "v2.14")
     return ChampionLivePolicy(
         fast_stop_overlay=additive,
         next_open_fallback=additive,
-        boundary_tick_close=strategy_version in (
-            "v2.12_closed_confirmed", "v2.12_b10"),
-        suppress_pc50_call_entries=strategy_version == "v2.11b",
-        entry_spot_exit_buffer=(
-            V212_B10_EXIT_BUFFER if strategy_version == "v2.12_b10" else 0.0),
+        boundary_tick_close=(
+            b10 or strategy_version == "v2.12_closed_confirmed"),
+        suppress_pc50_call_entries=strategy_version in ("v2.11b", "v2.14"),
+        entry_spot_exit_buffer=V212_B10_EXIT_BUFFER if b10 else 0.0,
     )
 
 
@@ -1358,7 +1361,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     strategy_version = svc.get_config(user_id, conn_id, "strategy_version")
     v212_recovery = strategy_version == "v2.12"
     v212_close_confirmed = strategy_version == "v2.12_closed_confirmed"
-    v212_b10 = strategy_version == "v2.12_b10"
+    # v2.14 is B10 plus the PC50 CALL suppression carried by live_policy.
+    v212_b10 = strategy_version in ("v2.12_b10", "v2.14")
     v213_additive = strategy_version == "v2.13"
     live_policy = champion_live_policy(strategy_version)
     recovery_replay = (v212_recovery or v212_close_confirmed or v212_b10

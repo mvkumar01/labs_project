@@ -327,10 +327,13 @@
       </table>
     {% endif %}
 
-    {% elif active_live_tab in ['alpha_v211b', 'alpha_v212', 'alpha_v212b10', 'alpha_cpr'] %}
+    {% elif active_live_tab in ['alpha_v211b', 'alpha_v212', 'alpha_v212b10', 'alpha_v214', 'alpha_cpr'] %}
     {% set is_v211b = active_live_tab == 'alpha_v211b' %}
     {% set is_cpr = active_live_tab == 'alpha_cpr' %}
     <h1>{{ live_tabs[active_live_tab] }}</h1>
+    {% if active_live_tab == 'alpha_v214' %}
+    <p class="sub">v2.11 replay (B) + B10</p>
+    {% endif %}
 
     {% if overlay_stats.get('error') %}
       <p class="empty">Alpha {{ overlay_version }} unavailable ({{ overlay_stats.error }}).</p>

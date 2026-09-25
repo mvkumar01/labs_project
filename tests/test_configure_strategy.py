@@ -178,6 +178,18 @@ def test_flat_strategy_change_supports_v212_b10(client):
     assert 'value="champion_v212_b10" selected' in page
 
 
+def test_flat_strategy_change_supports_v214(client):
+    _set_strategy("champion_replay", "v2.12_b10")
+
+    response = _configure(client, "champion_v214")
+
+    assert response.status_code == 302
+    assert _strategy_pair() == ("champion_replay", "v2.14")
+    page = client.get("/live/configure").get_data(as_text=True)
+    assert 'value="champion_v214" selected' in page
+    assert "Alpha v2.14 (v2.11 replay (B) + B10)" in page
+
+
 def test_open_position_allows_same_strategy_to_save_other_configuration(client):
     _set_strategy("champion_replay", "v2.11")
     state = svc.get_trade_state(USER_ID, CONN_ID)

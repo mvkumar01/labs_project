@@ -48,7 +48,7 @@ log = logging.getLogger("live.executor")
 
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
-LIVE_DECISION_ABI = "alpha-v2.12-b10-live-v1"
+LIVE_DECISION_ABI = "alpha-v2.14-live-v1"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
