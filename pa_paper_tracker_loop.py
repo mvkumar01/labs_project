@@ -43,6 +43,7 @@ def main() -> None:
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
+    from labs.engine.btc_rsi_roc_tracker import run_live as run_btc_rsi_roc_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
@@ -56,6 +57,7 @@ def main() -> None:
         "theta_straddle": None,
         "theta_iron_fly": None,
         "crude_macd_st": None,
+        "btc_rsi_roc": None,
     }
     while True:
         now = datetime.now(IST)
@@ -105,10 +107,18 @@ def main() -> None:
                     last_log["crude_macd_st"] = res
             except Exception as exc:
                 print(f"[paper-loop:crude_macd_st] error: {type(exc).__name__}: {exc}", flush=True)
-        if _in_session(now) or _in_mcx_session(now):
-            _time.sleep(POLL_MARKET)
-        else:
-            _time.sleep(POLL_IDLE)
+        # BTCUSDT trades 24/7: its paper book runs every cycle, isolated like the MCX books,
+        # so the loop never idles longer than a minute. "through" moves every minute and is
+        # left out of the change check to keep the log to real changes.
+        try:
+            res = run_btc_rsi_roc_live(now)
+            shown = {k: v for k, v in res.items() if k != "through"}
+            if shown != last_log["btc_rsi_roc"]:
+                print(f"[paper-loop:btc_rsi_roc] {now.strftime('%H:%M')} {res}", flush=True)
+                last_log["btc_rsi_roc"] = shown
+        except Exception as exc:
+            print(f"[paper-loop:btc_rsi_roc] error: {type(exc).__name__}: {exc}", flush=True)
+        _time.sleep(POLL_MARKET)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,7 @@ BOOKS = {
     "theta_straddle": {"label": "09:20 Theta Straddle", "instrument": "NIFTY options", "size": "1 lot per leg"},
     "theta_iron_fly": {"label": "09:20 Iron Fly", "instrument": "NIFTY options", "size": "1 lot per leg"},
     "crude_macd_st": {"label": "Crude MACD/ST", "instrument": "CRUDEOIL futures", "size": "1 lot"},
+    "btc_rsi_roc": {"label": "BTC RSI/ROC short", "instrument": "BTCUSDT spot (Binance)", "size": "0.01 BTC"},
     "sensex_alpha": {"label": "Sensex_alpha", "instrument": "SENSEX options", "size": "1 lot"},
 }
 
@@ -110,6 +111,16 @@ def _crude(conn, today: str) -> dict:
                  open_net=sum(_f(t["net_rs"]) for t in held))
 
 
+def _btc(conn, today: str) -> dict:
+    daily = [{"trade_date": r["trade_date"], "net": _f(r["net_rs"])} for r in _rows(
+        conn, "SELECT trade_date, net_rs FROM btc_rsi_roc_daily")]
+    trades = _rows(conn, "SELECT status, net_rs, margin_rs FROM btc_rsi_roc_trades")
+    capital = max((_f(t["margin_rs"]) for t in trades), default=0.0)
+    held = [t for t in trades if t["status"] == "open"]
+    return _card("btc_rsi_roc", daily, today, capital, "Short 0.01 BTC" if held else "Flat",
+                 open_net=sum(_f(t["net_rs"]) for t in held))
+
+
 def _sensex(conn, today: str) -> dict:
     # The Sensex_alpha tab shows the inverted-execution tables; this book stores gross
     # option P&L only, so charges are applied here per priced trade.
@@ -148,6 +159,7 @@ def build_overview(conn: sqlite3.Connection, today: str | None = None) -> list[d
         "theta_straddle": lambda: _short_premium(conn, "theta_straddle", "theta_straddle_daily", today),
         "theta_iron_fly": lambda: _short_premium(conn, "theta_iron_fly", "theta_iron_fly_daily", today),
         "crude_macd_st": lambda: _crude(conn, today),
+        "btc_rsi_roc": lambda: _btc(conn, today),
         "sensex_alpha": lambda: _sensex(conn, today),
     }
     cards = []

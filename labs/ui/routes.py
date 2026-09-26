@@ -365,6 +365,7 @@ LIVE_TABS = {
     "theta_straddle": "09:20 Theta Straddle",
     "theta_iron_fly": "09:20 Iron Fly",
     "crude_macd_st": "Crude MACD/ST",
+    "btc_rsi_roc": "BTC RSI/ROC short",
     "baskets": "v2.11 Baskets",
     "sensex_alpha": "Sensex_alpha",
 }
@@ -389,6 +390,7 @@ def live_strategy():
     overlay_rows, overlay_trades, overlay_stats = [], [], {}
     theta_rows, theta_trades, theta_stats = [], [], {}
     crude_rows, crude_trades, crude_stats = [], [], {}
+    btc_rows, btc_trades, btc_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -864,6 +866,15 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # BTCUSDT RSI/ROC short (paper, 24/7): its own ledger and tab.
+        if active_live_tab == "btc_rsi_roc":
+            try:
+                from labs.engine.btc_rsi_roc_tracker import tab_data as btc_tab_data
+                btc_rows, btc_trades, btc_stats = btc_tab_data(conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    btc_stats = {"error": str(exc)}
+
         # SENSEX-own Alpha is a separate paper book and never changes the
         # NIFTY v2.11 rows above. Missing tables degrade to an empty tab during
         # first deployment; the paper loop creates them on its first valid run.
@@ -1016,6 +1027,9 @@ def live_strategy():
         crude_rows=crude_rows,
         crude_trades=crude_trades,
         crude_stats=crude_stats,
+        btc_rows=btc_rows,
+        btc_trades=btc_trades,
+        btc_stats=btc_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
@@ -1079,6 +1093,21 @@ def crude_macd_st_backfill():
             limit=limit,
         )
         return jsonify(result)
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/btc_rsi_roc/backfill", methods=["POST"])
+def btc_rsi_roc_backfill():
+    """Backfill bounded batches of the paper-only BTCUSDT RSI/ROC book."""
+    from labs.engine.btc_rsi_roc_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 20)), 1), 60)
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        return jsonify(run_backfill(start_date=request.args.get("start", DEFAULT_START),
+                                    end_date=request.args.get("end"), limit=limit))
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 

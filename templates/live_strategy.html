@@ -154,6 +154,101 @@
       </table>
     {% endif %}
 
+    {% elif active_live_tab == 'btc_rsi_roc' %}
+    <h1>{{ live_tabs[active_live_tab] }}</h1>
+    <p class="sub">Strategy Tester btcusdt rank 409 &middot; short 0.01 BTC &middot; SL 1%, TP 1.5R, 30-bar cooldown &middot;
+      Binance spot 0.1%/side + 1 tick slippage/side &middot; prices in USDT, money in &#8377; at the ECB USD/INR rate on the
+      exit date (UTC) &middot; days are UTC, times IST &middot; paper only</p>
+
+    {% if btc_stats.get('error') %}
+      <p class="empty">BTC book unavailable ({{ btc_stats.error }}).</p>
+    {% elif not btc_rows %}
+      <p class="empty">No BTC days recorded in this date range.</p>
+      <button type="button" id="btc-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="btc-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if btc_stats.net_total>0 else ('red' if btc_stats.net_total<0 else '') }}">&#8377;{{ "{:,.2f}".format(btc_stats.net_total) }}</div>
+          <div class="sub-k">closed trades ({{ "{:,.2f}".format(btc_stats.net_usdt) }} USDT), after &#8377;{{ "{:,.2f}".format(btc_stats.charges_total) }} fees and &#8377;{{ "{:,.2f}".format(btc_stats.slippage_total) }} slippage</div></div>
+        <div class="card"><div class="k">Trades</div>
+          <div class="v">{{ btc_stats.trades }}</div>
+          <div class="sub-k">{{ btc_stats.targets }} target / {{ btc_stats.stops }} stop over {{ btc_stats.days }} days</div></div>
+        <div class="card"><div class="k">Win rate</div>
+          <div class="v">{{ btc_stats.win_pct }}%</div>
+          <div class="sub-k">{{ btc_stats.wins }}/{{ btc_stats.trades }} net winners</div></div>
+        <div class="card"><div class="k">Avg R</div>
+          <div class="v">{{ btc_stats.avg_r }}</div>
+          <div class="sub-k">gross, per closed trade</div></div>
+        <div class="card"><div class="k">Max drawdown</div>
+          <div class="v">&#8377;{{ "{:,.2f}".format(btc_stats.max_dd) }}</div>
+          <div class="sub-k">on cumulative net, trade by trade</div></div>
+        {% if btc_stats.open_trades %}
+        <div class="card"><div class="k">Open short</div>
+          <div class="v {{ 'green' if btc_stats.open_net>0 else ('red' if btc_stats.open_net<0 else '') }}">&#8377;{{ "{:,.2f}".format(btc_stats.open_net) }}</div>
+          <div class="sub-k">marked at the last 1-minute close</div></div>
+        {% endif %}
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0">
+        <button type="button" id="btc-backfill" class="btn-secondary">Refresh backfill</button>
+        <span id="btc-backfill-status" class="muted"></span>
+        <span class="muted">Latest day {{ btc_stats.latest.trade_date }} (UTC): {{ btc_stats.latest.status }}, updated {{ btc_stats.latest.updated_at }}</span>
+      </div>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if btc_trades %}
+      <table class="perf">
+        <thead><tr><th>Day (UTC)</th><th>#</th><th>Signal (IST)</th><th>Entry &rarr; Exit (IST)</th>
+          <th>Entry</th><th>Stop / Target</th><th>Exit</th><th>Points</th><th>R</th><th>Net USDT</th>
+          <th title="USD/INR on the exit date (today while open)">USD/INR</th>
+          <th>Gross &#8377;</th><th>Fees + slip.</th><th>Net &#8377;</th><th>Reason</th></tr></thead>
+        <tbody>
+        {% for t in btc_trades %}
+          <tr>
+            <td>{{ t.trade_date }}</td><td>{{ t.seq }}</td>
+            <td>{{ t.signal_ist[5:] }}</td>
+            <td>{{ t.entry_ist[5:] }} &rarr; {{ t.exit_ist[5:] if t.exit_ist else 'open' }}</td>
+            <td>{{ "{:,.2f}".format(t.entry_price) }}</td>
+            <td class="muted">{{ "{:,.2f}".format(t.stop_price) }} / {{ "{:,.2f}".format(t.target_price) }}</td>
+            <td>{{ "{:,.2f}".format(t.exit_price) }}</td>
+            <td>{{ "%.2f"|format(t.points) }}</td>
+            <td>{{ "%.2f"|format(t.r_multiple) }}</td>
+            <td>{{ "%.2f"|format(t.net_usdt or 0) }}</td>
+            <td class="muted">{{ "%.2f"|format(t.fx_rate or 0) }}</td>
+            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format((t.charges_rs or 0) + (t.slippage_rs or 0)) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(t.net_rs or 0) }}</td>
+            <td>{% if t.status == 'open' %}<span class="amber">open</span>{% else %}{{ t.exit_reason }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="empty">No trades in this date range.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history (UTC days)</h2>
+      <table class="perf">
+        <thead><tr><th>Day</th><th>Status</th><th>Signals</th><th>Trades</th><th>Gross &#8377;</th>
+          <th>Fees</th><th>Slippage</th><th>Net &#8377;</th></tr></thead>
+        <tbody>
+        {% for r in btc_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td>
+            <td class="{{ 'amber' if r.status == 'live' else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+            <td>{{ r.n_signals }}</td>
+            <td>{{ r.n_trades }}{% if r.open_trades %} <span class="amber">(open)</span>{% endif %}</td>
+            <td>&#8377;{{ "{:,.2f}".format(r.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(r.charges_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.2f}".format(r.slippage_rs or 0) }}</td>
+            <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.2f}".format(r.net_rs or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
     {% elif active_live_tab == 'theta_straddle' %}
     <h1>{{ live_tabs[active_live_tab] }}</h1>
 
@@ -769,6 +864,43 @@
       } catch (error) {
         crudeStatus.textContent = 'Backfill failed: ' + error.message;
         crudeButton.disabled = false;
+      }
+    });
+  }
+</script>
+{% endif %}
+{% if active_live_tab == 'btc_rsi_roc' %}
+<script>
+  const btcButton = document.getElementById('btc-backfill');
+  const btcStatus = document.getElementById('btc-backfill-status');
+  if (btcButton) {
+    btcButton.addEventListener('click', async () => {
+      btcButton.disabled = true;
+      let pages = 0;
+      try {
+        while (true) {
+          btcStatus.textContent = 'Backfilling... ' + pages + ' pages of 1,000 minutes';
+          const response = await fetch('/labs/api/btc_rsi_roc/backfill?limit=20', {method: 'POST'});
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          pages += payload.done.length;
+          const errors = Object.values(payload.errors || {});
+          if (errors.length) {
+            btcStatus.textContent = 'Stopped: ' + errors.join('; ');
+            btcButton.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            btcStatus.textContent = 'Backfill complete';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        btcStatus.textContent = 'Backfill failed: ' + error.message;
+        btcButton.disabled = false;
       }
     });
   }
