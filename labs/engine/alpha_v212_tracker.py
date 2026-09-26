@@ -282,6 +282,9 @@ def replay_v212(
     exit_buffer: float = 0.0,
     suppress_pc50_call_entries: bool = False,
     check_entry_bar: bool = False,
+    renko_brick: float = 0.0,
+    renko_reversal: int = 2,
+    recovery_trace: list | None = None,
 ) -> dict:
     """Replay one day through the v2.12 overlay.
 
@@ -291,6 +294,8 @@ def replay_v212(
     `suppress_pc50_call_entries` is v2.11 replay (B)'s entry filter; Alpha
     v2.14 is B10 with it switched on. `check_entry_bar` closes the overlay's
     entry blind spot (Alpha v2.14 A and B pass V214_CHECK_ENTRY_BAR).
+    `renko_brick` / `renko_reversal` swap the overlay for Renko exits and re-entries
+    (Alpha v2.14 C); `recovery_trace` collects each overlay re-entry minute.
     """
     day = _resolve_day(trade_date, override)
     if day is None or day.get("bucket") == "SKIP":
@@ -350,6 +355,9 @@ def replay_v212(
         entry_spot_exit_buffer=exit_buffer,
         suppress_pc50_call_entries=suppress_pc50_call_entries,
         entry_spot_check_entry_bar=check_entry_bar,
+        entry_spot_renko_brick=renko_brick,
+        entry_spot_renko_reversal=renko_reversal,
+        entry_spot_recovery_trace=recovery_trace,
         entries_until_ts=cutoff,
     )
     # Recovery cancellations carry no economic position or option fill.

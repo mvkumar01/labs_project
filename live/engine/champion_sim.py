@@ -43,6 +43,10 @@ V212_B10_EXIT_BUFFER = 10.0
 # Alpha v2.14 A/B watch the entry bar's own minutes (entry_spot_check_entry_bar).
 # Shared by paper and live for the same reason as the buffer above.
 V214_CHECK_ENTRY_BAR = True
+# Alpha v2.14 C: the entry-spot overlay reads a Renko chart of 1-minute closes instead
+# of the anchor barrier -- 30-point bricks, classic two-brick reversal.
+V214C_RENKO_BRICK = 30.0
+V214C_RENKO_REVERSAL = 2
 EOD_EXIT_MINUTE = 15 * 60 + 25
 
 # v7.6 ALPHA_STALL (PC50 gap-UP CALL)
@@ -228,6 +232,34 @@ class OHLC:
         return out
 
 
+def renko_events(stream, brick: float, reversal: int) -> dict:
+    """stream: [(key, close)] in time order -> {key: 'u'/'dd'/...} for each close that
+    completes one or more bricks. A continuation brick needs +brick from the last brick
+    close, a reversal needs reversal x brick. The first close is the base."""
+    out, last, direction = {}, None, 0
+    for key, price in stream:
+        if last is None:
+            last = price
+            continue
+        ev = ""
+        while True:
+            up_need = brick if direction >= 0 else reversal * brick
+            down_need = brick if direction <= 0 else reversal * brick
+            if price >= last + up_need:
+                last += up_need
+                direction = 1
+                ev += "u"
+            elif price <= last - down_need:
+                last -= down_need
+                direction = -1
+                ev += "d"
+            else:
+                break
+        if ev:
+            out[key] = ev
+    return out
+
+
 def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              tier, weekday, regime, range_lo, range_hi,
              enable_v76_alpha_stall=True,
@@ -244,6 +276,9 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              entry_spot_exit_buffer=0.0,
              entry_spot_check_entry_bar=False,
              entry_spot_anchor_at_fill=False,
+             entry_spot_renko_brick=0.0,
+             entry_spot_renko_reversal=2,
+             entry_spot_recovery_trace=None,
              # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
              no_alpha_exits=False,
              cpr_levels=None,
@@ -306,6 +341,14 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     own spot (the price the option was bought at, ~T:00) instead of candle
     T's close, which is only known at T:59. Every spot reference of that
     position (overlay, trail, spot P&L) then starts from the real fill.
+
+    `entry_spot_renko_brick` (> 0) swaps the overlay's anchor barrier for a Renko
+    chart of the day's 1-minute closes (Alpha v2.14 C: V214C_RENKO_BRICK with the
+    classic V214C_RENKO_REVERSAL). A new brick against the position exits it at
+    that minute's close; after the exit, a new brick back in its direction re-enters
+    at the CURRENT close (not the old anchor). Alpha cancellation of a pending
+    re-entry is unchanged. `entry_spot_recovery_trace` (a list) collects the minute
+    of every overlay re-entry, so pricing can move each one to the next snapshot.
 
     Alpha-CPR paper overlay (all flags default OFF — v2.11 / v2.12 / v2.13 and
     the live runner are byte-for-byte unchanged when they are not passed):
@@ -377,6 +420,13 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     trades = []
     entry_ts = None
     entry_alpha = None
+    renko_ev = {}
+    renko_reentry_spot = None
+    if entry_spot_renko_brick and entry_spot_renko_brick > 0:
+        renko_ev = renko_events(
+            [(k, float(v[3])) for k, v in sorted(ohlc.by_minute.items())
+             if "09:15" <= k <= "15:29"],
+            float(entry_spot_renko_brick), int(entry_spot_renko_reversal))
     entry_rule = None
     pos_max_alpha = None
     T = crossover_th
@@ -476,6 +526,13 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
             confirmed_ts = None
             for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
+                if renko_ev or entry_spot_renko_brick > 0:
+                    _ev = renko_ev.get(pd.Timestamp(bts).strftime("%H:%M"), "")
+                    if ("u" in _ev) if recovery_pos == "call" else ("d" in _ev):
+                        confirmed_ts = bts
+                        renko_reentry_spot = float(bc)
+                        break
+                    continue
                 if recovery_pos == "call" and bl <= recovery_level < bc:
                     confirmed_ts = bts
                     break
@@ -485,6 +542,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             if confirmed_ts is not None:
                 pos = recovery_pos
                 esp = float(recovery_level)
+                if entry_spot_renko_brick > 0:
+                    esp = renko_reentry_spot       # Renko re-enters at the current close
+                if entry_spot_recovery_trace is not None:
+                    entry_spot_recovery_trace.append(confirmed_ts)
                 fill_entry_spot = esp
                 entry_ts = confirmed_ts
                 entry_alpha = ca
@@ -559,6 +620,10 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             (pos == "call" and bc > stop_level)
                             or (pos == "put" and bc < stop_level)
                         )
+                        if entry_spot_renko_brick > 0:
+                            _ev = renko_ev.get(pd.Timestamp(bts).strftime("%H:%M"), "")
+                            hit = ("d" in _ev) if pos == "call" else ("u" in _ev)
+                            favourable_close = False
                         if hit and entry_spot_close_confirmed and favourable_close:
                             continue
                         if hit:
@@ -591,7 +656,14 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                             (pos == "call" and bl <= esp < bc)
                             or (pos == "put" and bc < esp <= bh)
                         )
+                        if entry_spot_renko_brick > 0:
+                            _ev = renko_ev.get(pd.Timestamp(bts).strftime("%H:%M"), "")
+                            crossed = ("u" in _ev) if pos == "call" else ("d" in _ev)
                         if crossed:
+                            if entry_spot_renko_brick > 0:
+                                esp = float(bc)   # Renko re-enters at the current close
+                            if entry_spot_recovery_trace is not None:
+                                entry_spot_recovery_trace.append(bts)
                             active_at_end = True
                             fill_entry_spot = esp
                             entry_ts = bts

@@ -422,7 +422,7 @@
       </table>
     {% endif %}
 
-    {% elif active_live_tab in ['alpha_v211b', 'alpha_v212', 'alpha_v212b10', 'alpha_v214', 'alpha_cpr'] %}
+    {% elif active_live_tab in ['alpha_v211b', 'alpha_v212', 'alpha_v212b10', 'alpha_v214', 'alpha_v214c', 'alpha_cpr'] %}
     {% set is_v211b = active_live_tab == 'alpha_v211b' %}
     {% set is_cpr = active_live_tab == 'alpha_cpr' %}
     <h1>{{ live_tabs[active_live_tab] }}</h1>
@@ -430,6 +430,8 @@
     <p class="sub">v2.12 + 10-pt stop buffer (B10), formerly Alpha v2.12 B10</p>
     {% elif active_live_tab == 'alpha_v214' %}
     <p class="sub">v2.11 replay (B) + B10</p>
+    {% elif active_live_tab == 'alpha_v214c' %}
+    <p class="sub">v2.14 B with a Renko 30-pt (classic 2-brick reversal) exit/re-entry instead of the 10-pt stop &middot; paper only</p>
     {% endif %}
 
     {% if overlay_stats.get('error') %}

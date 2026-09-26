@@ -1,34 +1,23 @@
-"""Alpha v2.14 A (formerly v2.12 B10): v2.12 with a 10-point stop buffer, honest fills.
+"""Alpha v2.14 C paper tracker: Alpha v2.14 B with a Renko 30 overlay. Paper only.
 
-Decisions -- the production champion replay, unchanged except for the
-entry-spot overlay's stop barrier (shared constant V212_B10_EXIT_BUFFER, the
-same one the live runner uses):
-  CALL stop   a completed one-minute candle closes at/below anchor - 10
-  PUT  stop   a completed one-minute candle closes at/above anchor + 10
-  recovery    a later completed candle crosses back through the anchor itself
-Entries, alpha exits, the PC400 40/20 trail and EOD are v2.11/v2.12 as-is.
+Identical to v2.14 B (v2.11 replay (B) entry filter, entry-bar check) except the
+entry-spot overlay: instead of the 10-point anchor barrier it reads a Renko chart of the
+day's 1-minute closes -- 30-point bricks, classic two-brick reversal. A new brick against
+the position exits it at that minute's close; a new brick back in its direction re-enters
+at the current close. Research: 59-day causal replay (matrix_renko.py) Rs46.9k vs v2.14 B
+Rs42.8k, with a deeper drawdown (-Rs9.1k vs -Rs6.6k) -- a watch book, not a live candidate.
 
-Fills -- causal, unlike the other alpha books. The option snapshot labelled M is
-taken at ~M:00 (its stored spot matches candle M's OPEN in 75-81% of minutes),
-while a decision made on candle M is only knowable at M:59. Pricing that
-decision at snapshot M books a fill from BEFORE the move that caused it, which
-is where most of paper v2.12's booked profit came from. Here every
-candle-decided event is priced at the first snapshot after its decision:
+Notes carried over from v2.14 B:
 
-  entry-spot stops, recoveries, wall rejections   decided on minute M's close
-                                                  -> priced at M + 1
-  trail / spot / CPR / drift exits                evaluated across a 5-minute
-                                                  window but stamped at its
-                                                  start -> breach minute + 1
-  alpha exits, signal entries, EOD                decision and price share one
-                                                  snapshot -> unchanged
+Two proven pieces, nothing new:
+  * v2.11 replay (B)'s entry filter -- PC50 CALL decisions stay flat; PC50 PUT
+    and every PC250/PC400 decision are unchanged.
+  * Alpha v2.12 B10's overlay -- the entry-spot stop needs a completed
+    one-minute close V212_B10_EXIT_BUFFER points past the anchor, recovery is at
+    the anchor itself.
 
-A live order decided at the :00 boundary and filled by :05 lands in that same
-next-minute snapshot, so this ledger measures what live can actually achieve.
-
-Window exits carry no minute timestamp, so their decision minute is taken as the
-first minute in the window whose range reaches the exit level. For a trail that
-can precede the moment it armed, erring slightly in the book's favour.
+Fills are causal, exactly as in the B10 book (see alpha_v212b10_tracker):
+candle-decided events price at the first snapshot after their decision.
 
 Paper only; this module never places broker orders.
 """
@@ -46,33 +35,28 @@ from labs.engine.alpha_v212_tracker import (
     build_executable_book,
     replay_v212,
 )
+from labs.engine.alpha_v212b10_tracker import _status, causal_fill_times
 from labs.engine.paper_strategy_tracker import IST
 from live.engine import champion_inputs
-from live.engine.champion_sim import V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR
+from live.engine.champion_sim import (
+    V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR, V214C_RENKO_BRICK, V214C_RENKO_REVERSAL,
+)
 from storage.db import get_conn
 
 
 STRATEGY_VERSION = (
-    "alpha_v2.14a_b10_close_buffer10_entrybar_itm200_bidask_causal_next_minute"
+    "alpha_v2.14c_no_pc50_call_renko30_r2_entrybar_itm200_bidask_causal_next_minute"
 )
 
-_ONE_MINUTE = pd.Timedelta(minutes=1)
-# Decided on one completed minute's close.
-_CLOSE_OF_MINUTE = {"ENTRY_SPOT_SL", "WALL_REJ"}
-# Evaluated over a 5-minute window of one-minute bars, stamped at its start.
-_WINDOW_EXITS = {
-    "TRAIL", "SL_SPOT", "TP_SPOT", "CPR_SL", "CPR_TP", "v711_drift_stop",
-}
 
-
-class AlphaV212B10InputError(RuntimeError):
+class AlphaV214CInputError(RuntimeError):
     """Required replay or executable-quote input is incomplete."""
 
 
 def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS alpha_v212b10_daily (
+        CREATE TABLE IF NOT EXISTS alpha_v214c_daily (
             trade_date TEXT PRIMARY KEY,
             status TEXT NOT NULL,
             tier TEXT,
@@ -89,7 +73,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             context_json TEXT,
             updated_at TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS alpha_v212b10_trades (
+        CREATE TABLE IF NOT EXISTS alpha_v214c_trades (
             trade_date TEXT NOT NULL,
             seq INTEGER NOT NULL,
             status TEXT NOT NULL,
@@ -120,93 +104,37 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _recovery_flags(segments: list[dict]) -> list[bool]:
-    """True where a segment re-enters after an entry-spot stop on its anchor."""
-    flags: list[bool] = []
-    previous = None
-    for segment in segments:
-        flags.append(bool(
-            previous is not None
-            and previous.get("reason") == "ENTRY_SPOT_SL"
-            and previous.get("pos") == segment.get("pos")
-            and abs(float(previous["entry_spot"])
-                    - float(segment["entry_spot"])) < 0.01
-        ))
-        previous = segment
-    return flags
-
-
-def _window_decision_minute(segment: dict, by_minute: dict):
-    """First minute of the 5-minute window whose range reaches the exit level."""
-    start = pd.Timestamp(segment["exit_ts"])
-    level = float(segment["exit_spot"])
-    for offset in range(5):
-        minute = start + pd.Timedelta(minutes=offset)
-        bar = by_minute.get(minute.strftime("%H:%M"))
-        if bar is None:
-            continue
-        _, high, low, _ = bar
-        if low - 0.01 <= level <= high + 0.01:
-            return minute
-    return None
-
-
-def causal_fill_times(segments: list[dict], by_minute: dict,
-                      recovered: list[bool] | None = None) -> list[dict]:
-    """Copies of `segments` with fills moved to the first causal snapshot.
-
-    Overlay re-entries are found by their unchanged anchor unless `recovered` flags
-    are given (Renko re-enters at a new price, so the simulator tags them)."""
-    out: list[dict] = []
-    flags = _recovery_flags(segments) if recovered is None else recovered
-    for segment, recovered in zip(segments, flags):
-        shifted = dict(segment)
-        reason = shifted.get("reason")
-        if reason in _CLOSE_OF_MINUTE:
-            shifted["exit_ts"] = pd.Timestamp(shifted["exit_ts"]) + _ONE_MINUTE
-        elif reason in _WINDOW_EXITS:
-            decided = _window_decision_minute(shifted, by_minute)
-            if decided is None:
-                # Unlocatable: assume the latest minute the window allows.
-                decided = pd.Timestamp(shifted["exit_ts"]) + 4 * _ONE_MINUTE
-            shifted["exit_ts"] = decided + _ONE_MINUTE
-        if recovered:
-            shifted["entry_ts"] = pd.Timestamp(shifted["entry_ts"]) + _ONE_MINUTE
-        out.append(shifted)
-    return out
-
-
-def replay_v212b10(trade_date: str, override: dict | None = None) -> dict:
+def replay_v214c(trade_date: str, override: dict | None = None,
+                 recovery_trace: list | None = None) -> dict:
     try:
         replay = replay_v212(
             trade_date,
             override,
             close_confirmed=True,
             exit_buffer=V212_B10_EXIT_BUFFER,
+            suppress_pc50_call_entries=True,
             check_entry_bar=V214_CHECK_ENTRY_BAR,
+            renko_brick=V214C_RENKO_BRICK,
+            renko_reversal=V214C_RENKO_REVERSAL,
+            recovery_trace=recovery_trace,
         )
     except AlphaV212InputError as exc:
-        raise AlphaV212B10InputError(str(exc)) from exc
+        raise AlphaV214CInputError(str(exc)) from exc
     context = dict(replay.get("context") or {})
     context.update(
         {
-            "strategy_version": "Alpha v2.14 A",
+            "strategy_version": "Alpha v2.14 C (v2.14 B + Renko 30 classic)",
+            "decision_filter": "no_pc50_call",
+            "pc50_call_entries_allowed": False,
             "stop_rule": "close_confirmed",
-            "exit_buffer_pts": V212_B10_EXIT_BUFFER,
+            "overlay": "renko",
+            "renko_brick_pts": V214C_RENKO_BRICK,
+            "renko_reversal_bricks": V214C_RENKO_REVERSAL,
             "check_entry_bar": V214_CHECK_ENTRY_BAR,
             "fill_model": "causal_next_minute",
         }
     )
     return {**replay, "context": context}
-
-
-def _status(trades: list[dict], unavailable: int) -> str:
-    return (
-        "partial_unavailable" if trades and unavailable
-        else "open" if any(trade["status"] == "open" for trade in trades)
-        else "traded" if trades
-        else "no_trade"
-    )
 
 
 def _save(
@@ -220,11 +148,10 @@ def _save(
 ) -> None:
     priced = [trade for trade in trades if trade["quote_status"] == "priced"]
     unavailable = len(trades) - len(priced)
-    conn.execute(
-        "DELETE FROM alpha_v212b10_trades WHERE trade_date=?", (trade_date,))
+    conn.execute("DELETE FROM alpha_v214c_trades WHERE trade_date=?", (trade_date,))
     for seq, trade in enumerate(trades, 1):
         conn.execute(
-            "INSERT INTO alpha_v212b10_trades "
+            "INSERT INTO alpha_v214c_trades "
             "(trade_date,seq,status,side,strike,expiry_code,tradingsymbol,entry_ts,"
             "exit_ts,entry_spot,exit_spot,spot_pnl_pts,entry_bid,entry_ask,exit_bid,"
             "exit_ask,option_pnl_pts,gross_rs,charges_rs,net_rs,quote_status,"
@@ -245,7 +172,7 @@ def _save(
     charges = round(sum(float(trade["charges_rs"]) for trade in priced), 2)
     net = round(sum(float(trade["net_rs"]) for trade in priced), 2)
     conn.execute(
-        "INSERT INTO alpha_v212b10_daily "
+        "INSERT INTO alpha_v214c_daily "
         "(trade_date,status,tier,gap_dir,expiry_code,n_segments,priced_segments,"
         "unavailable_segments,spot_pnl_pts,gross_rs,charges_rs,net_rs,"
         "strategy_version,context_json,updated_at) "
@@ -280,16 +207,20 @@ def run_day(
     commit: bool = True,
 ) -> dict:
     trade_date = trade_date or datetime.now(IST).date().isoformat()
-    replay = replay_v212b10(trade_date, override)
+    trace: list = []
+    replay = replay_v214c(trade_date, override, trace)
     expiry_code = None
     trades: list[dict] = []
     if replay["segments"]:
         try:
             expiry_code, quotes = build_executable_book(trade_date)
         except AlphaV212InputError as exc:
-            raise AlphaV212B10InputError(str(exc)) from exc
+            raise AlphaV214CInputError(str(exc)) from exc
+        # Renko re-enters at a new price, so re-entries are the minutes the sim traced.
+        reentries = {pd.Timestamp(ts) for ts in trace}
         causal = causal_fill_times(
-            replay["segments"], champion_inputs.ohlc_by_minute(trade_date))
+            replay["segments"], champion_inputs.ohlc_by_minute(trade_date),
+            recovered=[pd.Timestamp(s["entry_ts"]) in reentries for s in replay["segments"]])
         trades = [
             _price_segment(segment, expiry_code, quotes) for segment in causal
         ]
@@ -308,8 +239,8 @@ def run_day(
             f"#{index + 1} {trade['quote_status']}"
             for index, trade in enumerate(unavailable)
         )
-        raise AlphaV212B10InputError(
-            f"Alpha v2.14 A pricing incomplete for {trade_date}: "
+        raise AlphaV214CInputError(
+            f"Alpha v2.14 C pricing incomplete for {trade_date}: "
             f"{detail}; existing rows retained"
         )
     if persist:
@@ -339,10 +270,9 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "AlphaV212B10InputError",
+    "AlphaV214CInputError",
     "STRATEGY_VERSION",
     "_ensure_tables",
-    "causal_fill_times",
-    "replay_v212b10",
+    "replay_v214c",
     "run_day",
 ]
