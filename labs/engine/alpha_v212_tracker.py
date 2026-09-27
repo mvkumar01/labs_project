@@ -372,6 +372,7 @@ def replay_v212(
         "segments": economic,
         "session_done": _session_over(trade_date),
         "context": provenance,
+        "oi_maps": (ce_map, pe_map),
     }
 
 

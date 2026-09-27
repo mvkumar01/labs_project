@@ -48,6 +48,7 @@ from labs.engine.alpha_v212_tracker import (
 )
 from labs.engine.paper_strategy_tracker import IST
 from live.engine import champion_inputs
+from labs.engine import entry_structure
 from live.engine.champion_sim import V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR
 from storage.db import get_conn
 
@@ -117,6 +118,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    entry_structure.ensure_columns(conn, "alpha_v212b10_trades")
     conn.commit()
 
 
@@ -228,7 +230,8 @@ def _save(
             "(trade_date,seq,status,side,strike,expiry_code,tradingsymbol,entry_ts,"
             "exit_ts,entry_spot,exit_spot,spot_pnl_pts,entry_bid,entry_ask,exit_bid,"
             "exit_ask,option_pnl_pts,gross_rs,charges_rs,net_rs,quote_status,"
-            "entry_rule,exit_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "entry_rule,exit_reason," + ",".join(entry_structure.FIELDS) + ") VALUES ("
+            + ",".join(["?"] * (23 + len(entry_structure.FIELDS))) + ")",
             (
                 trade_date, seq, trade["status"], trade["side"], trade["strike"],
                 trade.get("expiry_code"), trade.get("tradingsymbol"),
@@ -238,6 +241,7 @@ def _save(
                 trade.get("option_pnl_pts"), trade.get("gross_rs"),
                 trade.get("charges_rs"), trade.get("net_rs"),
                 trade["quote_status"], trade.get("entry_rule"), trade["exit_reason"],
+                *[trade.get(name) for name in entry_structure.FIELDS],
             ),
         )
     spot = round(sum(float(trade["spot_pnl_pts"]) for trade in trades), 2)
@@ -293,6 +297,10 @@ def run_day(
         trades = [
             _price_segment(segment, expiry_code, quotes) for segment in causal
         ]
+        # Observation only: market structure at each fresh Alpha entry.
+        entry_structure.annotate(
+            trades, replay["segments"], [not f for f in _recovery_flags(replay["segments"])],
+            trade_date, replay.get("oi_maps"))
         if (
             trades
             and not replay["session_done"]
