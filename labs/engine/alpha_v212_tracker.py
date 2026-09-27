@@ -285,6 +285,7 @@ def replay_v212(
     renko_brick: float = 0.0,
     renko_reversal: int = 2,
     recovery_trace: list | None = None,
+    range_offsets: tuple[int, int] | None = None,
 ) -> dict:
     """Replay one day through the v2.12 overlay.
 
@@ -296,6 +297,8 @@ def replay_v212(
     entry blind spot (Alpha v2.14 A and B pass V214_CHECK_ENTRY_BAR).
     `renko_brick` / `renko_reversal` swap the overlay for Renko exits and re-entries
     (Alpha v2.14 C); `recovery_trace` collects each overlay re-entry minute.
+    `range_offsets` (lo, hi) replaces the locked alpha range with
+    round50(prev_close) + (lo, hi) (Alpha v2.14 D's gap-up call range).
     """
     day = _resolve_day(trade_date, override)
     if day is None or day.get("bucket") == "SKIP":
@@ -314,6 +317,11 @@ def replay_v212(
     ohlc, context, range_source, use_abs, provenance = (
         _resolve_replay_context(trade_date, day)
     )
+    if range_offsets is not None:
+        anchor = round(float(context.prev_close) / 50) * 50
+        day = {**day, "lower": float(anchor + range_offsets[0]),
+               "upper": float(anchor + range_offsets[1])}
+        provenance.update(range_lower=day["lower"], range_upper=day["upper"])
     try:
         _, adf, ce_map, pe_map = champion_inputs.build_sim_inputs(
             trade_date,

@@ -362,6 +362,7 @@ LIVE_TABS = {
     "alpha_v212b10": "Alpha v2.14 A",
     "alpha_v214": "Alpha v2.14 B",
     "alpha_v214c": "Alpha v2.14 C",
+    "alpha_v214d": "Alpha v2.14 D",
     "alpha_cpr": "Alpha CPR",
     "theta_straddle": "09:20 Theta Straddle",
     "theta_iron_fly": "09:20 Iron Fly",
@@ -399,6 +400,7 @@ def live_strategy():
         "alpha_v212b10": "v2.14 A",
         "alpha_v214": "v2.14 B",
         "alpha_v214c": "v2.14 C",
+        "alpha_v214d": "v2.14 D",
         "alpha_cpr": "CPR",
     }.get(active_live_tab, "")
     overview_cards = []
@@ -528,7 +530,7 @@ def live_strategy():
         # 2.11 (B), v2.12 and CPR are separate ledgers backed by their respective
         # canonical replay engines. Only load the selected tab's tables.
         if active_live_tab in {"alpha_v211b", "alpha_v212", "alpha_v212b10",
-                               "alpha_v214", "alpha_v214c", "alpha_cpr"}:
+                               "alpha_v214", "alpha_v214c", "alpha_v214d", "alpha_cpr"}:
             overlay_prefix = active_live_tab
             try:
                 overlay_cur = conn.execute(
