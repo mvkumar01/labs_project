@@ -52,6 +52,32 @@ def get_kite(force_refresh: bool = False):
     return _kite_instance
 
 
+def new_kite_client():
+    """A fresh, UNCACHED authenticated KiteConnect with its own HTTP session.
+
+    For a background thread that must not share the singleton's connection pool
+    (the live runner's 2-second spot sampler). Returns (client, token_mtime_ns)
+    so the caller can rebuild when the daily token file is rewritten.
+    """
+    if not TOKEN_PATH.exists():
+        raise FileNotFoundError(f"Labs Zerodha token not found at {TOKEN_PATH}.")
+    mtime = TOKEN_PATH.stat().st_mtime_ns
+    token_data = json.loads(TOKEN_PATH.read_text())
+    from kiteconnect import KiteConnect
+
+    kite = KiteConnect(api_key=token_data["api_key"])
+    kite.set_access_token(token_data["access_token"])
+    return kite, mtime
+
+
+def token_mtime_ns() -> int | None:
+    """Modification stamp of the token file, or None when it is missing."""
+    try:
+        return TOKEN_PATH.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def reset():
     """Force re-load of token (call after token refresh)."""
     global _kite_instance, _last_token_data

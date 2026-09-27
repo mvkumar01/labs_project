@@ -62,6 +62,11 @@ PC400_TRAIL_VIX_CUTOFF = 17.0
 _SPOT_TRAIL_CACHE = {}
 # v2.13-only tick stop. v2.12 has no live-only stop path.
 ENTRY_SPOT_TICK_BUFFER = 5.0
+# Boundary-clock spot sampler: its own thread, so per-connection replay (40-60 s
+# each on PA) can no longer starve it. Samples only while NSE is open; the minute
+# ending at 15:30 is frozen by the first sample after 15:30:00.
+SPOT_SAMPLE_INTERVAL_S = 2.0
+SPOT_SAMPLE_END = dtime(15, 31)
 IST = timezone(timedelta(hours=5, minutes=30))
 UNDERLYING = "NIFTY"
 
@@ -694,21 +699,26 @@ def resolve_affordable_option(adapter, side: str, qty: int,
         f"funds {funds} cannot cover even OTM100 x{qty} — entry skipped")
 
 
+_SPOT_LOG_LOCK = threading.Lock()
+
+
 def _log_spot_sample(source: str, value) -> None:
     """Forward-capture every per-poll spot sample to logs/spot2s_DATE.csv so
     tick-vs-1min stop decisions can be replayed on real data later. Zero extra
-    API cost (only samples already fetched are logged); must never raise."""
+    API cost (only samples already fetched are logged); must never raise.
+    Locked: the sampler thread and the strategy loop both append."""
     try:
         now = _now_ist()
         path = Path(__file__).resolve().parent.parent / "logs" / (
             f"spot2s_{now.strftime('%Y-%m-%d')}.csv")
         path.parent.mkdir(parents=True, exist_ok=True)
-        header = not path.exists()
-        with path.open("a", encoding="utf-8") as fh:
-            if header:
-                fh.write("ts,source,spot\n")
-            fh.write(f"{now.isoformat()},{source},"
-                     f"{'' if value is None else value}\n")
+        with _SPOT_LOG_LOCK:
+            header = not path.exists()
+            with path.open("a", encoding="utf-8") as fh:
+                if header:
+                    fh.write("ts,source,spot\n")
+                fh.write(f"{now.isoformat()},{source},"
+                         f"{'' if value is None else value}\n")
     except Exception:
         pass
 
@@ -716,24 +726,61 @@ def _log_spot_sample(source: str, value) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 # Minute-boundary clock — 2s samples folded into 60-second closes
 # ══════════════════════════════════════════════════════════════════════════
-# ONE aggregator per runner process. The spot is fetched once per cycle for the
-# whole runner rather than once per connection, so every connection decides on a
+# ONE aggregator per runner process. The spot is fetched once for the whole
+# runner rather than once per connection, so every connection decides on a
 # byte-identical boundary close and two users cannot diverge merely by sampling
 # the feed a second apart (and the Kite read cost stays flat as users are added).
 _MINUTE_TICKS = minute_ticks.MinuteTickAggregator()
 
 
-def poll_global_spot_tick(now: datetime | None = None):
-    """Fetch the index spot once for this cycle and fold it into the minute.
+def spot_sampling_window(now: datetime) -> bool:
+    """True on weekdays from market open until the 15:30 minute is frozen.
+
+    Outside it no Kite call is made: after-hours prints are stale closes, and a
+    weekend/overnight token failure would otherwise log every two seconds.
+    """
+    return now.weekday() < 5 and MARKET_OPEN_TIME <= now.time() < SPOT_SAMPLE_END
+
+
+_sampler_client = {"mtime": None, "kite": None}
+
+
+def _sampler_kite_spot():
+    """NIFTY LTP on the sampler thread's OWN Kite client.
+
+    Same labs data token as get_kite(), but a separate HTTP session, so the
+    2-second sampler never shares a connection pool with order pricing on the
+    strategy thread. Rebuilt when the daily token file changes or a read fails.
+    """
+    try:
+        from auth import session_manager
+
+        if (_sampler_client["kite"] is None
+                or _sampler_client["mtime"] != session_manager.token_mtime_ns()):
+            client, mtime = session_manager.new_kite_client()
+            _sampler_client.update(kite=client, mtime=mtime)
+        data = _sampler_client["kite"].ltp("NSE:NIFTY 50")
+        return float(data["NSE:NIFTY 50"]["last_price"])
+    except Exception as e:
+        _sampler_client.update(kite=None, mtime=None)
+        log.warning("kite spot read failed: %s", type(e).__name__)
+        return None
+
+
+def poll_global_spot_tick(now: datetime | None = None, fetch=None):
+    """Fetch the index spot once and fold it into the minute.
 
     Returns the FrozenMinute when this sample rolled the clock over, else None.
     Never raises: the boundary clock must not be able to abort the runner loop,
     and a missed sample simply leaves the minute short (the staleness guard in
-    the aggregator then drops it and the strategy holds).
+    the aggregator then drops it and the strategy holds). Outside market hours
+    it does nothing.
     """
     try:
         now = now or _now_ist()
-        spot = get_kite_spot()
+        if not spot_sampling_window(now):
+            return None
+        spot = (fetch or get_kite_spot)()
         _log_spot_sample("kite", spot)
         frozen = _MINUTE_TICKS.add(now, spot)
         if frozen is not None:
@@ -747,6 +794,17 @@ def poll_global_spot_tick(now: datetime | None = None):
     except Exception as exc:
         log.error("minute boundary poll error: %s", exc)
         return None
+
+
+def _spot_sampler_loop(stop_event: threading.Event,
+                       interval_s: float = SPOT_SAMPLE_INTERVAL_S) -> None:
+    """Sample the spot every `interval_s` on a fixed clock, whatever the strategy
+    loop is doing. On 2026-09-25 the in-loop poll ran once per ~60 s cycle and
+    boundary minutes were rejected as stale; this keeps ~30 samples a minute."""
+    while not stop_event.is_set():
+        started = time.monotonic()
+        poll_global_spot_tick(fetch=_sampler_kite_spot)
+        stop_event.wait(max(0.1, interval_s - (time.monotonic() - started)))
 
 
 def _boundary_minutes(trade_date: str) -> dict:
@@ -1636,6 +1694,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             if dry_run:
                 msg += " [DRY-RUN]"
             notify_telegram(msg)
+        elif result.status == "FAILED":
+            # 2026-09-25: two broker rejections went unnoticed. Surface the
+            # broker's own reason (order_transport keeps it) the moment it happens.
+            reason = str((result.raw or {}).get("message") or "no reason given")[:200]
+            notify_telegram(f"⚠️ ENTER {side} {symbol} FAILED at broker — {reason}")
 
     elif sig["action"] == "EXIT" and current_open:
         exit_price = _fast_ltp(adapter, current_symbol)
@@ -1692,6 +1755,7 @@ def run(task_id: str = None, max_cycles: int = None,
 
     heartbeat_stop = threading.Event()
     heartbeat_thread = None
+    sampler_thread = None
     if max_cycles is None:
         heartbeat_thread = threading.Thread(
             target=_heartbeat_loop,
@@ -1700,6 +1764,13 @@ def run(task_id: str = None, max_cycles: int = None,
             daemon=True,
         )
         heartbeat_thread.start()
+        sampler_thread = threading.Thread(
+            target=_spot_sampler_loop,
+            args=(heartbeat_stop,),
+            name="live-runner-spot-sampler",
+            daemon=True,
+        )
+        sampler_thread.start()
 
     adapters: dict = {}     # conn_id -> live adapter (built once, reused)
     reconciled: set = set()  # conn_ids reconciled this boot
@@ -1709,11 +1780,11 @@ def run(task_id: str = None, max_cycles: int = None,
     try:
         while True:
             try:
-                # ONE spot read per cycle, before any connection is processed,
-                # so every connection this pass decides on the same boundary
-                # minute. Folding it in here (not inside process_connection)
-                # is what keeps the Kite cost independent of the user count.
-                poll_global_spot_tick()
+                # The spot sampler thread owns the boundary clock in production.
+                # Bounded test runs have no thread, so they keep one inline
+                # sample per cycle before any connection is processed.
+                if sampler_thread is None:
+                    poll_global_spot_tick()
                 for (user_id, conn_id) in svc.runner_connections():
                     try:
                         process_connection(
@@ -1737,6 +1808,8 @@ def run(task_id: str = None, max_cycles: int = None,
         heartbeat_stop.set()
         if heartbeat_thread is not None:
             heartbeat_thread.join(timeout=_HEARTBEAT_INTERVAL_S + 1)
+        if sampler_thread is not None:
+            sampler_thread.join(timeout=SPOT_SAMPLE_INTERVAL_S + 5)
 
 
 if __name__ == "__main__":

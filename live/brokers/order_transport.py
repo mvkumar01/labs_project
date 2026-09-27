@@ -13,6 +13,21 @@ class OrderTransportError(RuntimeError):
     pass
 
 
+def _broker_reason(broker, data) -> str:
+    """The broker's own rejection code and message, flattened and truncated.
+
+    Only fields of the broker's response body are read (never request headers or
+    the proxy endpoint), so nothing secret can leak into logs or alerts.
+    """
+    if not isinstance(data, dict):
+        return "no reason given"
+    code = data.get("error_type") if broker == "zerodha" else data.get("errorcode")
+    message = data.get("message")
+    parts = [str(p).strip() for p in (code, message) if p not in (None, "")]
+    text = " ".join(" / ".join(parts).split())
+    return text[:160] or "no reason given"
+
+
 def send_order(adapter, operation, params, intent_key):
     broker = adapter.broker_name
     if broker not in ("angel", "zerodha"):
@@ -92,7 +107,8 @@ def send_order(adapter, operation, params, intent_key):
             if not accepted or response.status_code >= 400:
                 outcome = "rejected"
                 raise OrderTransportError(
-                    "Broker rejected the order; inspect broker order book"
+                    f"Broker rejected the order ({_broker_reason(broker, data)}); "
+                    "inspect broker order book"
                 )
             result = data.get("data") or {}
             order_id = (

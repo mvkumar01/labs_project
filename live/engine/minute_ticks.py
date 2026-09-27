@@ -9,7 +9,7 @@ already being fetched every two seconds — they were only being logged.
 
 This module turns that existing sample stream into the strategy's clock:
 
-    1. every runner cycle feeds one spot sample in,
+    1. the runner's spot sampler (its own 2-second thread) feeds each sample in,
     2. samples accumulate into the current clock minute,
     3. the FIRST sample of a new minute freezes the minute that just ended,
        whose `close` is that minute's last fresh sample.
@@ -25,6 +25,7 @@ no exit. Only the frozen boundary close is ever compared to the anchor.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -102,12 +103,16 @@ class _OpenMinute:
 class MinuteTickAggregator:
     """Fold a 2-second spot stream into frozen one-minute boundary closes.
 
-    Single instance per runner process: the spot is fetched once globally per
-    cycle, so every connection sees the SAME boundary minute and cannot diverge
-    from another connection by sampling the feed at a different instant.
+    Single instance per runner process: the spot is fetched once globally, so
+    every connection sees the SAME boundary minute and cannot diverge from
+    another connection by sampling the feed at a different instant.
+
+    Thread-safe: the runner feeds it from a dedicated sampler thread while the
+    strategy loop reads frozen minutes, so every public method holds one lock.
     """
 
     def __init__(self, max_staleness_s: float = DEFAULT_MAX_STALENESS_S):
+        self._lock = threading.RLock()
         self.max_staleness_s = float(max_staleness_s)
         self._open: _OpenMinute | None = None
         self._frozen: dict[str, dict[str, tuple]] = {}   # date -> HH:MM -> ohlc
@@ -122,6 +127,10 @@ class MinuteTickAggregator:
         simply not recorded, so a feed outage leaves the minute short of fresh
         samples and the staleness guard drops it at the boundary.
         """
+        with self._lock:
+            return self._add(ts, value)
+
+    def _add(self, ts: datetime, value) -> FrozenMinute | None:
         spot = _as_float(value)
         trade_date = ts.strftime("%Y-%m-%d")
         minute = ts.strftime("%H:%M")
@@ -201,21 +210,25 @@ class MinuteTickAggregator:
     # ── read ────────────────────────────────────────────────────────────
     def minutes_for(self, trade_date: str) -> dict:
         """{'HH:MM': (o,h,l,c)} frozen so far — replay OHLC gap-fill."""
-        return dict(self._frozen.get(trade_date, {}))
+        with self._lock:
+            return dict(self._frozen.get(trade_date, {}))
 
     def boundary_key(self, trade_date: str) -> str | None:
         """Newest frozen minute as a replay-clock key, or None."""
-        minute = self._last_key.get(trade_date)
+        with self._lock:
+            minute = self._last_key.get(trade_date)
         return f"{trade_date}T{minute}" if minute else None
 
     def rejected(self, trade_date: str) -> list[str]:
-        return list(self._rejected.get(trade_date, []))
+        with self._lock:
+            return list(self._rejected.get(trade_date, []))
 
     def reset(self) -> None:
-        self._open = None
-        self._frozen.clear()
-        self._last_key.clear()
-        self._rejected.clear()
+        with self._lock:
+            self._open = None
+            self._frozen.clear()
+            self._last_key.clear()
+            self._rejected.clear()
 
 
 def _as_float(value):
