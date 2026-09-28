@@ -42,6 +42,25 @@ def _angel_order_tag(idempotency_key: str) -> str:
     digest = hashlib.sha1(str(idempotency_key).encode("utf-8")).hexdigest()[:14]
     return f"LABS{digest}"
 
+
+def _lotsize(instrument: dict) -> int | None:
+    try:
+        lot = int(float(instrument.get("lotsize")))
+    except (TypeError, ValueError):
+        return None
+    return lot if lot > 0 else None
+
+
+def _check_lot_multiple(meta: dict, qty: int) -> None:
+    """Refuse an ENTRY whose quantity is not a whole number of the resolved
+    contract's lots. A mismatch means the symbol resolved to the wrong contract
+    (or the lot size changed) -- never send that order."""
+    lot = meta.get("lotsize")
+    if lot and int(qty) % lot != 0:
+        raise RuntimeError(
+            f"lot size mismatch for {meta.get('symbol')}: qty {qty} is not a "
+            f"multiple of lot {lot} -- entry refused")
+
 INSTRUMENT_MASTER_URL = (
     "https://margincalculator.angelbroking.com/OpenAPI_File/files/"
     "OpenAPIScripMaster.json"
@@ -264,10 +283,15 @@ class AngelAdapter(BrokerAdapter):
             "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
             "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
         }
-        m = re.match(r"^(\d{2})(\d)(\d{2})$", code)
+        # Weekly: YY + month (1-9, O/N/D for Oct/Nov/Dec) + DD.
+        m = re.match(r"^(\d{2})([1-9OND])(\d{2})$", code)
         if m:
             yy, mo, dd = m.groups()
-            return datetime(2000 + int(yy), int(mo), int(dd)).strftime("%d%b%Y").upper()
+            month = {"O": 10, "N": 11, "D": 12}.get(mo) or int(mo)
+            try:
+                return datetime(2000 + int(yy), month, int(dd)).strftime("%d%b%Y").upper()
+            except ValueError:
+                return None
         m = re.match(r"^(\d{2})([A-Z]{3})$", code)
         if m and m.group(2) in months:
             yy = 2000 + int(m.group(1))
@@ -292,17 +316,28 @@ class AngelAdapter(BrokerAdapter):
             self._angel_expiry_from_zerodha(parsed["expiry"])
             if parsed else None
         )
+        if parsed and not target_expiry:
+            # Matching "any expiry" would pick an arbitrary contract.
+            raise RuntimeError(
+                f"cannot decode expiry {parsed['expiry']!r} of {symbol} -- entry refused")
         candidates = []
         for ins in instruments:
             if ins.get("exch_seg") != self._EXCHANGE:
                 continue
             angel_symbol = str(ins.get("symbol") or ins.get("tradingsymbol") or "").upper()
             if angel_symbol == str(symbol).upper():
-                meta = {"symbol": angel_symbol, "token": str(ins.get("token"))}
+                meta = {"symbol": angel_symbol, "token": str(ins.get("token")),
+                        "lotsize": _lotsize(ins)}
                 self._symbol_cache[symbol] = meta
                 self._token_cache[symbol] = meta["token"]
                 return meta
             if not parsed:
+                continue
+            # The underlying MUST be the NIFTY index option. On a monthly expiry
+            # FINNIFTY lists the same date/strike/type (2026-09-25/28: every entry
+            # resolved to FINNIFTY29SEP26..., lot 60, and was rejected AB4014).
+            if (str(ins.get("name") or "").upper() != "NIFTY"
+                    or str(ins.get("instrumenttype") or "").upper() != "OPTIDX"):
                 continue
             try:
                 strike = int(float(ins.get("strike") or 0) / 100)
@@ -318,10 +353,12 @@ class AngelAdapter(BrokerAdapter):
                     "symbol": angel_symbol,
                     "token": token,
                     "expiry": str(ins.get("expiry") or ""),
+                    "lotsize": _lotsize(ins),
                 })
         if candidates:
             candidates.sort(key=lambda x: x["expiry"])
-            meta = {"symbol": candidates[0]["symbol"], "token": candidates[0]["token"]}
+            meta = {"symbol": candidates[0]["symbol"], "token": candidates[0]["token"],
+                    "lotsize": candidates[0]["lotsize"]}
             self._symbol_cache[symbol] = meta
             self._token_cache[symbol] = meta["token"]
             return meta
@@ -335,13 +372,13 @@ class AngelAdapter(BrokerAdapter):
             if str(row.get("tradingsymbol") or "").strip().upper() == symbol.upper():
                 match = row
                 break
-        if match is None and rows:
-            match = rows[0]
+        # Never fall back to "the first search hit": a near-miss can be another
+        # underlying. No exact symbol -> no order.
         token = str((match or {}).get("symboltoken") or "")
         if not token:
             raise RuntimeError(f"Angel symboltoken not found for {symbol}")
         broker_symbol = str(match.get("tradingsymbol") or symbol).strip().upper()
-        meta = {"symbol": broker_symbol, "token": token}
+        meta = {"symbol": broker_symbol, "token": token, "lotsize": None}
         self._symbol_cache[symbol] = meta
         self._token_cache[symbol] = token
         return meta
@@ -362,6 +399,7 @@ class AngelAdapter(BrokerAdapter):
             raise RuntimeError("Angel entry requires a Kite-supplied positive price")
         # ── real branch — reached only in Phase 1 (LIVE_ARMED + 7 gates) ──
         meta = self._resolve_symbol_meta(symbol)
+        _check_lot_multiple(meta, qty)
         order_params = {
             "variety": self._VARIETY,
             "tradingsymbol": meta["symbol"],
