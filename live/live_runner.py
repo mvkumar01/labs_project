@@ -21,6 +21,7 @@ DRY-RUN ONLY (Phase 0): with mode=DRY_RUN (default after arm_dry_run) no broker
 order is placed; even in LIVE_ARMED every adapter's place_order/exit_all raises
 NotImplementedError until a deliberate Phase-1 enablement commit.
 """
+import faulthandler
 import logging
 import os
 import re
@@ -67,6 +68,14 @@ ENTRY_SPOT_TICK_BUFFER = 5.0
 # ending at 15:30 is frozen by the first sample after 15:30:00.
 SPOT_SAMPLE_INTERVAL_S = 2.0
 SPOT_SAMPLE_END = dtime(15, 31)
+# Cycle diagnostics (2026-09-29): the sampler thread stalls ~20 s once per ~50 s
+# strategy cycle, i.e. something in the loop holds the interpreter. A connection
+# cycle slower than CYCLE_SLOW_LOG_S is logged; one slower than CYCLE_STALL_DUMP_S
+# dumps every thread's stack (faulthandler's C watchdog runs without the GIL),
+# at most CYCLE_STALL_DUMPS times per process.
+CYCLE_SLOW_LOG_S = 5.0
+CYCLE_STALL_DUMP_S = 15.0
+CYCLE_STALL_DUMPS = 5
 IST = timezone(timedelta(hours=5, minutes=30))
 UNDERLYING = "NIFTY"
 
@@ -1902,6 +1911,7 @@ def run(task_id: str = None, max_cycles: int = None,
     signal_engines: dict = {}
     alpha_seen: dict = {}
     cycles = 0
+    stall_dumps = 0
     try:
         while True:
             try:
@@ -1911,6 +1921,10 @@ def run(task_id: str = None, max_cycles: int = None,
                 if sampler_thread is None:
                     poll_global_spot_tick()
                 for (user_id, conn_id) in svc.runner_connections():
+                    watch = sampler_thread is not None and stall_dumps < CYCLE_STALL_DUMPS
+                    if watch:
+                        faulthandler.dump_traceback_later(CYCLE_STALL_DUMP_S, exit=False)
+                    started = time.monotonic()
                     try:
                         process_connection(
                             user_id, conn_id, adapters=adapters,
@@ -1921,6 +1935,14 @@ def run(task_id: str = None, max_cycles: int = None,
                     except Exception as e:
                         # One connection's failure NEVER aborts the others.
                         log.error("conn %s cycle error: %s", conn_id, e)
+                    finally:
+                        took = time.monotonic() - started
+                        if watch:
+                            faulthandler.cancel_dump_traceback_later()
+                            if took >= CYCLE_STALL_DUMP_S:
+                                stall_dumps += 1
+                        if took >= CYCLE_SLOW_LOG_S:
+                            log.info("cycle timing conn=%s took %.1fs", conn_id, took)
             except Exception as e:
                 log.error("runner loop error: %s", e)
 

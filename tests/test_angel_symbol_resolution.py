@@ -79,6 +79,27 @@ def test_search_fallback_never_takes_a_near_miss():
         adapter._resolve_symbol_meta("NIFTY26SEP23150PE")
 
 
+def test_health_check_is_reused_briefly_and_failures_are_not(monkeypatch):
+    calls = []
+
+    class Smart:
+        ok = True
+
+        def rmsLimit(self):
+            calls.append(1)
+            return {"status": True, "data": {"net": 1}} if Smart.ok else {"status": False}
+
+    adapter = Fake(MASTER)
+    adapter._smart = Smart()
+    clock = [100.0]
+    monkeypatch.setattr(angel.time, "monotonic", lambda: clock[0])
+    assert adapter.is_connected() and adapter.is_connected() and len(calls) == 1
+    clock[0] += angel._HEALTH_TTL_S + 1                 # expired -> pinged again
+    Smart.ok = False
+    assert adapter.is_connected() is False and len(calls) == 2
+    assert adapter.is_connected() is False and len(calls) == 3   # a failure is never cached
+
+
 def test_entry_refused_when_qty_is_not_a_lot_multiple():
     with pytest.raises(RuntimeError, match="lot size mismatch"):
         angel._check_lot_multiple({"symbol": "FINNIFTY29SEP2623150PE", "lotsize": 60}, 65)

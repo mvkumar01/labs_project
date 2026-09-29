@@ -73,6 +73,8 @@ INSTRUMENT_FILE = STATE_DIR / "angel_instruments.json"
 # per-second limit. TTL < the runner's POLL_INTERVAL (2s) so every new cycle
 # still refreshes; within a cycle the reads collapse to one call each.
 _READ_CACHE_TTL = 1.5
+# Reuse a passed session health check (rmsLimit) for this long.
+_HEALTH_TTL_S = 15.0
 
 # Bounded backoff/retry on Angel throttling (rate-limit defense, 2026-07-07).
 # 3 tries at 0.5s -> 1.0s adds at most ~1.5s and lets a throttled call recover
@@ -124,6 +126,7 @@ class AngelAdapter(BrokerAdapter):
         from SmartApi import SmartConnect  # SDK import isolated to this pkg
         import pyotp                        # TOTP for Angel login
 
+        self._health_ok_at = None           # a new session is checked afresh
         self._smart = SmartConnect(api_key=self._creds["api_key"])
         totp = pyotp.TOTP(self._creds["totp_secret"]).now()
         session = self._smart.generateSession(
@@ -142,17 +145,27 @@ class AngelAdapter(BrokerAdapter):
     def is_connected(self) -> bool:
         if self._smart is None:
             return False
+        # A health check that passed moments ago is reused. The runner pinged
+        # rmsLimit every cycle for every connection AND again in the entry gates
+        # and funds read; through the US->India route with Angel's rate-limit
+        # backoff this dominated a 40-60 s cycle (2026-09-29). A dropped session
+        # still surfaces within HEALTH_TTL_S, or at the next broker call.
+        last_ok = getattr(self, "_health_ok_at", None)
+        if last_ok is not None and time.monotonic() - last_ok < _HEALTH_TTL_S:
+            return True
         try:
             # Cheap authenticated read — profile/RMS limit. Any success means
             # the session token is live. Never logs cred values.
             response = self._with_backoff(self._smart.rmsLimit, _is_transient_read)
-            return (
+            ok = (
                 isinstance(response, dict)
                 and response.get("status") is True
                 and response.get("data") is not None
             )
         except Exception:
-            return False
+            ok = False
+        self._health_ok_at = time.monotonic() if ok else None
+        return ok
 
     def account_ref(self) -> str:
         # Return a stable identifier for duplicate-account isolation.
