@@ -378,6 +378,17 @@ def _scope_champion_cursor(user_id: str, conn_id: str, st: dict, *,
 # Applied LIVE-only (see _route_order) so dry-run pricing — and therefore
 # completed-day replays and tests — stay byte-identical.
 MARKETABLE_BUFFER_PCT = 0.006   # 0.6% — enough to cross a NIFTY option spread
+# IOC entries (2026-09-29: three expiry-day entries cancelled unfilled while the
+# premium rose ~Rs1-2 every 10 s). The limit is re-quoted from the best ASK right
+# before the broker call and set 2% above it -- an IOC buy fills at the best
+# offer up to the limit, so the headroom only matters when price is moving. A
+# no-fill is re-quoted and resent at once, a few times, but never above 5% over
+# the premium seen when the signal first fired: past that, skip the entry.
+ENTRY_LIMIT_BUFFER_PCT = 0.02
+ENTRY_CHASE_CAP_PCT = 0.05
+ENTRY_IOC_ATTEMPTS = 3
+ENTRY_RETRY_WINDOW_S = 15.0
+_IOC_NO_FILL = {"CANCELLED", "CANCELED"}
 OPTION_TICK = 0.05
 
 
@@ -408,7 +419,7 @@ def _order_accepted(result, *, dry_run: bool) -> bool:
     return bool(getattr(result, "broker_order_id", None)) and str(
         result.status or "").upper() not in {
         "REJECTED", "CANCELLED", "CANCELED", "FAILED", "GATE_BLOCKED",
-        "NO_LONG_POSITION", "EXIT_QTY_EXCEEDS_POSITION", "PENDING",
+        "NO_LONG_POSITION", "EXIT_QTY_EXCEEDS_POSITION", "PENDING", "PRICE_SKIP",
     }
 
 
@@ -633,6 +644,75 @@ def kite_symbol_for(broker_symbol: str, trade_date: str | None = None) -> str:
     except OSError:
         pass
     return broker_symbol
+
+
+def get_kite_ask(symbol: str):
+    """Best offer for an NFO option from the labs Kite data session, or None."""
+    try:
+        from auth.session_manager import get_kite
+
+        key = f"NFO:{symbol}"
+        depth = (get_kite().quote(key)[key].get("depth") or {}).get("sell") or []
+        asks = [float(level.get("price") or 0) for level in depth]
+        asks = [a for a in asks if a > 0]
+        return min(asks) if asks else None
+    except Exception as e:
+        log.warning("kite ask read failed %s: %s", symbol, type(e).__name__)
+        return None
+
+
+def _entry_reference_price(symbol: str):
+    """Price an entry must pay now: the best ask, never below the last trade."""
+    quotes = []
+    for sym in dict.fromkeys((symbol, kite_symbol_for(symbol))):
+        quotes = [q for q in (get_kite_ask(sym), get_kite_ltp(sym)) if q and q > 0]
+        if quotes:
+            break
+    return max(quotes) if quotes else None
+
+
+def _round_tick(price: float) -> float:
+    return round(round(price / OPTION_TICK) * OPTION_TICK, 2)
+
+
+def entry_price_fn(symbol: str, cap: float, sent: dict | None = None):
+    """Build the executor's post-gate price callback for one entry attempt.
+
+    Returns ask + ENTRY_LIMIT_BUFFER_PCT, never above `cap`; None (skip the
+    entry) when there is no quote or the ask itself is already past the cap.
+    The limit actually sent is recorded in `sent['limit']` / `sent['ask']`.
+    """
+    def fn():
+        ref = _entry_reference_price(symbol)
+        if ref is None:
+            return None
+        if ref > cap:
+            log.warning("entry ask %.2f beyond chase cap %.2f for %s -- skipped",
+                        ref, cap, symbol)
+            if sent is not None:
+                sent.update(ask=ref, limit=None)
+            return None
+        limit = min(_round_tick(ref * (1 + ENTRY_LIMIT_BUFFER_PCT)), _round_tick(cap))
+        if sent is not None:
+            sent.update(ask=ref, limit=limit)
+        return limit
+    return fn
+
+
+def entry_chase_anchor(user_id: str, conn_id: str, signal_key: str, price: float) -> float:
+    """Premium seen when this entry signal FIRST fired, kept across poll cycles.
+
+    Stored per connection as 'signal_key|price'; a new signal key replaces it,
+    so the 5% chase cap cannot drift upward with each retry cycle.
+    """
+    stored = svc.get_config(user_id, conn_id, "entry_chase_anchor") or ""
+    key, _, value = stored.rpartition("|")
+    if key == signal_key:
+        anchored = _as_float(value)
+        if anchored and anchored > 0:
+            return anchored
+    svc.set_config(user_id, conn_id, "entry_chase_anchor", f"{signal_key}|{price}")
+    return float(price)
 
 
 def _fast_ltp(_adapter, symbol: str):
@@ -1070,11 +1150,15 @@ def evaluate_signal(engine: AlphaSignalEngine, alpha_bar: dict | None,
 # Order routing — every order goes through the live_executor chokepoint
 # ══════════════════════════════════════════════════════════════════════════
 def _route_order(adapter, user_id, conn_id, *, action, side, symbol, qty, price,
-                 dry_run, entry_rule="none", conn=None):
+                 dry_run, entry_rule="none", conn=None, attempt: int = 0,
+                 price_fn=None):
     # D1: make the LIMIT marketable so it fills inside the confirmation-poll
     # window instead of lagging the premium. LIVE only — dry-run price is left
-    # untouched to keep replay/tests byte-identical.
-    if not dry_run:
+    # untouched to keep replay/tests byte-identical. A live entry with price_fn
+    # is priced by the executor after its gates instead (see entry_price_fn).
+    if dry_run:
+        price_fn = None
+    elif price_fn is None:
         price = _marketable_limit("BUY" if action == "ENTER" else "SELL", price)
     trade_date = _today_ist_iso()
     seq = next_intent_seq(user_id, conn_id, trade_date, conn)
@@ -1085,11 +1169,16 @@ def _route_order(adapter, user_id, conn_id, *, action, side, symbol, qty, price,
         bar_timestamp=bar_ts, action=action, side=side or "none",
         entry_rule=entry_rule, symbol=symbol,
     )
+    if attempt:
+        # An IOC re-try inside the same minute is a NEW order, not a repeat of
+        # the cancelled one; the first attempt keeps the canonical key.
+        idem_key += f":ioc{attempt + 1}"
     return ex.place_idempotent(
         adapter, user_id=user_id, conn_id=conn_id, idem_key=idem_key,
         side=side or "", symbol=symbol, qty=qty, price=price, action=action,
         dry_run=dry_run, trade_date=trade_date, strategy_version=strategy_version,
         bar_timestamp=bar_ts, entry_rule=entry_rule, intent_seq=seq, conn=conn,
+        price_fn=price_fn,
     )
 
 
@@ -1672,9 +1761,41 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         if use_champion and recovery_replay:
             # Unknown/rejected outcomes must be retried idempotently next poll.
             alpha_seen.pop(conn_id, None)
-        result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
-                              symbol=symbol, qty=qty, price=price, dry_run=dry_run,
-                              entry_rule=sig.get("rule") or "none")
+        # IOC entry burst: price after the gates from the live ask, re-quote and
+        # resend at once on a no-fill, and never chase past the anchored cap.
+        signal_key = (f"{trade_date}|{side}|{sig.get('rule')}|"
+                      f"{target_closed_count}|{champ_entry_spot}")
+        sent: dict = {}
+        price_fn = None
+        if not dry_run:
+            anchor = entry_chase_anchor(user_id, conn_id, signal_key, price)
+            price_fn = entry_price_fn(symbol, anchor * (1 + ENTRY_CHASE_CAP_PCT), sent)
+        burst_started = time.monotonic()
+        attempts = 0
+        while True:
+            attempts += 1
+            # The runner is plainly alive: refresh its ownership heartbeat so a
+            # stalled heartbeat thread cannot fail the decision-ABI gate.
+            publish_runner_heartbeat(user_id, conn_id, task_id)
+            result = _route_order(adapter, user_id, conn_id, action="ENTER", side=side,
+                                  symbol=symbol, qty=qty, price=price, dry_run=dry_run,
+                                  entry_rule=sig.get("rule") or "none",
+                                  attempt=attempts - 1, price_fn=price_fn)
+            no_fill = (str(result.status or "").upper() in _IOC_NO_FILL
+                       and not (result.raw or {}).get("idempotent_skip"))
+            if (dry_run or not no_fill or attempts >= ENTRY_IOC_ATTEMPTS
+                    or time.monotonic() - burst_started > ENTRY_RETRY_WINDOW_S):
+                break
+            log.info("IOC entry not filled (%d/%d) conn=%s %s limit=%s ask=%s -- re-quoting",
+                     attempts, ENTRY_IOC_ATTEMPTS, conn_id, symbol,
+                     sent.get("limit"), sent.get("ask"))
+        if sent.get("limit"):
+            price = sent["limit"]
+        if not dry_run and no_fill:
+            notify_telegram(
+                f"⚠️ ENTER {side} {symbol} not filled after {attempts} IOC tries "
+                f"(last limit {sent.get('limit')}, ask {sent.get('ask')}) -- will retry "
+                "next cycle while the signal holds")
         if _order_accepted(result, dry_run=dry_run):  # D2: record working fills too
             state_symbol = (result.raw or {}).get("broker_symbol") or symbol
             st.update({"position": "OPEN", "side": side, "symbol": state_symbol,
@@ -1699,6 +1820,10 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             # broker's own reason (order_transport keeps it) the moment it happens.
             reason = str((result.raw or {}).get("message") or "no reason given")[:200]
             notify_telegram(f"⚠️ ENTER {side} {symbol} FAILED at broker — {reason}")
+        elif result.status == "PRICE_SKIP":
+            notify_telegram(
+                f"⚠️ ENTER {side} {symbol} skipped — ask {sent.get('ask')} is past the "
+                f"{ENTRY_CHASE_CAP_PCT:.0%} chase cap (or no quote)")
 
     elif sig["action"] == "EXIT" and current_open:
         exit_price = _fast_ltp(adapter, current_symbol)

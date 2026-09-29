@@ -568,6 +568,7 @@ def get_order_ledger(idem_key: str, conn: sqlite3.Connection = None) -> dict:
 def update_order_ledger(idem_key: str, *, status: str = None,
                         broker_order_id: str = None, avg_fill_price: float = None,
                         placed_at: str = None, filled_at: str = None,
+                        limit_price: float = None,
                         conn: sqlite3.Connection = None) -> None:
     own = conn is None
     if own:
@@ -576,6 +577,8 @@ def update_order_ledger(idem_key: str, *, status: str = None,
         sets, params = [], []
         if status is not None:
             sets.append("status = ?"); params.append(status)
+        if limit_price is not None:
+            sets.append("limit_price = ?"); params.append(limit_price)
         if broker_order_id is not None:
             sets.append("broker_order_id = ?"); params.append(broker_order_id)
         if avg_fill_price is not None:

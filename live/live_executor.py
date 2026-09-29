@@ -431,8 +431,14 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
                      action: str, dry_run: bool, trade_date: str = "",
                      strategy_version: str = "", bar_timestamp: str = "",
                      entry_rule: str = "none", intent_seq: int = 0,
-                     conn=None) -> OrderResult:
+                     conn=None, price_fn=None) -> OrderResult:
     """THE single order chokepoint, per (user_id, conn_id).
+
+    `price_fn` (live ENTRY only): called after every gate has passed, right
+    before the broker call, and returns the limit to send -- or None to skip the
+    entry (quote unavailable / beyond the chase cap). The gates call the broker
+    and can take tens of seconds; a price read before them is stale by the time
+    an IOC entry reaches the exchange (2026-09-29: three cancelled entries).
 
     1. INSERT OR IGNORE a PENDING live_orders row keyed by idem_key.
     2. If the row already existed (not newly inserted) -> SKIP the broker
@@ -502,7 +508,11 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
             gate_static_order_proxy(user_id, conn_id, conn, for_exit=True),
         ]
     else:
+        gates_started = time.monotonic()
         gates = evaluate_all(adapter, user_id, conn_id, conn)
+        gates_took = time.monotonic() - gates_started
+        if gates_took > 3.0:
+            log.info("entry gates took %.1fs | conn=%s key=%s", gates_took, conn_id, idem_key)
 
     if not all_passed(gates):
         failed = [g.name for g in gates if not g.passed]
@@ -519,6 +529,16 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         )
         if blocked is not None:
             return blocked
+    elif price_fn is not None:
+        fresh = price_fn()
+        if fresh is None:
+            log.warning("entry not placed: no quote or beyond chase cap | conn=%s key=%s",
+                        conn_id, idem_key)
+            svc.update_order_ledger(idem_key, status="PRICE_SKIP", conn=conn)
+            return OrderResult(broker_order_id=None, status="PRICE_SKIP",
+                               avg_fill_price=None, raw={"price_skip": True})
+        price = fresh
+        svc.update_order_ledger(idem_key, limit_price=price, conn=conn)
 
     try:
         if action == "EXIT":
