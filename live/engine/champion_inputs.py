@@ -191,6 +191,34 @@ def latest_completed_ohlc_minute(trade_date: str) -> str | None:
     return result
 
 
+_LEGACY_OHLC_CACHE: dict = {}  # "entry" -> (file sig, {date: {HH:MM: ohlc}})
+
+
+def _legacy_ohlc_minutes(trade_date: str) -> dict:
+    """{'HH:MM': ohlc} for one date from alphaIMB's legacy nifty_1min_ohlc.csv.
+
+    The file holds months of minutes and changes rarely, but ohlc_by_minute's own
+    cache misses every minute (today's CSVs keep changing), so it used to re-read
+    and re-parse the whole file each time -- the dominant stall in the live
+    runner (2026-09-29). Parsed once per file version; the first row for a
+    minute wins, as before. Raises like the old inline code on a bad file.
+    """
+    path = ALPHA_DATA_DIR / "analytics" / "nifty_1min_ohlc.csv"
+    stat = path.stat()
+    sig = (str(path), stat.st_mtime_ns, stat.st_size)
+    hit = _LEGACY_OHLC_CACHE.get("entry")
+    if hit is None or hit[0] != sig:
+        oc = pd.read_csv(path)
+        ts = pd.to_datetime(oc["timestamp"]).dt.tz_localize(None)
+        by_day: dict = {}
+        for day, hm, o, h, l, c in zip(ts.dt.strftime("%Y-%m-%d"), ts.dt.strftime("%H:%M"),
+                                       oc["open"], oc["high"], oc["low"], oc["close"]):
+            by_day.setdefault(day, {}).setdefault(hm, (float(o), float(h), float(l), float(c)))
+        hit = (sig, by_day)
+        _LEGACY_OHLC_CACHE["entry"] = hit
+    return hit[1].get(trade_date, {})
+
+
 def ohlc_by_minute(trade_date: str, extra_minutes: dict | None = None) -> dict:
     """{'HH:MM': (open,high,low,close)} for the trade_date.
 
@@ -242,14 +270,9 @@ def ohlc_by_minute(trade_date: str, extra_minutes: dict | None = None) -> dict:
             out[r["ts"].strftime("%H:%M")] = (
                 float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
     try:
-        oc = pd.read_csv(ALPHA_DATA_DIR / "analytics" / "nifty_1min_ohlc.csv")
-        oc["ts"] = pd.to_datetime(oc["timestamp"]).dt.tz_localize(None)
-        oc = oc[oc["ts"].dt.strftime("%Y-%m-%d") == trade_date]
-        for _, r in oc.iterrows():
-            hm = r["ts"].strftime("%H:%M")
+        for hm, candle in _legacy_ohlc_minutes(trade_date).items():
             if hm not in out:
-                out[hm] = (
-                    float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]))
+                out[hm] = candle
     except Exception:
         pass
     try:

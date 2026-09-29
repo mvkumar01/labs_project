@@ -63,7 +63,37 @@ def _previous_trading_days(trade_date: str, limit: int = 10) -> list[str]:
     return days
 
 
+# One parse per collector write, shared by every caller and connection. The live
+# runner's always-on process is CPU-starved on PA: re-parsing the day's option
+# chain two or three times per connection per cycle held the interpreter for
+# tens of seconds (2026-09-29 stall dumps). Callers get a copy.
+_LIVE_DF_CACHE: dict = {}
+
+
+def _options_source_sig(trade_date: str):
+    try:
+        path = resolve_options_source(
+            SYMBOL, trade_date, live_root=SHARED_LIVE_DIR, archive_root=SHARED_ARCHIVE_DIR)
+        st = path.stat()
+    except (FileNotFoundError, OSError):
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
 def _load_live_data(trade_date: str) -> pd.DataFrame:
+    sig = _options_source_sig(trade_date)
+    hit = _LIVE_DF_CACHE.get(trade_date)
+    if sig is not None and hit is not None and hit[0] == sig:
+        return hit[1].copy()
+    df = _load_live_data_uncached(trade_date)
+    if sig is not None:
+        _LIVE_DF_CACHE[trade_date] = (sig, df)
+        while len(_LIVE_DF_CACHE) > 2:
+            _LIVE_DF_CACHE.pop(next(iter(_LIVE_DF_CACHE)))
+    return df.copy()
+
+
+def _load_live_data_uncached(trade_date: str) -> pd.DataFrame:
     df = load_options_frame(
         SYMBOL,
         trade_date,
@@ -148,28 +178,37 @@ def _prepare_snapshot_frame(live_df: pd.DataFrame, baseline_df: pd.DataFrame) ->
 
 def _compute_alpha_series(snapshot_df: pd.DataFrame, trade_date: str,
                           lower: float, upper: float) -> pd.DataFrame:
+    # One grouped sum instead of a boolean filter per mark (same arithmetic:
+    # per-mark sums of delta_oi inside [lower, upper], std and abs-denom alpha).
     rows: list[dict[str, Any]] = []
-    for bucket, bucket_df in snapshot_df.groupby("bucket"):
-        in_range = bucket_df[(bucket_df["strike"] >= lower) & (bucket_df["strike"] <= upper)]
-        if in_range.empty:
-            rows.append({"timestamp": bucket, "spot": float(bucket_df["spot"].iloc[-1]),
-                         "alpha": None, "alpha_abs": None, "denom_alg": None})
-            continue
-        pe_delta = float(in_range.loc[in_range["type"] == "pe", "delta_oi"].sum())
-        ce_delta = float(in_range.loc[in_range["type"] == "ce", "delta_oi"].sum())
-        denom = pe_delta + ce_delta
-        alpha = ((pe_delta - ce_delta) * 100 / denom) if denom else 0.0
-        # v2.8.1 abs-denom sibling (bounded [-100, +100]) — routed per tier
-        # in hybrid_alpha_bars; the std algebraic alpha above is unchanged.
-        denom_abs = abs(pe_delta) + abs(ce_delta)
-        alpha_abs = ((pe_delta - ce_delta) * 100 / denom_abs) if denom_abs else 0.0
-        rows.append({
-            "timestamp": bucket,
-            "spot": float(bucket_df["spot"].iloc[-1]),
-            "alpha": round(alpha, 2),
-            "alpha_abs": round(alpha_abs, 2),
-            "denom_alg": denom,
-        })
+    if not snapshot_df.empty:
+        last_spot = (snapshot_df.drop_duplicates("bucket", keep="last")
+                     .set_index("bucket")["spot"])
+        in_range = snapshot_df[(snapshot_df["strike"] >= lower)
+                               & (snapshot_df["strike"] <= upper)]
+        sums = (in_range.groupby(["bucket", "type"])["delta_oi"].sum()
+                .unstack(fill_value=0.0))
+        for bucket in sorted(last_spot.index):
+            spot = float(last_spot[bucket])
+            if bucket not in sums.index:
+                rows.append({"timestamp": bucket, "spot": spot,
+                             "alpha": None, "alpha_abs": None, "denom_alg": None})
+                continue
+            pe_delta = float(sums.at[bucket, "pe"]) if "pe" in sums.columns else 0.0
+            ce_delta = float(sums.at[bucket, "ce"]) if "ce" in sums.columns else 0.0
+            denom = pe_delta + ce_delta
+            alpha = ((pe_delta - ce_delta) * 100 / denom) if denom else 0.0
+            # v2.8.1 abs-denom sibling (bounded [-100, +100]) — routed per tier
+            # in hybrid_alpha_bars; the std algebraic alpha above is unchanged.
+            denom_abs = abs(pe_delta) + abs(ce_delta)
+            alpha_abs = ((pe_delta - ce_delta) * 100 / denom_abs) if denom_abs else 0.0
+            rows.append({
+                "timestamp": bucket,
+                "spot": spot,
+                "alpha": round(alpha, 2),
+                "alpha_abs": round(alpha_abs, 2),
+                "denom_alg": denom,
+            })
     series = pd.DataFrame(rows)
     if series.empty:
         series = pd.DataFrame({"timestamp": _market_schedule(trade_date)})
