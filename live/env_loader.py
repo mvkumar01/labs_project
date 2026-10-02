@@ -19,6 +19,8 @@ _ENV_KEYS = (
     "QUOTAGUARDSTATIC_URL",
     "LIVE_ADMIN_USER_IDS",
     "LIVE_PROXY_ALLOWED_HOSTS",
+    "DEEPSEEK_API_KEY",          # SENSEX Proposer daily regime (shadow by default)
+    "PROPOSER_REGIME_SOURCE",    # 'gap' (default) or 'deepseek'
 )
 
 

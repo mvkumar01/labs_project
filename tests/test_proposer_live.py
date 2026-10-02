@@ -185,6 +185,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(live_db, "LIVE_DB_PATH", tmp_path / "live.db")
     init_live_db()
     pr.ensure_schema()
+    pr.ensure_regime_schema()
     svc.upsert_connection(USER, CONN, broker="zerodha", account_label="T", account_ref="zerodha:T",
                           status="connected")
     for k, v in (("lots", "1"), ("daily_loss_cap", "50000"), ("strategy_version", "proposer_dt25"),
@@ -324,3 +325,65 @@ def test_live_entry_goes_through_the_gates_to_a_bfo_order(db, monkeypatch):
     _cycle(feed, market, datetime(2026, 10, 5, 15, 25, 1), box, ctx)
     assert a.orders[-1]["action"] == "SELL" and svc.get_trade_state(USER, CONN)["position"] == "NONE"
     assert svc.get_day_pnl(USER, CONN)["trade_count"] == 1
+
+
+# ═══════════════════════════════════════════════════════ LLM daily regime ══
+from live.engine import proposer_regime_llm as rl
+
+
+def test_llm_regime_parses_the_model_json_and_maps_to_a_regime():
+    items = [{"title": "Rupee slides", "category": "INDIA_MARKETS", "published": None}]
+    seen = {}
+
+    def call(system, user):
+        seen.update(system=system, user=user)
+        return 'text {"regime":"Bearish","p_bull":0.2,"p_bear":0.5,"p_chop":0.3,"confidence":0.6,"trigger":"rupee"} end'
+    out = rl.daily_regime(items, {"n": 60, "bull": 0.25, "bear": 0.43, "chop": 0.32}, call=call)
+    assert out["regime"] == "bearish"
+    assert "REALIZED BASE RATES" in seen["user"] and "Rupee slides" in seen["user"]
+    r = rl.to_regime(out)
+    assert (r.label, r.p_bear, r.source) == ("bearish", 0.5, "deepseek")
+    with pytest.raises(ValueError):
+        rl.daily_regime(items, None, call=lambda s, u: '{"regime":"moon"}')
+    br = rl.base_rates_from_days([(100, 101), (100, 99), (100, 100.05)])
+    assert br["n"] == 3 and br["bull"] == br["bear"] == br["chop"] == pytest.approx(1 / 3)
+
+
+def test_regime_job_runs_once_in_the_morning_window(db, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    calls = []
+    job = pr.LlmRegimeJob(fetch=lambda now: ([{"title": "x"}], []),
+                          score=lambda items, br: calls.append(1) or {"regime": "bullish", "p_bull": 0.5,
+                                                                      "p_bear": 0.2, "p_chop": 0.3,
+                                                                      "confidence": 0.6},
+                          bars_fn=lambda d: [], spawn=False)
+    job.step(datetime(2026, 10, 5, 8, 59))
+    assert calls == []
+    job.step(datetime(2026, 10, 5, 9, 0, 5))
+    job.step(datetime(2026, 10, 5, 9, 5))
+    assert calls == [1] and pr.get_regime("2026-10-05", "deepseek")["regime"] == "bullish"
+    job2 = pr.LlmRegimeJob(fetch=lambda now: (_ for _ in ()).throw(OSError("down")),
+                           score=lambda i, b: {}, bars_fn=lambda d: [], spawn=False)
+    job2.step(datetime(2026, 10, 6, 9, 0))                     # failure: logged, nothing stored
+    assert pr.get_regime("2026-10-06", "deepseek") is None and not job2.running
+
+
+def test_feed_regime_source_gap_by_default_deepseek_only_when_selected(db, monkeypatch):
+    base = datetime(2026, 10, 5, 9, 15)
+    today = [(base + timedelta(minutes=i), 74000.0 + i) for i in range(10)]
+    prior = [(datetime(2026, 10, 1, 14, 0) + timedelta(minutes=i), 74000.0) for i in range(80)]
+
+    def bars(day):
+        return today if day == base.date() else (prior if day.isoformat() == "2026-10-01" else [])
+    pr.save_regime("2026-10-05", "deepseek", {"regime": "bearish", "p_bull": 0.2, "p_bear": 0.5,
+                                              "p_chop": 0.3, "confidence": 0.6})
+    now = datetime(2026, 10, 5, 9, 25, 3)
+    monkeypatch.delenv("PROPOSER_REGIME_SOURCE", raising=False)
+    feed = pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame())
+    assert feed.step(now)["regime"] == "neutral"              # gap rule (flat open) drives
+    assert pr.get_regime("2026-10-05", "gap_rule")["regime"] == "neutral"
+    monkeypatch.setenv("PROPOSER_REGIME_SOURCE", "deepseek")
+    feed = pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame())
+    feed.day = None
+    p = feed.step(now + timedelta(minutes=10))
+    assert p["regime"] == "bearish" and feed.regime.source == "deepseek"

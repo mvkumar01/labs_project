@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import tarfile
 import threading
 import time
@@ -67,6 +68,53 @@ def ensure_schema(conn=None) -> None:
     finally:
         if own:
             conn.close()
+
+
+def ensure_regime_schema(conn=None) -> None:
+    own = conn is None
+    conn = conn or get_live_conn()
+    try:
+        with conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS live_proposer_regimes ("
+                " trade_date TEXT NOT NULL, source TEXT NOT NULL, regime TEXT, p_bull REAL,"
+                " p_bear REAL, p_chop REAL, confidence REAL, trigger TEXT, payload_json TEXT,"
+                " created_at TEXT, PRIMARY KEY (trade_date, source))")
+    finally:
+        if own:
+            conn.close()
+
+
+def save_regime(trade_date: str, source: str, out: dict, conn=None) -> None:
+    own = conn is None
+    conn = conn or get_live_conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO live_proposer_regimes VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (trade_date, source, out.get("regime"), out.get("p_bull"), out.get("p_bear"),
+                 out.get("p_chop"), out.get("confidence"), out.get("trigger"),
+                 json.dumps(out, default=str), datetime.now(timezone.utc).isoformat()))
+    finally:
+        if own:
+            conn.close()
+
+
+def get_regime(trade_date: str, source: str, conn=None) -> dict | None:
+    own = conn is None
+    conn = conn or get_live_conn()
+    try:
+        row = conn.execute("SELECT payload_json FROM live_proposer_regimes WHERE trade_date=? AND source=?",
+                           (trade_date, source)).fetchone()
+        return json.loads(row[0]) if row else None
+    finally:
+        if own:
+            conn.close()
+
+
+def regime_source() -> str:
+    """Which daily regime drives entries: 'gap' (default) or 'deepseek' (falls back to gap)."""
+    return (os.environ.get("PROPOSER_REGIME_SOURCE") or "gap").strip().lower()
 
 
 def save_print(p: dict, conn=None) -> None:
@@ -167,11 +215,86 @@ def option_chain(day: date) -> pd.DataFrame:
     return f[f["expiry"] == code] if code else pd.DataFrame()
 
 
+def recent_day_closes(today: date, bars_fn=spot_bars, n: int = 60) -> list[tuple[float, float]]:
+    """(first close, last close) of the last n sessions before today, for the regime base rates."""
+    days, d = [], today - timedelta(days=1)
+    while len(days) < n and d > today - timedelta(days=150):
+        bars = bars_fn(d) if d.weekday() < 5 else []
+        if bars:
+            days.append((bars[0][1], bars[-1][1]))
+        d -= timedelta(days=1)
+    return days
+
+
+class LlmRegimeJob:
+    """Scores today's regime from overnight news with DeepSeek, once per weekday from 09:00.
+
+    Runs in a background thread so a slow feed or API never stalls the trading loop; retries every
+    2 minutes until 09:14. The result is stored in live_proposer_regimes (source 'deepseek'); it only
+    drives trading when PROPOSER_REGIME_SOURCE=deepseek (shadow otherwise)."""
+    START, LAST_TRY, RETRY_S = dtime(9, 0), dtime(9, 14), 120
+
+    def __init__(self, fetch=None, score=None, bars_fn=spot_bars, store=save_regime,
+                 lookup=get_regime, spawn: bool = True):
+        from live.engine import proposer_regime_llm as rl
+        self.fetch, self.score = fetch or rl.fetch_news, score or rl.daily_regime
+        self.bars_fn, self.store, self.lookup, self.spawn = bars_fn, store, lookup, spawn
+        self.done: set[str] = set()
+        self.running = False
+        self.last_try: datetime | None = None
+        self._warned = False
+
+    def step(self, now: datetime) -> None:
+        if not os.environ.get("DEEPSEEK_API_KEY"):
+            if not self._warned:
+                log.info("DEEPSEEK_API_KEY not set - LLM regime disabled (gap rule only)")
+                self._warned = True
+            return
+        if now.weekday() >= 5 or not (self.START <= now.time() <= self.LAST_TRY):
+            return
+        day = now.date().isoformat()
+        if day in self.done or self.running:
+            return
+        if self.last_try is not None and (now - self.last_try).total_seconds() < self.RETRY_S:
+            return
+        if self.lookup(day, "deepseek"):
+            self.done.add(day)
+            return
+        self.last_try, self.running = now, True
+        if self.spawn:
+            threading.Thread(target=self.run_now, args=(now,), daemon=True, name="proposer-regime").start()
+        else:
+            self.run_now(now)
+
+    def run_now(self, now: datetime) -> dict | None:
+        day = now.date().isoformat()
+        try:
+            items, skipped = self.fetch(now=now)
+            from live.engine import proposer_regime_llm as rl
+            br = rl.base_rates_from_days(recent_day_closes(now.date(), self.bars_fn))
+            out = self.score(items, br)
+            out.update(_n_headlines=len(items), _skipped_feeds=skipped, _base_rates=br,
+                       _headlines=[it.get("title") for it in items[:15]])
+            self.store(day, "deepseek", out)
+            self.done.add(day)
+            log.info("deepseek regime %s (bull %.2f bear %.2f chop %.2f conf %.2f) - %s",
+                     out.get("regime"), *(float(out.get(k) or 0) for k in ("p_bull", "p_bear", "p_chop", "confidence")),
+                     out.get("trigger"))
+            return out
+        except Exception as e:
+            log.warning("deepseek regime failed (%s): %s", type(e).__name__, str(e)[:160])
+            return None
+        finally:
+            self.running = False
+
+
 class PredictorFeed:
     """Publishes Proposer prints every PRINT_EVERY_MIN minutes (first once 7 bars of today exist)."""
 
-    def __init__(self, bars_fn=spot_bars, chain_fn=option_chain, store=save_print):
+    def __init__(self, bars_fn=spot_bars, chain_fn=option_chain, store=save_print,
+                 store_regime=save_regime, lookup_regime=get_regime):
         self.bars_fn, self.chain_fn, self.store = bars_fn, chain_fn, store
+        self.store_regime, self.lookup_regime = store_regime, lookup_regime
         self.day: date | None = None
         self.prior: list = []
         self.regime: pp.Regime | None = None
@@ -205,9 +328,22 @@ class PredictorFeed:
         if self.regime is None:
             prev_close = self.prior[-1][1] if self.prior else None
             first_open = self._first_open(now.date()) or today[0][1]
-            self.regime = pp.regime_from_gap(prev_close, first_open)
-            log.info("regime %s (conf %.2f) from gap: prev %s open %s", self.regime.label,
-                     self.regime.confidence, prev_close, first_open)
+            gap = pp.regime_from_gap(prev_close, first_open)
+            day = now.date().isoformat()
+            self.store_regime(day, "gap_rule", {
+                "regime": gap.label, "p_bull": gap.p_bull, "p_bear": gap.p_bear, "p_chop": gap.p_chop,
+                "confidence": gap.confidence, "trigger": f"open {first_open} vs prev close {prev_close}"})
+            self.regime = gap
+            if regime_source() == "deepseek":
+                from live.engine import proposer_regime_llm as rl
+                out = self.lookup_regime(day, "deepseek")
+                if out:
+                    self.regime = rl.to_regime(out)
+                else:
+                    log.warning("PROPOSER_REGIME_SOURCE=deepseek but no DeepSeek regime today - using the gap rule")
+            log.info("regime %s (conf %.2f, source %s); gap rule says %s (prev %s open %s)",
+                     self.regime.label, self.regime.confidence, self.regime.source, gap.label,
+                     prev_close, first_open)
         chain_rows = self.chain_fn(now.date())
         chain = None
         if not chain_rows.empty:
@@ -501,7 +637,10 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
     task_id = task_id or f"proposer_runner:{uuid.uuid4().hex[:8]}"
     init_live_db()
     ensure_schema()
-    log.info("proposer_runner boot | task=%s abi=%s", task_id, ex.PROPOSER_DECISION_ABI)
+    ensure_regime_schema()
+    log.info("proposer_runner boot | task=%s abi=%s regime_source=%s", task_id,
+             ex.PROPOSER_DECISION_ABI, regime_source())
+    regime_job = LlmRegimeJob()
     stop = threading.Event()
     hb = None
     if max_cycles is None:
@@ -516,6 +655,10 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
         while True:
             any_open = False
             now = clock()
+            try:
+                regime_job.step(now)
+            except Exception as e:
+                log.error("regime job error: %s", e)
             try:
                 if lr.market_session_available(now) and now.time() <= dtime(15, 21):
                     feed.step(now)
