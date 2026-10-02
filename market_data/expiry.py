@@ -6,7 +6,9 @@ import re
 from datetime import date
 from typing import Iterable
 
-_WEEKLY_RE = re.compile(r"^(\d{2})(\d)(\d{2})$")
+# Kite weekly codes: YY + month + DD, the month as 1-9 or O/N/D for Oct/Nov/Dec.
+_WEEKLY_RE = re.compile(r"^(\d{2})([1-9OND])(\d{2})$")
+_WEEKLY_MONTH = {"O": 10, "N": 11, "D": 12}
 _MONTHLY_RE = re.compile(r"^(\d{2})([A-Z]{3})$")
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTHS = {
@@ -22,7 +24,7 @@ def expiry_code_from_symbol(symbol: str, underlying: str) -> str | None:
     if not text.startswith(prefix):
         return None
     suffix = text[len(prefix):]
-    match = re.match(r"^(\d{2}(?:\d\d{2}|[A-Z]{3}))", suffix)
+    match = re.match(r"^(\d{2}(?:[1-9OND]\d{2}|[A-Z]{3}))", suffix)
     return match.group(1) if match else None
 
 
@@ -47,7 +49,7 @@ def expiry_sort_date(code: object) -> date | None:
     if match:
         yy, month, day = match.groups()
         try:
-            return date(2000 + int(yy), int(month), int(day))
+            return date(2000 + int(yy), _WEEKLY_MONTH.get(month) or int(month), int(day))
         except ValueError:
             return None
     match = _MONTHLY_RE.fullmatch(text)

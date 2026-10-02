@@ -37,6 +37,21 @@ class ExpirySelectionTests(unittest.TestCase):
         self.assertEqual(select_expiry_code(expiries, "2026-06-24", "nearest_weekly"), "26JUN")
         self.assertEqual(select_expiry_code(expiries, "2026-06-24", "next_weekly"), "26707")
 
+    def test_october_to_december_weeklies_are_not_skipped(self):
+        # Kite writes Oct/Nov/Dec weeklies as O/N/D (NIFTY26O0624400CE). They used
+        # to decode to None and the monthly won by default (2026-10-02).
+        self.assertEqual(select_expiry_code(["26O06", "26O13", "26OCT"], "2026-10-05"), "26O06")
+        self.assertEqual(select_expiry_code(["26O06", "26O13", "26OCT"], "2026-10-05", "next_weekly"), "26O13")
+        self.assertEqual(select_expiry_code(["26N03", "26NOV", "26D01"], "2026-11-02"), "26N03")
+        self.assertEqual(select_expiry_code(["26D29", "26DEC", "27106"], "2026-12-28"), "26D29")
+        self.assertEqual(select_expiry_code(["26O06", "26O13", "26OCT"], "2026-09-30"), "26O06")
+        self.assertEqual(
+            select_symbol_for_expiry(["NIFTY26OCT24400CE", "NIFTY26O0624400CE"], "NIFTY", "2026-10-05"),
+            "NIFTY26O0624400CE")
+        self.assertEqual(
+            select_symbol_for_expiry(["SENSEX26OCT72300PE", "SENSEX26O0872300PE"], "SENSEX", "2026-10-05"),
+            "SENSEX26O0872300PE")
+
     def test_unavailable_monthly_fails_closed(self):
         self.assertIsNone(select_expiry_code(["26623", "26707"], "2026-06-17", "monthly"))
 
