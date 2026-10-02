@@ -46,8 +46,9 @@ from live import control_plane as cp
 
 log = logging.getLogger("live.executor")
 
-# ── hard limits / configured constants (spec §6, §10, §13) ────────────────
-LOTS_HARD_CAP = 2
+# ── configured constants (spec §6, §10, §13) ──────────────────────────────
+# No lot ceiling (operator, 2026-10-02): size is bounded by the daily loss cap,
+# broker margin and the exchange freeze quantity per order.
 LIVE_DECISION_ABI = "alpha-v2.14ab-entrybar-live-v1"
 # The SENSEX Proposer runs in its own runner process with its own decision contract.
 PROPOSER_STRATEGY_VERSION = "proposer_dt25"
@@ -204,10 +205,10 @@ def gate_daily_loss_ok(adapter, user_id: str, conn_id: str,
 
 
 def gate_lots_within_cap(user_id: str, conn_id: str, conn=None) -> GateResult:
-    """6. 1 <= lots <= LOTS_HARD_CAP (==2) for this connection."""
+    """6. lots is a whole number >= 1 for this connection (no upper ceiling)."""
     lots = svc.get_lots(user_id, conn_id, conn)
-    ok = 1 <= lots <= LOTS_HARD_CAP
-    return GateResult("lots_within_cap", ok, f"lots={lots} cap={LOTS_HARD_CAP}")
+    ok = lots >= 1
+    return GateResult("lots_within_cap", ok, f"lots={lots}")
 
 
 def gate_static_order_proxy(user_id=None, conn_id=None, conn=None, *, for_exit=False) -> GateResult:

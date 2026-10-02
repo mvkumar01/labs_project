@@ -551,11 +551,12 @@ def update_settings(actor, user_id, conn_id, lots, daily_loss_cap):
     try:
         lots = int(lots)
         cap = float(daily_loss_cap)
-        if lots != 1 or not math.isfinite(cap) or cap <= 0 or cap > 100000:
+        if lots < 1 or not math.isfinite(cap) or cap <= 0 or cap > 100000:
             raise ValueError()
     except (TypeError, ValueError):
         raise ControlError(
-            "Phase limit is 1 lot; daily loss cap must be positive and at most 100000"
+            "Lots must be a whole number of at least 1; daily loss cap must be positive "
+            "and at most 100000"
         ) from None
     with transaction() as c:
         require_admin(actor, c)

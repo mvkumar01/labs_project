@@ -77,9 +77,9 @@ SUPPORTED_BROKERS = {
 
 LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 15, "SENSEX": 20}
 
-# Phase cap (spec §13): Phase 0/1 = 1 lot, hard ceiling 2.
-LOTS_PHASE_CAP = 1
-LOTS_HARD_CAP = ex.LOTS_HARD_CAP  # == 2
+# No lot ceiling (operator, 2026-10-02). One order cannot exceed the exchange freeze
+# quantity (SENSEX 1,000 / NIFTY 1,800 units); larger orders are rejected, not split.
+FREEZE_QTY = {"NIFTY": 1800, "SENSEX": 1000}   # Angel instrument master, 2026-10-02
 
 
 def _now_iso() -> str:
@@ -581,8 +581,7 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         "live_configure.html",
         csrf_token=issue_csrf(),
         lots=svc.get_lots(user_id, conn_id),
-        lots_phase_cap=LOTS_PHASE_CAP,
-        lots_hard_cap=LOTS_HARD_CAP,
+        freeze_qty=FREEZE_QTY,
         daily_loss_cap=svc.get_daily_loss_cap(user_id, conn_id),
         lot_sizes=LOT_SIZES,
         mode=svc.get_mode(user_id, conn_id),
@@ -623,7 +622,7 @@ def configure():
             lots = int(request.form.get("lots", "1"))
         except ValueError:
             lots = 1
-        lots = max(1, min(lots, LOTS_PHASE_CAP, LOTS_HARD_CAP))
+        lots = max(1, lots)
         svc.set_config(user_id, conn_id, "lots", lots)
 
         try:

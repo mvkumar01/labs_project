@@ -41,9 +41,9 @@
 
         <div class="field">
           <label for="lots">Number of lots</label>
-          <input type="number" id="lots" name="lots" min="1" max="{{ lots_phase_cap }}"
+          <input type="number" id="lots" name="lots" min="1" step="1"
                  value="{{ lots }}">
-          <div class="hint">NIFTY 1 lot = {{ lot_sizes.NIFTY }} qty · BANKNIFTY 1 lot = {{ lot_sizes.BANKNIFTY }} qty · SENSEX 1 lot = {{ lot_sizes.SENSEX }} qty. Capped at {{ lots_phase_cap }} this phase (hard ceiling {{ lots_hard_cap }}).</div>
+          <div class="hint">NIFTY 1 lot = {{ lot_sizes.NIFTY }} qty · BANKNIFTY 1 lot = {{ lot_sizes.BANKNIFTY }} qty · SENSEX 1 lot = {{ lot_sizes.SENSEX }} qty. No lot cap. One order cannot exceed the exchange freeze quantity (NIFTY {{ freeze_qty.NIFTY }} · SENSEX {{ freeze_qty.SENSEX }} qty) &mdash; larger orders are rejected. Size is limited by the daily loss cap and your broker margin.</div>
         </div>
 
         <div class="field">
