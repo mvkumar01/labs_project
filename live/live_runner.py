@@ -170,7 +170,12 @@ def claim_runner_owner(user_id: str, conn_id: str, task_id: str, conn=None) -> b
 
 def publish_runner_heartbeat(user_id: str, conn_id: str, task_id: str,
                              conn=None) -> bool:
-    """Claim a connection and publish the decision ABI for the owning runner."""
+    """Claim a connection and publish the decision ABI for the owning runner.
+
+    SENSEX Proposer connections belong to live.proposer_runner (its own process):
+    this runner never claims them, so it neither evaluates nor routes for them."""
+    if ex.is_proposer_strategy(svc.get_config(user_id, conn_id, "strategy_version", conn)):
+        return False
     if not claim_runner_owner(user_id, conn_id, task_id, conn):
         return False
     svc.set_config(

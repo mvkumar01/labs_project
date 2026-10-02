@@ -49,7 +49,19 @@ log = logging.getLogger("live.executor")
 # ── hard limits / configured constants (spec §6, §10, §13) ────────────────
 LOTS_HARD_CAP = 2
 LIVE_DECISION_ABI = "alpha-v2.14ab-entrybar-live-v1"
+# The SENSEX Proposer runs in its own runner process with its own decision contract.
+PROPOSER_STRATEGY_VERSION = "proposer_dt25"
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v1"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
+
+
+def is_proposer_strategy(strategy_version) -> bool:
+    return str(strategy_version or "").startswith("proposer")
+
+
+def expected_decision_abi(strategy_version) -> str:
+    """The decision contract the owning runner must have loaded for this strategy."""
+    return PROPOSER_DECISION_ABI if is_proposer_strategy(strategy_version) else LIVE_DECISION_ABI
 
 
 def _now_iso() -> str:
@@ -235,12 +247,13 @@ def gate_runner_decision_abi(user_id: str, conn_id: str, conn=None) -> GateResul
         pass
     fresh = age is not None and age <= RUNNER_HEARTBEAT_MAX_AGE_SECONDS
     owner_matches = bool(owner_task) and published_owner == owner_task
-    ok = actual == LIVE_DECISION_ABI and fresh and owner_matches
+    expected = expected_decision_abi(svc.get_config(user_id, conn_id, "strategy_version", conn))
+    ok = actual == expected and fresh and owner_matches
     age_text = "missing" if age is None else f"{age:.1f}s"
     return GateResult(
         "runner_decision_abi",
         ok,
-        f"loaded={actual or 'missing'} expected={LIVE_DECISION_ABI} "
+        f"loaded={actual or 'missing'} expected={expected} "
         f"owner_match={int(owner_matches)} heartbeat_age={age_text}",
     )
 

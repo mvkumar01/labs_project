@@ -105,6 +105,7 @@ class AngelAdapter(BrokerAdapter):
     # Angel placeOrder constants (NFO intraday LIMIT). Used only inside the
     # guarded real branch.
     _EXCHANGE = "NFO"
+    _underlying = "NIFTY"           # per-instance override via use_segment (SENSEX on BFO)
     _PRODUCT = "INTRADAY"
     _ORDER_TYPE = "LIMIT"
     _VARIETY = "NORMAL"
@@ -116,6 +117,23 @@ class AngelAdapter(BrokerAdapter):
         self._token_cache = {}
         self._symbol_cache = {}
         self._read_cache = {}   # key -> (expiry_monotonic, value); see _cached
+
+    def use_segment(self, segment: str, underlying: str) -> None:
+        """Trade another index's options on this connection (SENSEX on BFO).
+
+        Angel lists BSE index options under the same tradingsymbols as Kite
+        (SENSEX26O0169700PE), so the exact-symbol branch of the instrument
+        lookup resolves them once the segment is BFO. Default stays NFO/NIFTY.
+        """
+        self._EXCHANGE = str(segment).upper()
+        self._underlying = str(underlying).upper()
+        self._symbol_cache.clear()
+        self._token_cache.clear()
+        self._invalidate_reads()
+
+    def broker_symbol(self, kite_symbol: str) -> str:
+        """The tradingsymbol this broker uses for a Kite option symbol."""
+        return self._resolve_symbol_meta(kite_symbol)["symbol"]
 
     # ── session ─────────────────────────────────────────────────────────
     def connect(self) -> None:
@@ -245,7 +263,7 @@ class AngelAdapter(BrokerAdapter):
         for p in net:
             qty = int(p.get("netqty", 0) or 0)
             sym = p.get("tradingsymbol", "")
-            if qty != 0 and sym.startswith("NIFTY"):
+            if qty != 0 and sym.startswith(self._underlying):
                 side = ("CALL" if sym.endswith("CE")
                         else ("PUT" if sym.endswith("PE") else None))
                 return Position(symbol=sym, qty=qty, side=side)
@@ -349,7 +367,7 @@ class AngelAdapter(BrokerAdapter):
             # The underlying MUST be the NIFTY index option. On a monthly expiry
             # FINNIFTY lists the same date/strike/type (2026-09-25/28: every entry
             # resolved to FINNIFTY29SEP26..., lot 60, and was rejected AB4014).
-            if (str(ins.get("name") or "").upper() != "NIFTY"
+            if (str(ins.get("name") or "").upper() != self._underlying
                     or str(ins.get("instrumenttype") or "").upper() != "OPTIDX"):
                 continue
             try:

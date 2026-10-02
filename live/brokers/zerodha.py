@@ -56,10 +56,24 @@ _LIVE_ORDERS_ENABLED = True
 
 class ZerodhaAdapter(BrokerAdapter):
     broker_name = "zerodha"
+    _segment = "NFO"                # per-instance override via use_segment (SENSEX on BFO)
+    _underlying = "NIFTY"
 
     def __init__(self, *, user_id: str, conn_id: str, creds: dict):
         super().__init__(user_id=user_id, conn_id=conn_id, creds=creds)
         self._kite = None
+
+    def use_segment(self, segment: str, underlying: str) -> None:
+        """Trade another index's options on this connection (SENSEX on BFO).
+        Default stays NFO/NIFTY, so the NIFTY runner's adapters are unchanged."""
+        self._segment = str(segment).upper()
+        self._underlying = str(underlying).upper()
+
+    def broker_symbol(self, kite_symbol: str) -> str:
+        return kite_symbol
+
+    def _exchange(self):
+        return self._kite.EXCHANGE_BFO if self._segment == "BFO" else self._kite.EXCHANGE_NFO
 
     # ── session ─────────────────────────────────────────────────────────
     def connect(self) -> None:
@@ -125,25 +139,28 @@ class ZerodhaAdapter(BrokerAdapter):
         return None
 
     def get_spot(self) -> float:
-        data = self._kite.ltp("NSE:NIFTY 50")
-        return float(data["NSE:NIFTY 50"]["last_price"])
+        key = "BSE:SENSEX" if self._underlying == "SENSEX" else "NSE:NIFTY 50"
+        data = self._kite.ltp(key)
+        return float(data[key]["last_price"])
 
     def get_ltp(self, symbol: str) -> float:
-        key = f"NFO:{symbol}"
+        key = f"{self._segment}:{symbol}"
         return float(self._kite.ltp(key)[key]["last_price"])
 
     def quote(self, symbols: list) -> dict:
-        keys = [f"NFO:{s}" for s in symbols]
+        keys = [f"{self._segment}:{s}" for s in symbols]
         return self._kite.quote(keys)
 
     def get_position(self) -> Position:
-        # First NIFTY MIS non-zero net leg for this live account.
+        # First MIS non-zero net leg of this connection's underlying.
         try:
             net = self._kite.positions()["net"]
         except Exception:
             return Position(symbol=None, qty=0, side=None)
         for p in net:
-            if (p["tradingsymbol"].startswith("NIFTY")
+            if self._segment != "NFO" and p.get("exchange") not in (None, self._segment):
+                continue
+            if (p["tradingsymbol"].startswith(self._underlying)
                     and p["product"] == "MIS"
                     and p["quantity"] != 0):
                 sym = p["tradingsymbol"]
@@ -171,7 +188,7 @@ class ZerodhaAdapter(BrokerAdapter):
         # Static IP used ONLY for the order placement.
         order_id = send_order(self, 'entry', dict(
                 variety=self._kite.VARIETY_REGULAR,
-                exchange=self._kite.EXCHANGE_NFO,
+                exchange=self._exchange(),
                 tradingsymbol=symbol,
                 transaction_type=self._kite.TRANSACTION_TYPE_BUY,
                 quantity=qty,
@@ -236,7 +253,7 @@ class ZerodhaAdapter(BrokerAdapter):
         exit_price = price if price and price > 0 else self.get_ltp(symbol)
         order_id = send_order(self, 'exit', dict(
                 variety=self._kite.VARIETY_REGULAR,
-                exchange=self._kite.EXCHANGE_NFO,
+                exchange=self._exchange(),
                 tradingsymbol=symbol,
                 transaction_type=self._kite.TRANSACTION_TYPE_SELL,
                 quantity=qty,
