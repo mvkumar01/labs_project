@@ -44,6 +44,7 @@ def main() -> None:
     from labs.engine.alpha_cpr_tracker import run_day as run_cpr_day
     from labs.engine.theta_straddle_tracker import run_day as run_theta_straddle_day
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
+    from labs.engine.proposer_px_tracker import run_day as run_proposer_px_day
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
     from labs.engine.btc_rsi_roc_tracker import run_live as run_btc_rsi_roc_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
@@ -60,6 +61,7 @@ def main() -> None:
         "alpha_cpr": None,
         "theta_straddle": None,
         "theta_iron_fly": None,
+        "proposer_px": None,
         "crude_macd_st": None,
         "btc_rsi_roc": None,
     }
@@ -78,6 +80,7 @@ def main() -> None:
                 ("alpha_cpr", run_cpr_day),
                 ("theta_straddle", run_theta_straddle_day),
                 ("theta_iron_fly", run_theta_iron_fly_day),
+                ("proposer_px", run_proposer_px_day),
             ):
                 try:
                     res = runner(now.date().isoformat())

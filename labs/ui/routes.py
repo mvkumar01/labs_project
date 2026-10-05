@@ -370,6 +370,7 @@ LIVE_TABS = {
     "btc_rsi_roc": "BTC RSI/ROC short",
     "baskets": "v2.11 Baskets",
     "sensex_alpha": "Sensex_alpha",
+    "proposer_px": "Sensex Proposer + Renko",
 }
 
 
@@ -393,6 +394,7 @@ def live_strategy():
     theta_rows, theta_trades, theta_stats = [], [], {}
     crude_rows, crude_trades, crude_stats = [], [], {}
     btc_rows, btc_trades, btc_stats = [], [], {}
+    proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -870,6 +872,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # SENSEX Proposer + price-action exit (paper): its own ledger and tab.
+        if active_live_tab == "proposer_px":
+            try:
+                from labs.engine.proposer_px_view import tab_data as proposer_px_tab_data
+                proposer_px_rows, proposer_px_trades, proposer_px_stats = proposer_px_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_px_stats = {"error": str(exc)}
+
         # BTCUSDT RSI/ROC short (paper, 24/7): its own ledger and tab.
         if active_live_tab == "btc_rsi_roc":
             try:
@@ -1034,12 +1046,34 @@ def live_strategy():
         btc_rows=btc_rows,
         btc_trades=btc_trades,
         btc_stats=btc_stats,
+        proposer_px_rows=proposer_px_rows,
+        proposer_px_trades=proposer_px_trades,
+        proposer_px_stats=proposer_px_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@labs_bp.route("/api/proposer_px/backfill", methods=["POST"])
+def proposer_px_backfill():
+    """Backfill bounded batches of the paper-only SENSEX Proposer + price-action exit book."""
+    from labs.engine.proposer_px_backfill import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @labs_bp.route("/api/theta_straddle/backfill", methods=["POST"])

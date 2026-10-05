@@ -200,6 +200,55 @@ def spot_bars(day: date) -> list[tuple[datetime, float]]:
     return []
 
 
+class SessionBars:
+    """Today's completed SENSEX 1-min closes for the bar exit, available as a minute rolls over.
+
+    The collector's bar file is the source. The runner also remembers the last spot it polled in
+    each minute, and uses it for minutes after the collector's latest bar, so the exit does not
+    wait for the collector to write the minute that just closed. Restart-safe: the collector
+    file refills the session."""
+    REFRESH_S = 3.0
+
+    def __init__(self, bars_fn=None):
+        self.bars_fn = bars_fn
+        self.day: date | None = None
+        self.polled: dict[datetime, float] = {}
+        self._bars: list[tuple[datetime, float]] = []
+        self._read_at: datetime | None = None
+
+    def note(self, now: datetime, spot: float | None) -> None:
+        if self.day != now.date():
+            self.day, self.polled, self._bars, self._read_at = now.date(), {}, [], None
+        if spot:
+            self.polled[now.replace(second=0, microsecond=0)] = float(spot)
+
+    def completed(self, now: datetime) -> list[tuple[datetime, float]]:
+        current = now.replace(second=0, microsecond=0)
+        if self._read_at is None or (now - self._read_at).total_seconds() >= self.REFRESH_S:
+            try:
+                self._bars = (self.bars_fn or spot_bars)(now.date())
+            except Exception as e:
+                log.warning("spot bars read failed: %s", type(e).__name__)
+            self._read_at = now
+        bars = [b for b in self._bars if b[0] < current]
+        last = bars[-1][0] if bars else None
+        extra = sorted((m, px) for m, px in self.polled.items()
+                       if m < current and (last is None or m > last))
+        return bars + extra
+
+
+def entry_bar_index(bars: list[tuple[datetime, float]], entry_time_utc: str | None) -> int | None:
+    """Index of the 1-min bar the entry happened in (len(bars) while that bar is still forming)."""
+    try:
+        t = datetime.fromisoformat(str(entry_time_utc))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone(IST).replace(tzinfo=None)
+    t = t.replace(second=0, microsecond=0)
+    return next((i for i, b in enumerate(bars) if b[0] >= t), len(bars))
+
+
 def option_chain(day: date) -> pd.DataFrame:
     """Latest minute of today's collector SENSEX option chain (nearest expiry rows only)."""
     path = SHARED_LIVE_DIR / day.isoformat() / f"{UNDERLYING}_options_1min.csv"
@@ -400,9 +449,10 @@ def _today_trades(user_id: str, conn_id: str, trade_date: str, dry_run: bool) ->
 class ProposerConnection:
     """Engine + restart-safe state for one (user, connection)."""
 
-    def __init__(self, user_id: str, conn_id: str, params: pe.ProposerParams | None = None):
-        self.user_id, self.conn_id = user_id, conn_id
-        self.engine = pe.ProposerEngine(params or pe.ProposerParams())
+    def __init__(self, user_id: str, conn_id: str, params: pe.ProposerParams | None = None,
+                 strategy: str | None = None):
+        self.user_id, self.conn_id, self.strategy = user_id, conn_id, strategy
+        self.engine = pe.ProposerEngine(params or pe.params_for(strategy))
         self.day: str | None = None
         self.mode: str | None = None
 
@@ -428,11 +478,12 @@ class ProposerConnection:
             last_acted_asof=stale_asof)
         self.day, self.mode = trade_date, mode
 
-    def book(self, trade_date: str, dry_run: bool) -> tuple[float, float]:
+    def book(self, trade_date: str, dry_run: bool) -> tuple[float, float, int]:
+        """(today's gross, lifetime gross, today's losing trades) of this connection's Proposer book."""
         today, all_rows = _today_trades(self.user_id, self.conn_id, trade_date, dry_run)
         day_gross = sum(float(t.get("gross_pnl") or 0) for t in today)
         book_gross = sum(float(t.get("gross_pnl") or 0) for t in all_rows)
-        return day_gross, book_gross
+        return day_gross, book_gross, sum(1 for t in today if float(t.get("gross_pnl") or 0) < 0)
 
 
 def publish_heartbeat(user_id: str, conn_id: str, task_id: str) -> bool:
@@ -544,13 +595,20 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     blocked = (not dry_run) and svc.get_config(user_id, conn_id, "reconcile_blocked") == "1"
 
     trade_date = now.date().isoformat()
-    pc = ctx["conns"].setdefault(conn_id, ProposerConnection(user_id, conn_id))
+    strategy = svc.get_config(user_id, conn_id, "strategy_version")
+    pc = ctx["conns"].get(conn_id)
+    if pc is None or pc.strategy != strategy:        # first cycle, or the operator switched variant
+        pc = ctx["conns"][conn_id] = ProposerConnection(user_id, conn_id, strategy=strategy)
+        log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s", conn_id, strategy,
+                 pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off")
     pc.ensure_session(trade_date, dry_run, feed, now)
-    day_gross, book_gross = pc.book(trade_date, dry_run)
-    pc.engine.set_book(day_realized=day_gross, book_net=book_gross)
+    day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
+    pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
     snap = feed.snapshot()
 
     spot = market.spot()
+    session_bars = ctx.setdefault("bars", SessionBars())
+    session_bars.note(now, spot)
     quote = market.quote(st["symbol"]) if is_open and st.get("symbol") else None
     ltp = (quote or {}).get("ltp")
     pos = pe.Position()
@@ -562,7 +620,12 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     if is_open and now.time() >= EOD_FLAT:
         sig = pe.Signal("EXIT", st.get("side"), "eod")
     elif snap and spot:
-        sig = pc.engine.evaluate(now, snap, pos, option_ltp=ltp, spot=spot)
+        closes = entry_idx = None
+        if is_open and pc.engine.params.bar_exit:
+            bars = session_bars.completed(now)
+            closes, entry_idx = [b[1] for b in bars], entry_bar_index(bars, st.get("entry_time"))
+        sig = pc.engine.evaluate(now, snap, pos, option_ltp=ltp, spot=spot,
+                                 closes=closes, entry_idx=entry_idx)
     else:
         sig = pe.Signal("HOLD")
 

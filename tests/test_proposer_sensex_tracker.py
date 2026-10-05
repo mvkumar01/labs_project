@@ -161,5 +161,7 @@ def test_book_is_retired_from_ui_and_loops():
     template = (root / "templates" / "live_strategy.html").read_text(encoding="utf-8")
     loop = (root / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
     daily = (root / "pa_paper_tracker.py").read_text(encoding="utf-8")
-    assert "proposer" not in routes and "proposer" not in template
+    # The retired book is proposer_sensex. A different Proposer paper book (proposer_px, the live
+    # engine with the Renko exit) was added on 2026-10-06 at the operator's request and is wired in.
+    assert "proposer_sensex" not in routes and "proposer_sensex" not in template
     assert "proposer_sensex_tracker" not in loop and "proposer_sensex_tracker" not in daily

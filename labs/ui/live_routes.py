@@ -538,6 +538,8 @@ STRATEGY_PRESETS = {
     "champion_v213": ("champion_replay", "v2.13"),
     # SENSEX options, run by its own runner process (live/proposer_runner.py).
     "proposer_dt25": ("proposer", "proposer_dt25"),
+    # The same Proposer with the 1-min price-action exit and a one-loss-per-day stop.
+    "proposer_dt25_px": ("proposer", "proposer_dt25_px"),
 }
 STRATEGY_LABELS = {
     "legacy_v211":   "Alpha v2.11 (legacy)",
@@ -549,6 +551,7 @@ STRATEGY_LABELS = {
     "champion_v214": "Alpha v2.14 B (v2.11 replay (B) + B10)",
     "champion_v213": "Alpha v2.13",
     "proposer_dt25": "SENSEX Proposer (2.5% day target)",
+    "proposer_dt25_px": "SENSEX Proposer + Renko-50 exit, one loss per day",
 }
 
 
@@ -556,7 +559,7 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     de = svc.get_config(user_id, conn_id, "decision_engine")
     sv = svc.get_config(user_id, conn_id, "strategy_version")
     if de == "proposer":
-        return "proposer_dt25"
+        return sv if sv in STRATEGY_PRESETS else "proposer_dt25"
     if de == "champion_replay" and sv == "v2.11b":
         return "champion_v211b"
     if de == "champion_replay" and sv == "v2.13":

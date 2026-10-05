@@ -9,23 +9,33 @@ ENTRY (flat, only on a FRESH 10-min print, consumed when attempted):
   - afterwards, on a neutral regime, or once a strong 5-class print contradicts the regime (the
     one-way stale latch), the 5-class drives - and only above the confidence gate (0.45);
   - a 300 s cooldown follows every exit except a signal flip;
-  - no entries once the day is banked.
+  - no entries once the day is banked, or (variants with max_losses_per_day) once that many
+    trades have closed at a loss today.
 EXIT (open), first match wins:
-  loss_floor  - premium down to the floor (-15%)
+  loss_floor  - premium down to the floor (-30% in the live variant; the source default is -15%)
   spot_target - SENSEX moved spot_target_pts in favour (decisive width only for the
                 regime-driven entry, neutral width otherwise), less a 1-pt tolerance
   signal_flip - a gate-passing opposite print (exit, no cooldown so the reverse can follow)
   daily_target- day realized + this trade's unrealized >= 2.5% of this trade's entry capital
+  bar_exit    - variants with a bar_exit spec only: the completed 1-min SENSEX bars since the
+                entry turned against the position (proposer_bar_exit: Renko bricks or a run of
+                adverse closes). Not in Pramanaa's engine - added 2026-10-06 because the flip
+                above fires a median 35-46 min into a losing trade.
   (15:25 flat is the caller's job.)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
+
+from live.engine import proposer_bar_exit as bar_exit
 
 DECISIVE = ("bullish", "bearish", "risk_off")
 STRATEGY_VERSION = "proposer_dt25"
+# The same engine with the price-action exit and the one-loss-per-day stop switched on.
+STRATEGY_VERSION_PX = "proposer_dt25_px"
+PX_BAR_EXIT = "renko-50"
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,17 @@ class ProposerParams:
     # then blocked by a still-working exit; with sliced exits the reverse after a flip is lost (16 Sep
     # 09:42 in the ledger). False reproduces that: the print that caused the flip is consumed.
     reverse_after_flip: bool = False
+    # Price-action exit on completed 1-min bars (proposer_bar_exit spec, "" = off) and a cap on
+    # losing trades per day (0 = off). Both off reproduces Pramanaa's engine.
+    bar_exit: str = ""
+    max_losses_per_day: int = 0
+
+
+def params_for(strategy_version: Optional[str]) -> ProposerParams:
+    """The parameter set a strategy version trades with."""
+    if str(strategy_version or "") == STRATEGY_VERSION_PX:
+        return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1)
+    return ProposerParams()
 
 
 @dataclass(frozen=True)
@@ -113,6 +134,7 @@ class ProposerEngine:
         self.day_real_at_latch: Optional[float] = None
         self.day_real = 0.0
         self.book_net = 0.0
+        self.day_losses = 0
 
     def restore(self, *, regime: Optional[str] = None, x5_today: Iterable[str] = (),
                 regime_entry_used: bool = False, day_target_banked: bool = False,
@@ -127,9 +149,10 @@ class ProposerEngine:
         if last_acted_asof:
             self.last_acted_asof = last_acted_asof
 
-    def set_book(self, *, day_realized: float, book_net: float) -> None:
+    def set_book(self, *, day_realized: float, book_net: float, day_losses: int = 0) -> None:
         self.day_real = float(day_realized or 0.0)
         self.book_net = float(book_net or 0.0)
+        self.day_losses = int(day_losses or 0)
 
     # ------------------------------------------------------------ helpers ---
     def _gated_side(self, p: dict) -> Optional[str]:
@@ -178,7 +201,10 @@ class ProposerEngine:
 
     # ----------------------------------------------------------- evaluate ---
     def evaluate(self, now: datetime, p: dict, pos: Position, *, option_ltp: Optional[float],
-                 spot: Optional[float]) -> Signal:
+                 spot: Optional[float], closes: Optional[Sequence[float]] = None,
+                 entry_idx: Optional[int] = None) -> Signal:
+        """`closes` / `entry_idx` feed the bar_exit: the session's completed 1-min SENSEX closes and
+        the index of the bar the open position was entered in."""
         if not self.regime_stale and is_strong_reversal(p.get("regime"), p.get("x5")):
             self.regime_stale = True
         if self.prev_open and not pos.open:         # an exit just completed
@@ -188,7 +214,7 @@ class ProposerEngine:
         self.prev_open = pos.open
 
         if pos.open:
-            return self._evaluate_open(p, pos, option_ltp, spot)
+            return self._evaluate_open(p, pos, option_ltp, spot, closes, entry_idx)
 
         self._confirm_bank()
         asof = p.get("x5_asof")
@@ -205,12 +231,15 @@ class ProposerEngine:
             return Signal("HOLD")
         if self.banked():
             return Signal("HOLD", reason="day_target_banked")
+        if self.params.max_losses_per_day and self.day_losses >= self.params.max_losses_per_day:
+            return Signal("HOLD", reason="day_loss_limit")
         stale = self.regime_stale or self.regime_entry_used
         tag = f"5class_{p.get('x5')}" if stale or (p.get("regime") or "").lower() not in DECISIVE \
             else (p.get("regime") or "").lower()
         return Signal("ENTER", cp, f"proposer_{tag}")
 
-    def _evaluate_open(self, p: dict, pos: Position, ltp: Optional[float], spot: Optional[float]) -> Signal:
+    def _evaluate_open(self, p: dict, pos: Position, ltp: Optional[float], spot: Optional[float],
+                       closes: Optional[Sequence[float]] = None, entry_idx: Optional[int] = None) -> Signal:
         cp = "CALL" if pos.side == "CE" else "PUT"
         if pos.entry_price and pos.qty:
             self.last_entry_capital = float(pos.entry_price) * pos.qty
@@ -240,6 +269,10 @@ class ProposerEngine:
                     self.bank_target_rs = target_rs
                     self.day_real_at_latch = self.day_real
                 return Signal("EXIT", cp, "daily_target")
+        if (self.params.bar_exit and closes is not None and entry_idx is not None
+                and bar_exit.fires(self.params.bar_exit, closes, entry_idx, pos.side)):
+            self.skip_cd_arm = False
+            return Signal("EXIT", cp, "bar_exit")
         return Signal("HOLD")
 
 
