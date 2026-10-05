@@ -31,6 +31,7 @@ enablement — so no real order can fire in this build.
 """
 import logging
 import contextlib
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -299,6 +300,71 @@ def _is_final_status(status: str) -> bool:
 # pre-exit long reconcile (_verify_matching_long_before_exit) guards the retry
 # against a double-sell. Entries never auto-retry (no such reconcile).
 _RETRIABLE_EXIT_STATUSES = {"FAILED", "GATE_BLOCKED", "PENDING"}
+
+
+# ── Entry size step-down (2026-10-05) ─────────────────────────────────────
+# With no lot cap, a large entry can be refused for its SIZE: above the
+# exchange freeze quantity (one order may not exceed it), or beyond the
+# account's margin. Entries are first sized down to the freeze quantity, then
+# a broker REJECTION that names size is re-sent at half the lots, down to one.
+# Only a definitive "no" steps down: an uncertain transport outcome may have
+# placed the order (re-sending could double it), and a throttle or an IOC
+# no-fill is not about size.
+FREEZE_QTY = {"NIFTY": 1800, "SENSEX": 1000}   # Angel instrument master, 2026-10-02
+LOT_STEP_DOWN_MAX = 4
+_SIZE_REJECTION = re.compile(
+    r"quantit|\bqty\b|freeze|margin|fund|insufficient|exposure|\blots?\b", re.I)
+
+
+def freeze_capped_lots(lots: int, lot_size: int, underlying: str) -> int:
+    """The most lots one order may carry under the exchange freeze quantity."""
+    freeze = FREEZE_QTY.get(str(underlying or "").upper())
+    if not freeze or lot_size <= 0:
+        return max(1, int(lots))
+    return max(1, min(int(lots), freeze // lot_size))
+
+
+def rejection_reason(result: OrderResult) -> str | None:
+    """The broker's reason when it definitively refused the order, else None.
+
+    Two shapes: refused at placement (the transport raised 'Broker rejected the
+    order (...)' -> status FAILED), or accepted then rejected by the broker's
+    RMS (status REJECTED, reason in the order-book snapshot)."""
+    raw = result.raw or {}
+    if raw.get("idempotent_skip"):
+        return None
+    status = str(result.status or "").upper()
+    if status == "REJECTED":
+        snap = raw.get("status_snapshot") or {}
+        return str(snap.get("status_message") or snap.get("text")
+                   or snap.get("status_message_raw") or "rejected")
+    if status == "FAILED":
+        msg = str(raw.get("message") or "")
+        if msg.startswith("Broker rejected the order"):
+            return msg
+    return None
+
+
+def stepped_down_lots(lots: int, result: OrderResult) -> int | None:
+    """Half the lots when the broker refused this entry for its size, else None."""
+    reason = rejection_reason(result)
+    if int(lots) <= 1 or not reason or not _SIZE_REJECTION.search(reason):
+        return None
+    return max(1, int(lots) // 2)
+
+
+def filled_qty(result: OrderResult) -> int | None:
+    """Quantity the broker reports filled (Kite filled_quantity / Angel
+    filledshares), or None when the snapshot does not say."""
+    snap = (result.raw or {}).get("status_snapshot") or {}
+    for key in ("filled_quantity", "filledshares", "filledqty"):
+        value = snap.get(key)
+        if value not in (None, ""):
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _refresh_order_result(adapter, result: OrderResult, *,

@@ -78,8 +78,9 @@ SUPPORTED_BROKERS = {
 LOT_SIZES = {"NIFTY": 65, "BANKNIFTY": 15, "SENSEX": 20}
 
 # No lot ceiling (operator, 2026-10-02). One order cannot exceed the exchange freeze
-# quantity (SENSEX 1,000 / NIFTY 1,800 units); larger orders are rejected, not split.
-FREEZE_QTY = {"NIFTY": 1800, "SENSEX": 1000}   # Angel instrument master, 2026-10-02
+# quantity (SENSEX 1,000 / NIFTY 1,800 units): the bots size an entry down to it, and
+# step down further when the broker refuses the size (live_executor size step-down).
+FREEZE_QTY = ex.FREEZE_QTY
 
 
 def _now_iso() -> str:

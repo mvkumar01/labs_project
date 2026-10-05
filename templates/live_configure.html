@@ -17,7 +17,7 @@
   </header>
   <main>
     <h1>Configure</h1>
-    <p class="sub">Set position size, decision strategy, and the daily-loss cap. Lots are phase-capped (Phase 0/1 = 1 lot; hard ceiling 2).</p>
+    <p class="sub">Set position size, decision strategy, and the daily-loss cap.</p>
 
     {% if error %}
     <div class="reconcile-warning">{{ error }}</div>
@@ -43,7 +43,7 @@
           <label for="lots">Number of lots</label>
           <input type="number" id="lots" name="lots" min="1" step="1"
                  value="{{ lots }}">
-          <div class="hint">NIFTY 1 lot = {{ lot_sizes.NIFTY }} qty · BANKNIFTY 1 lot = {{ lot_sizes.BANKNIFTY }} qty · SENSEX 1 lot = {{ lot_sizes.SENSEX }} qty. No lot cap. One order cannot exceed the exchange freeze quantity (NIFTY {{ freeze_qty.NIFTY }} · SENSEX {{ freeze_qty.SENSEX }} qty) &mdash; larger orders are rejected. Size is limited by the daily loss cap and your broker margin.</div>
+          <div class="hint">NIFTY 1 lot = {{ lot_sizes.NIFTY }} qty · BANKNIFTY 1 lot = {{ lot_sizes.BANKNIFTY }} qty · SENSEX 1 lot = {{ lot_sizes.SENSEX }} qty. No lot cap. One order cannot exceed the exchange freeze quantity (NIFTY {{ freeze_qty.NIFTY }} · SENSEX {{ freeze_qty.SENSEX }} qty), so a larger entry is sent at the freeze size. If the broker rejects an entry for its size (freeze or margin), the bot retries at half the lots, down to 1 lot, and alerts you.</div>
         </div>
 
         <div class="field">

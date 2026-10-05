@@ -514,7 +514,9 @@ def reconcile_on_startup(adapter, user_id: str, conn_id: str, conn=None) -> Reco
     st = svc.get_trade_state(user_id, conn_id, conn=conn)
     db_open = st.get("position") == "OPEN"
     db_symbol = st.get("symbol")
-    db_qty = svc.get_lots(user_id, conn_id, conn) * LOT_SIZE if db_open else 0
+    # The position's own qty: an entry may hold fewer than the configured lots
+    # (freeze sizing, a size step-down, or an IOC part-fill).
+    db_qty = (int(st.get("qty") or 0) or svc.get_lots(user_id, conn_id, conn) * LOT_SIZE) if db_open else 0
 
     try:
         pos: Position = adapter.get_position()
@@ -1764,7 +1766,8 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if (sig["action"] == "ENTER" and not current_open and not blocked
             and check_daily_loss(user_id, conn_id)):
         side = sig["side"]
-        qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        configured_lots = svc.get_lots(user_id, conn_id)
+        qty = ex.freeze_capped_lots(configured_lots, LOT_SIZE, "NIFTY") * LOT_SIZE
         contract_spot = (
             (target or {}).get("execution_entry_spot", champ_entry_spot)
             if use_champion else None
@@ -1784,8 +1787,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         if not dry_run:
             anchor = entry_chase_anchor(user_id, conn_id, signal_key, price)
             price_fn = entry_price_fn(symbol, anchor * (1 + ENTRY_CHASE_CAP_PCT), sent)
+        if qty < configured_lots * LOT_SIZE:
+            notify_telegram(f"ENTER {side}: {configured_lots} lots is above the NIFTY freeze "
+                            f"quantity; sending {qty // LOT_SIZE} lots")
         burst_started = time.monotonic()
-        attempts = 0
+        attempts = step_downs = 0
+        partial = False
         while True:
             attempts += 1
             # The runner is plainly alive: refresh its ownership heartbeat so a
@@ -1795,22 +1802,42 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
                                   symbol=symbol, qty=qty, price=price, dry_run=dry_run,
                                   entry_rule=sig.get("rule") or "none",
                                   attempt=attempts - 1, price_fn=price_fn)
+            smaller = None if dry_run else ex.stepped_down_lots(qty // LOT_SIZE, result)
+            if smaller and step_downs < ex.LOT_STEP_DOWN_MAX:
+                step_downs += 1
+                reason = str(ex.rejection_reason(result))[:150]
+                log.warning("ENTER %s %s %d lots refused for size (%s) -- retrying with %d lots",
+                            side, symbol, qty // LOT_SIZE, reason, smaller)
+                notify_telegram(f"⚠️ ENTER {side} {symbol} {qty // LOT_SIZE} lots rejected "
+                                f"({reason}) — retrying with {smaller} lots")
+                qty = smaller * LOT_SIZE
+                continue
             no_fill = (str(result.status or "").upper() in _IOC_NO_FILL
                        and not (result.raw or {}).get("idempotent_skip"))
-            if (dry_run or not no_fill or attempts >= ENTRY_IOC_ATTEMPTS
+            got = None if dry_run else ex.filled_qty(result)
+            if no_fill and got and got > 0:
+                # IOC part-filled: hold what filled; re-sending would add to it.
+                qty, no_fill, partial = got, False, True
+            if (dry_run or not no_fill or attempts - step_downs >= ENTRY_IOC_ATTEMPTS
                     or time.monotonic() - burst_started > ENTRY_RETRY_WINDOW_S):
                 break
             log.info("IOC entry not filled (%d/%d) conn=%s %s limit=%s ask=%s -- re-quoting",
-                     attempts, ENTRY_IOC_ATTEMPTS, conn_id, symbol,
+                     attempts - step_downs, ENTRY_IOC_ATTEMPTS, conn_id, symbol,
                      sent.get("limit"), sent.get("ask"))
         if sent.get("limit"):
             price = sent["limit"]
         if not dry_run and no_fill:
             notify_telegram(
-                f"⚠️ ENTER {side} {symbol} not filled after {attempts} IOC tries "
+                f"⚠️ ENTER {side} {symbol} not filled after {attempts - step_downs} IOC tries "
                 f"(last limit {sent.get('limit')}, ask {sent.get('ask')}) -- will retry "
                 "next cycle while the signal holds")
-        if _order_accepted(result, dry_run=dry_run):  # D2: record working fills too
+        got = None if dry_run else ex.filled_qty(result)
+        if got and got > 0 and _order_applied(result.status, dry_run=False):
+            qty = got
+        if partial:
+            notify_telegram(f"⚠️ ENTER {side} {symbol} part-filled: holding {qty // LOT_SIZE} "
+                            f"lots ({qty} qty)")
+        if partial or _order_accepted(result, dry_run=dry_run):  # D2: record working fills too
             state_symbol = (result.raw or {}).get("broker_symbol") or symbol
             st.update({"position": "OPEN", "side": side, "symbol": state_symbol,
                        "entry_price": result.avg_fill_price or price, "entry_time": _now_iso(),
@@ -1829,11 +1856,13 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             if dry_run:
                 msg += " [DRY-RUN]"
             notify_telegram(msg)
-        elif result.status == "FAILED":
+        elif str(result.status or "").upper() in ("FAILED", "REJECTED"):
             # 2026-09-25: two broker rejections went unnoticed. Surface the
             # broker's own reason (order_transport keeps it) the moment it happens.
-            reason = str((result.raw or {}).get("message") or "no reason given")[:200]
-            notify_telegram(f"⚠️ ENTER {side} {symbol} FAILED at broker — {reason}")
+            reason = str(ex.rejection_reason(result) or (result.raw or {}).get("message")
+                         or "no reason given")[:200]
+            notify_telegram(f"⚠️ ENTER {side} {symbol} {qty // LOT_SIZE} lots "
+                            f"{str(result.status).upper()} at broker — {reason}")
         elif result.status == "PRICE_SKIP":
             notify_telegram(
                 f"⚠️ ENTER {side} {symbol} skipped — ask {sent.get('ask')} is past the "

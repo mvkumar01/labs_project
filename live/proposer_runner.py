@@ -571,7 +571,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             log.warning("exit %s deferred: no quote for %s", sig.reason, st.get("symbol"))
             return True
         ref = (quote or {}).get("bid") or ltp
-        price = lr._marketable_limit("SELL", ref)
+        # Live crosses the spread by the marketable buffer; DRY_RUN books at the bid, as the
+        # NIFTY runner does, so a paper day-target bank is not shaved 0.6% short of its trigger.
+        price = ref if dry_run else lr._marketable_limit("SELL", ref)
         result = _route(adapter, user_id, conn_id, action="EXIT", side=st.get("side"),
                         symbol=st["symbol"], qty=int(st.get("qty") or 0), price=price,
                         dry_run=dry_run, key_ts=now.strftime("%Y-%m-%dT%H:%M") + f"|{sig.reason}")
@@ -591,18 +593,45 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             log.warning("no nearest-weekly %s%s in today's chain; entry skipped", strike, typ)
             return False
         broker_sym = adapter.broker_symbol(symbol) if hasattr(adapter, "broker_symbol") else symbol
-        qty = svc.get_lots(user_id, conn_id) * LOT_SIZE
+        configured = svc.get_lots(user_id, conn_id)
+        lots = ex.freeze_capped_lots(configured, LOT_SIZE, UNDERLYING)
         q = market.quote(symbol) or {}
         price = q.get("ask") or q.get("ltp")
         if not price:
             log.warning("entry skipped: no quote for %s", symbol)
             return False
+        if lots < configured:
+            notify_telegram(f"Proposer ENTER {sig.side}: {configured} lots is above the SENSEX freeze "
+                            f"quantity; sending {lots} lots")
         sent: dict = {}
         price_fn = None if dry_run else _entry_price_fn(market, symbol, price * (1 + lr.ENTRY_CHASE_CAP_PCT), sent)
-        result = _route(adapter, user_id, conn_id, action="ENTER", side=sig.side, symbol=broker_sym,
-                        qty=qty, price=price, dry_run=dry_run, key_ts=snap.get("x5_asof") or "none",
-                        entry_rule=sig.reason or "none", price_fn=price_fn)
-        if lr._order_accepted(result, dry_run=dry_run):
+        key_ts = snap.get("x5_asof") or "none"
+        step_downs = 0
+        while True:
+            result = _route(adapter, user_id, conn_id, action="ENTER", side=sig.side, symbol=broker_sym,
+                            qty=lots * LOT_SIZE, price=price, dry_run=dry_run,
+                            key_ts=key_ts + (f"|lots{lots}" if step_downs else ""),
+                            entry_rule=sig.reason or "none", price_fn=price_fn)
+            smaller = None if dry_run else ex.stepped_down_lots(lots, result)
+            if not smaller or step_downs >= ex.LOT_STEP_DOWN_MAX:
+                break
+            step_downs += 1
+            reason = str(ex.rejection_reason(result))[:150]
+            log.warning("ENTER %s %s %d lots refused for size (%s) -- retrying with %d lots",
+                        sig.side, broker_sym, lots, reason, smaller)
+            notify_telegram(f"⚠️ Proposer ENTER {sig.side} {broker_sym} {lots} lots rejected ({reason}) "
+                            f"— retrying with {smaller} lots")
+            lots = smaller
+        qty = lots * LOT_SIZE
+        got = None if dry_run else ex.filled_qty(result)
+        partial = bool(got and got > 0 and str(result.status or "").upper() in lr._IOC_NO_FILL
+                       and not (result.raw or {}).get("idempotent_skip"))
+        if got and got > 0 and (partial or lr._order_applied(result.status, dry_run=False)):
+            qty = got                   # hold what actually filled
+        if partial:
+            notify_telegram(f"⚠️ Proposer ENTER {sig.side} {broker_sym} part-filled: holding "
+                            f"{qty // LOT_SIZE} lots ({qty} qty)")
+        if partial or lr._order_accepted(result, dry_run=dry_run):
             fill = result.avg_fill_price or sent.get("limit") or price
             st.update({"position": "OPEN", "side": sig.side, "symbol": broker_sym, "entry_price": fill,
                        "entry_time": datetime.now(timezone.utc).isoformat(), "qty": qty,
@@ -615,9 +644,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             notify_telegram(f"ENTER {sig.side} {broker_sym} @ {fill} | {sig.reason} | spot {spot:.0f}"
                             + (" [DRY-RUN]" if dry_run else ""))
             return True
-        if result.status in ("FAILED", "PRICE_SKIP"):
-            notify_telegram(f"Proposer ENTER {sig.side} {broker_sym} {result.status}: "
-                            f"{str((result.raw or {}).get('message') or sent)[:150]}")
+        if str(result.status or "").upper() in ("FAILED", "PRICE_SKIP", "REJECTED"):
+            notify_telegram(f"Proposer ENTER {sig.side} {broker_sym} {lots} lots {result.status}: "
+                            f"{str(ex.rejection_reason(result) or (result.raw or {}).get('message') or sent)[:150]}")
     return is_open
 
 

@@ -141,7 +141,7 @@ def test_ioc_retries_get_their_own_idempotency_keys(monkeypatch):
     assert len(set(keys)) == 3
 
 
-def _drive_entry(monkeypatch, tmp_path, statuses):
+def _drive_entry(monkeypatch, tmp_path, statuses, lots=1):
     """One process_connection cycle with a CALL entry signal; _route_order returns
     `statuses` in turn. Returns (routed kwargs, telegram messages, trade state)."""
     from datetime import datetime, timedelta, timezone
@@ -153,7 +153,7 @@ def _drive_entry(monkeypatch, tmp_path, statuses):
     svc.upsert_connection(USER_ID, CONN_ID, broker="angel", account_label="T",
                           account_ref="angel:T", status="connected", conn=conn)
     for k, v in (("mode", "LIVE_ARMED"), ("armed", "1"), ("kill_switch", "0"),
-                 ("lots", "1"), ("daily_loss_cap", "50000"),
+                 ("lots", str(lots)), ("daily_loss_cap", "50000"),
                  ("decision_engine", "champion_replay"), ("strategy_version", "v2.12")):
         svc.set_config(USER_ID, CONN_ID, k, v, conn)
     conn.close()
@@ -199,8 +199,9 @@ def _drive_entry(monkeypatch, tmp_path, statuses):
         routed.append(kwargs)
         kwargs["price_fn"]()                       # the executor would call it post-gates
         status = queue.pop(0)
+        status, raw = status if isinstance(status, tuple) else (status, {})
         return OrderResult(broker_order_id=f"OID{len(routed)}", status=status,
-                           avg_fill_price=187.0 if status == "COMPLETE" else None, raw={})
+                           avg_fill_price=187.0 if status == "COMPLETE" else None, raw=raw)
 
     monkeypatch.setattr(lr, "_route_order", fake_route)
     lr.process_connection(USER_ID, CONN_ID, adapters={}, reconciled=set(),
@@ -239,3 +240,41 @@ def test_exits_keep_the_marketable_limit_and_no_price_fn(monkeypatch):
     lr._route_order(None, USER_ID, CONN_ID, action="EXIT", side="PUT", symbol="S",
                     qty=65, price=200.0, dry_run=False)
     assert seen["price_fn"] is None and seen["price"] == 198.8     # 200 - 0.6%
+
+
+# -- runner: size step-down and part fills (2026-10-05) ------------------------------
+def _rejected(message):
+    return ("REJECTED", {"status_snapshot": {"status": "REJECTED", "status_message": message}})
+
+
+def test_a_size_rejection_is_resent_at_half_the_lots(monkeypatch, tmp_path):
+    routed, messages, state = _drive_entry(
+        monkeypatch, tmp_path,
+        [_rejected("Insufficient funds. Required margin is 2,40,000 but available is 1,30,000"),
+         "COMPLETE"], lots=10)
+    assert [r["qty"] for r in routed] == [650, 325]
+    assert len({r["attempt"] for r in routed}) == 2               # distinct idempotency keys
+    assert state["position"] == "OPEN" and state["qty"] == 325
+    assert any("retrying with 5 lots" in m for m in messages)
+
+
+def test_lots_above_the_freeze_quantity_are_sent_at_the_freeze_size(monkeypatch, tmp_path):
+    routed, messages, state = _drive_entry(monkeypatch, tmp_path, ["COMPLETE"], lots=40)
+    assert [r["qty"] for r in routed] == [27 * 65]                # NIFTY freeze 1,800 qty
+    assert state["qty"] == 27 * 65 and any("freeze" in m for m in messages)
+
+
+def test_a_non_size_rejection_does_not_step_down(monkeypatch, tmp_path):
+    routed, messages, state = _drive_entry(
+        monkeypatch, tmp_path, [_rejected("Price exceeds the circuit limit")], lots=10)
+    assert len(routed) == 1 and state["position"] != "OPEN"
+    assert any("REJECTED at broker" in m for m in messages)
+
+
+def test_an_ioc_part_fill_is_held_and_not_resent(monkeypatch, tmp_path):
+    routed, messages, state = _drive_entry(
+        monkeypatch, tmp_path,
+        [("cancelled", {"status_snapshot": {"status": "CANCELLED", "filled_quantity": 130}})], lots=4)
+    assert len(routed) == 1
+    assert state["position"] == "OPEN" and state["qty"] == 130
+    assert any("part-filled" in m for m in messages)

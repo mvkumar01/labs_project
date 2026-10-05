@@ -327,6 +327,91 @@ def test_live_entry_goes_through_the_gates_to_a_bfo_order(db, monkeypatch):
     assert svc.get_day_pnl(USER, CONN)["trade_count"] == 1
 
 
+def _live_entry(db, monkeypatch, adapter_cls, *, lots, refreshed):
+    ex.set_mode(USER, CONN, ex.Mode.DRY_RUN)
+    ex.set_mode(USER, CONN, ex.Mode.LIVE_ARMED)
+    svc.set_config(USER, CONN, "armed", "1")
+    svc.set_config(USER, CONN, "lots", str(lots))
+    monkeypatch.setattr(pr, "option_chain", lambda day: CHAIN)
+    monkeypatch.setattr(ex, "evaluate_all", lambda *a, **k: [ex.GateResult("all", True, "")])
+    monkeypatch.setattr(ex, "_refresh_order_result", refreshed)
+    sent = []
+    monkeypatch.setattr(pr, "notify_telegram", sent.append)
+    now = datetime(2026, 10, 5, 9, 22, 30)
+    feed, market, box = FakeFeed(_p("strong_bull", 0.6, "neutral", datetime(2026, 10, 5, 9, 22))), FakeMarket(), {}
+    ctx = {"task_id": "prop-task", "adapters": {}, "reconciled": set(), "conns": {}}
+    pr.process_connection(USER, CONN, ctx=ctx, feed=feed, market=market, now=now,
+                          adapter_factory=lambda **kw: box.setdefault("a", adapter_cls(**kw)))
+    return box["a"], svc.get_trade_state(USER, CONN), sent
+
+
+def _complete(adapter, result):
+    return OrderResult(result.broker_order_id, "COMPLETE", adapter.orders[-1]["price"], result.raw)
+
+
+class MarginLimitedAdapter(FakeAdapter):
+    """Refuses any entry above 20 lots (400 qty) the way the transport reports it."""
+
+    def place_order(self, *, side, symbol, qty, price, idempotency_key):
+        self.orders.append({"action": "BUY", "symbol": symbol, "qty": qty, "price": price,
+                            "key": idempotency_key})
+        if qty > 400:
+            raise RuntimeError("Broker rejected the order (InputException / Insufficient funds. "
+                               "Required margin is 5,00,000.00 but available margin is 2,10,000.00.); "
+                               "inspect broker order book")
+        self.position = Position(symbol=symbol, qty=qty, side=side)
+        return OrderResult(f"OID{len(self.orders)}", "PLACED", None, {})
+
+
+def test_live_entry_is_freeze_sized_then_steps_down_on_a_size_rejection(db, monkeypatch):
+    a, st, sent = _live_entry(db, monkeypatch, MarginLimitedAdapter, lots=100, refreshed=_complete)
+    # 100 lots -> 50 (SENSEX freeze 1,000 qty) -> rejected -> 25 -> rejected -> 12 fills
+    assert [o["qty"] for o in a.orders] == [1000, 500, 240]
+    assert len({o["key"] for o in a.orders}) == 3                  # each attempt is a new order
+    assert st["position"] == "OPEN" and st["qty"] == 240
+    assert any("freeze" in m for m in sent)
+    assert any("retrying with 12 lots" in m for m in sent)
+
+
+class UncertainAdapter(FakeAdapter):
+    def place_order(self, *, side, symbol, qty, price, idempotency_key):
+        self.orders.append({"action": "BUY", "symbol": symbol, "qty": qty, "price": price})
+        raise RuntimeError("Order outcome uncertain; reconcile broker order book before retrying")
+
+
+def test_an_uncertain_order_is_never_resent_smaller(db, monkeypatch):
+    a, st, _ = _live_entry(db, monkeypatch, UncertainAdapter, lots=10, refreshed=_complete)
+    assert [o["qty"] for o in a.orders] == [200] and st["position"] != "OPEN"
+
+
+def test_an_ioc_part_fill_holds_what_filled(db, monkeypatch):
+    def part_filled(adapter, result):
+        return OrderResult(result.broker_order_id, "CANCELLED", 401.0,
+                           {"status_snapshot": {"status": "CANCELLED", "filled_quantity": 100}})
+    a, st, sent = _live_entry(db, monkeypatch, FakeAdapter, lots=10, refreshed=part_filled)
+    assert [o["qty"] for o in a.orders] == [200]
+    assert st["position"] == "OPEN" and st["qty"] == 100 and st["entry_price"] == 401.0
+    assert any("part-filled" in m for m in sent)
+
+
+def test_size_rejection_helpers():
+    assert ex.freeze_capped_lots(100, 20, "SENSEX") == 50
+    assert ex.freeze_capped_lots(100, 65, "NIFTY") == 27
+    assert ex.freeze_capped_lots(5, 65, "NIFTY") == 5
+    rms = OrderResult("1", "REJECTED", None, {"status_snapshot": {
+        "status_message": "Quantity exceeds the freeze limit"}})
+    angel = OrderResult("1", "rejected", None, {"status_snapshot": {
+        "text": "Your order has been rejected due to Insufficient Funds"}})
+    band = OrderResult("1", "REJECTED", None, {"status_snapshot": {
+        "status_message": "Price exceeds the circuit limit"}})
+    throttled = OrderResult(None, "FAILED", None, {"message": "Broker throttled the order; no automatic retry"})
+    assert ex.stepped_down_lots(50, rms) == 25 and ex.stepped_down_lots(7, angel) == 3
+    assert ex.stepped_down_lots(50, band) is None             # not about size
+    assert ex.stepped_down_lots(50, throttled) is None
+    assert ex.stepped_down_lots(1, rms) is None               # nothing smaller than one lot
+    assert ex.filled_qty(OrderResult("1", "cancelled", None, {"status_snapshot": {"filledshares": "40"}})) == 40
+
+
 # ═══════════════════════════════════════════════════════ LLM daily regime ══
 from live.engine import proposer_regime_llm as rl
 
