@@ -371,6 +371,7 @@ LIVE_TABS = {
     "baskets": "v2.11 Baskets",
     "sensex_alpha": "Sensex_alpha",
     "proposer_px": "Sensex Proposer + Renko",
+    "crudem_combo": "CRUDEOILM Combo (6 rules)",
 }
 
 
@@ -394,6 +395,7 @@ def live_strategy():
     theta_rows, theta_trades, theta_stats = [], [], {}
     crude_rows, crude_trades, crude_stats = [], [], {}
     btc_rows, btc_trades, btc_stats = [], [], {}
+    crudem_combo_rows, crudem_combo_trades, crudem_combo_stats = [], [], {}
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
@@ -882,6 +884,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_px_stats = {"error": str(exc)}
 
+        # CRUDEOILM consistent six-member combination (paper): its own ledger and tab.
+        if active_live_tab == "crudem_combo":
+            try:
+                from labs.engine.crudem_combo_tracker import tab_data as crudem_combo_tab_data
+                crudem_combo_rows, crudem_combo_trades, crudem_combo_stats = crudem_combo_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    crudem_combo_stats = {"error": str(exc)}
+
         # BTCUSDT RSI/ROC short (paper, 24/7): its own ledger and tab.
         if active_live_tab == "btc_rsi_roc":
             try:
@@ -1046,6 +1058,9 @@ def live_strategy():
         btc_rows=btc_rows,
         btc_trades=btc_trades,
         btc_stats=btc_stats,
+        crudem_combo_rows=crudem_combo_rows,
+        crudem_combo_trades=crudem_combo_trades,
+        crudem_combo_stats=crudem_combo_stats,
         proposer_px_rows=proposer_px_rows,
         proposer_px_trades=proposer_px_trades,
         proposer_px_stats=proposer_px_stats,
@@ -1068,6 +1083,25 @@ def proposer_px_backfill():
     try:
         return jsonify(run_backfill(
             start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/crudem_combo/backfill", methods=["POST"])
+def crudem_combo_backfill():
+    """Replay sessions of the paper-only CRUDEOILM consistent combination that have no final row."""
+    from labs.engine.crudem_combo_tracker import PAPER_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 10)), 1), 30)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", PAPER_START),
             end_date=request.args.get("end"),
             limit=limit,
             rebuild=request.args.get("rebuild", "0") == "1",

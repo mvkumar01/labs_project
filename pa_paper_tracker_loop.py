@@ -46,6 +46,7 @@ def main() -> None:
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
     from labs.engine.proposer_px_tracker import run_day as run_proposer_px_day
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
+    from labs.engine.crudem_combo_tracker import run_live as run_crudem_combo_live
     from labs.engine.btc_rsi_roc_tracker import run_live as run_btc_rsi_roc_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
@@ -63,6 +64,7 @@ def main() -> None:
         "theta_iron_fly": None,
         "proposer_px": None,
         "crude_macd_st": None,
+        "crudem_combo": None,
         "btc_rsi_roc": None,
     }
     while True:
@@ -108,6 +110,14 @@ def main() -> None:
                         flush=True,
                     )
         if _in_mcx_session(now):
+            # CRUDEOILM consistent combination (paper); isolated like the other MCX books.
+            try:
+                res = run_crudem_combo_live(now)
+                if res != last_log["crudem_combo"]:
+                    print(f"[paper-loop:crudem_combo] {now.strftime('%H:%M')} {res}", flush=True)
+                    last_log["crudem_combo"] = res
+            except Exception as exc:
+                print(f"[paper-loop:crudem_combo] error: {type(exc).__name__}: {exc}", flush=True)
             # MCX paper book; isolated so a Kite or data error never touches the NSE books.
             try:
                 res = run_crude_macd_st_live(now)

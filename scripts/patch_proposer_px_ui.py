@@ -220,10 +220,18 @@ TEMPLATE_SCRIPT = """{% if active_live_tab == 'proposer_px' %}
 
 
 def patch(path: Path, edits: list[tuple[str, str]]) -> int:
+    """Each edit is (anchor, the anchor with new text before or after it). An edit whose new text is
+    already in the file is skipped, so later wiring next to the same anchor does not undo this one."""
     text = path.read_text(encoding="utf-8")
     applied = 0
     for anchor, replacement in edits:
-        if replacement in text:
+        if replacement.startswith(anchor):
+            added = replacement[len(anchor):]
+        elif replacement.endswith(anchor):
+            added = replacement[:-len(anchor)]
+        else:
+            raise SystemExit(f"{path.name}: an edit must keep its anchor -> {anchor[:70]!r}")
+        if added in text:
             continue                       # already wired
         if text.count(anchor) != 1:
             raise SystemExit(f"{path.name}: anchor found {text.count(anchor)} times -> {anchor[:70]!r}")
@@ -234,13 +242,13 @@ def patch(path: Path, edits: list[tuple[str, str]]) -> int:
 
 
 def main() -> int:
-    tabs = '    "sensex_alpha": "Sensex_alpha",\n}\n'
+    tabs = '    "sensex_alpha": "Sensex_alpha",\n'
     vars_line = "    btc_rows, btc_trades, btc_stats = [], [], {}\n"
     btc_comment = "        # BTCUSDT RSI/ROC short (paper, 24/7): its own ledger and tab.\n"
     kwargs_line = "        btc_stats=btc_stats,\n"
     theta_route = '@labs_bp.route("/api/theta_straddle/backfill", methods=["POST"])\n'
     n = patch(ROOT / "labs" / "ui" / "routes.py", [
-        (tabs, '    "sensex_alpha": "Sensex_alpha",\n    "proposer_px": "Sensex Proposer + Renko",\n}\n'),
+        (tabs, tabs + '    "proposer_px": "Sensex Proposer + Renko",\n'),
         (vars_line, vars_line + "    proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}\n"),
         (btc_comment, ROUTES_QUERY + btc_comment),
         (kwargs_line, kwargs_line + "        proposer_px_rows=proposer_px_rows,\n"
