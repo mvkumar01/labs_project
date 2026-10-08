@@ -464,11 +464,57 @@ def test_feed_regime_source_gap_by_default_deepseek_only_when_selected(db, monke
                                               "p_chop": 0.3, "confidence": 0.6})
     now = datetime(2026, 10, 5, 9, 25, 3)
     monkeypatch.delenv("PROPOSER_REGIME_SOURCE", raising=False)
-    feed = pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame())
+    feed = pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame(), open_fn=lambda d: None)
     assert feed.step(now)["regime"] == "neutral"              # gap rule (flat open) drives
     assert pr.get_regime("2026-10-05", "gap_rule")["regime"] == "neutral"
     monkeypatch.setenv("PROPOSER_REGIME_SOURCE", "deepseek")
-    feed = pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame())
+    feed = pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame(), open_fn=lambda d: None)
     feed.day = None
     p = feed.step(now + timedelta(minutes=10))
     assert p["regime"] == "bearish" and feed.regime.source == "deepseek"
+
+
+def _gap_day(first_close: float):
+    base = datetime(2026, 10, 8, 9, 15)
+    today = [(base + timedelta(minutes=i), first_close + i) for i in range(10)]
+    prior = [(datetime(2026, 10, 7, 14, 0) + timedelta(minutes=i), 72648.4) for i in range(80)]
+    return lambda day: today if day == base.date() else (prior if day.isoformat() == "2026-10-07" else [])
+
+
+def test_gap_regime_reads_the_close_of_the_brokers_0915_candle_not_its_open(db, monkeypatch):
+    """8 Oct 2026: the open sat beside the previous close, the first minute closed 0.32% lower."""
+    monkeypatch.delenv("PROPOSER_REGIME_SOURCE", raising=False)
+    candle = {"open": 72668.0, "high": 72693.97, "low": 72406.04, "close": 72414.37}
+    feed = pr.PredictorFeed(bars_fn=_gap_day(72414.37), chain_fn=lambda d: pd.DataFrame(), open_fn=lambda d: candle)
+    assert feed.step(datetime(2026, 10, 8, 9, 25, 3))["regime"] == "bearish"
+    row = pr.get_regime("2026-10-08", "gap_rule")
+    assert row["regime"] == "bearish" and pp.regime_from_gap(72648.4, candle["open"]).label == "neutral"
+    assert "09:15 close 72414.37 (broker 09:15 candle, open 72668.0) vs prev close 72648.4" == row["trigger"]
+
+    # decided once a day: a restart reads the morning's decision back and does not ask again
+    asked = []
+    again = pr.PredictorFeed(bars_fn=_gap_day(72414.37), chain_fn=lambda d: pd.DataFrame(),
+                             open_fn=lambda d: asked.append(d) or {**candle, "close": 72650.0})
+    assert again.step(datetime(2026, 10, 8, 11, 0, 3))["regime"] == "bearish" and not asked
+
+
+def test_gap_regime_waits_for_the_broker_candle_then_uses_the_collector_bar(db, monkeypatch):
+    monkeypatch.delenv("PROPOSER_REGIME_SOURCE", raising=False)
+    asked = []
+    feed = pr.PredictorFeed(bars_fn=_gap_day(72414.37), chain_fn=lambda d: pd.DataFrame(),
+                            open_fn=lambda d: asked.append(d))            # the broker serves nothing
+    assert feed.step(datetime(2026, 10, 8, 9, 16, 5)) is None and feed.regime is None
+    assert feed.step(datetime(2026, 10, 8, 9, 16, 10)) is None and len(asked) == 1     # asked every 15 s
+    assert feed.step(datetime(2026, 10, 8, 9, 16, 25)) is None and len(asked) == 2
+    assert pr.get_regime("2026-10-08", "gap_rule") is None                # nothing decided before 09:20
+    feed.step(datetime(2026, 10, 8, 9, 20, 30))
+    row = pr.get_regime("2026-10-08", "gap_rule")
+    assert feed.regime.label == row["regime"] == "bearish" and "(collector 09:15 bar)" in row["trigger"]
+
+    # neither source has the 09:15 candle: neutral, never a later bar passed off as the open
+    late = _gap_day(72414.37)
+    feed = pr.PredictorFeed(bars_fn=lambda day: late(day)[3:] if day.isoformat() == "2026-10-08" else [],
+                            chain_fn=lambda d: pd.DataFrame(), open_fn=lambda d: None,
+                            store_regime=lambda *a: None, lookup_regime=lambda *a: None)
+    feed.step(datetime(2026, 10, 8, 9, 21, 30))
+    assert feed.regime.label == "neutral" and feed.regime.confidence == 0.0

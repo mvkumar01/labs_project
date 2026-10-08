@@ -17,6 +17,10 @@ Layers:
   regime    - Pramanaa uses an LLM over overnight news. Measured on 71 sessions its only skill was
               the overnight gap (82% on the gap, 48.6% from 09:21 to close), so this port derives
               the regime from the opening gap instead: deterministic, free, available by 09:16.
+              The gap is measured at the CLOSE of the 09:15 candle, not at the session's opening
+              value: SENSEX's open can sit next to the previous close while the index trades
+              hundreds of points away seconds later (28 Sep and 8 Oct 2026: +0.06% by the open,
+              -0.32% a minute in), and the broker's own candle open carries the same number.
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ CLASSES = ("strong_bear", "mild_bear", "chop", "mild_bull", "strong_bull")
 DRIFT_SLOPE_MIN = 0.01              # % SMA50 slope over 10 min to call a micro-trend
 MA, SLOPE_WIN = 50, 10
 X5_SEED, DRIFT_SEED = 60, MA + SLOPE_WIN + 5
-GAP_DECISIVE = 0.003                # |open / prev close - 1| that makes the regime decisive
+GAP_DECISIVE = 0.003                # |09:15 close / prev close - 1| that makes the regime decisive
 
 
 @dataclass(frozen=True)
@@ -187,7 +191,8 @@ def predict_x5(prior, today, chain: Optional[dict], regime: Optional[Regime], as
 # ---------------------------------------------------------------- regime ---
 def regime_from_gap(prev_close: Optional[float], open_px: Optional[float],
                     threshold: float = GAP_DECISIVE) -> Regime:
-    """Daily regime from the opening gap. Neutral when either price is missing."""
+    """Daily regime from the opening gap (open_px = the 09:15 candle's close). Neutral when either
+    price is missing."""
     if not prev_close or not open_px:
         return Regime("neutral", 1 / 3, 1 / 3, 1 / 3, 0.0)
     gap = open_px / prev_close - 1

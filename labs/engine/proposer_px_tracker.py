@@ -210,11 +210,11 @@ class _Contract:
 
 
 # --------------------------------------------------------------- predictor ---
-def _prints(day: str, prior: list, today: list, first_open: float, chains: dict,
+def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: dict,
             through: datetime) -> tuple[list[dict], pp.Regime]:
     """The live feed's prints, replayed: gap-rule regime, a 5-class call every 5 minutes from the
     first valid one, each from completed bars only (bars before its minute)."""
-    regime = pp.regime_from_gap(prior[-1][1] if prior else None, first_open)
+    regime = pp.regime_from_gap(prior[-1][1] if prior else None, open_ref)
     out, due = [], None
     m = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + timedelta(minutes=1)
     while m <= through and m.time() <= PRINT_UNTIL:
@@ -297,7 +297,9 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
 
     prior = _prior_closes(day)
     closes_today = [(b[0], b[4]) for b in bars]
-    prints, regime = _prints(day, prior, closes_today, bars[0][1], chains, min(through, session_end))
+    # the gap is read at the close of the 09:15 bar, as the live feed reads the broker's candle
+    open_ref = bars[0][4] if bars[0][0].time() == SESSION_OPEN else None
+    prints, regime = _prints(day, prior, closes_today, open_ref, chains, min(through, session_end))
     by_min = {}
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)
@@ -402,7 +404,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     return {
         "trade_date": day, "status": ("closed" if closed else "no_trade") if final else "live",
         "expiry_code": str(expiry), "regime": regime.label,
-        "gap_pct": round((bars[0][1] / prev_close - 1) * 100, 3) if prev_close else None,
+        "gap_pct": round((open_ref / prev_close - 1) * 100, 3) if prev_close and open_ref else None,
         "n_trades": len(trades), "n_losses": sum(1 for x in closed if x["gross_rs"] < 0),
         "day_banked": bool(eng.day_done),
         "gross_rs": round(sum(x["gross_rs"] for x in closed), 2),

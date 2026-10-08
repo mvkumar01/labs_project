@@ -192,6 +192,9 @@ def test_dry_run_exits_on_the_renko_brick_and_takes_no_second_trade(db, monkeypa
     st = svc.get_trade_state(USER, CONN)
     assert st["position"] == "OPEN" and st["side"] == "CALL"
     assert ctx["conns"][CONN].engine.params.bar_exit == "renko-50"
+    with live_db.get_live_conn() as c:      # the runner stamps the wall clock: pin the entry to this test's minute
+        c.execute("UPDATE live_trade_state SET entry_time=? WHERE conn_id=?",
+                  (now.replace(tzinfo=pr.IST).astimezone(pr.timezone.utc).isoformat(), CONN))
     # two minutes later SENSEX has closed 120 points lower: a down brick (2 x 50 from the flat level)
     monkeypatch.setattr(pr.SessionBars, "REFRESH_S", 0.0)
     box["bars"] += [(now.replace(second=0), 74170.0), (now.replace(minute=1, second=0), 74100.0)]
@@ -355,3 +358,15 @@ def test_ui_patch_applies_to_the_committed_files_and_is_idempotent(tmp_path):
     py_compile.compile(str(tmp_path / "pa_paper_tracker_loop.py"), doraise=True)
     import jinja2
     jinja2.Environment().parse((tmp_path / "templates/live_strategy.html").read_text(encoding="utf-8"))
+
+
+def test_paper_book_reads_the_gap_at_the_close_of_the_0915_bar(paper, monkeypatch):
+    tr, conn = paper
+    bars, _frame = _synthetic_day("2026-09-30")
+    prev = _synthetic_day("2026-09-29")[0][-1][4]
+    t, _o, _h, _l, c = bars[0]
+    bars[0] = (t, prev, max(prev, c), min(prev, c), c)       # opens on the previous close, trades far from it
+    monkeypatch.setattr(tr, "spot_ohlc", lambda day: bars if day == "2026-09-30" else _synthetic_day(day)[0])
+    r = tr.simulate_day("2026-09-30")
+    gap = (c / prev - 1) * 100
+    assert gap < -0.3 and r["gap_pct"] == pytest.approx(gap, abs=0.001) and r["regime"] == "bearish"

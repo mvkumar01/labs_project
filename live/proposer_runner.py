@@ -7,7 +7,8 @@ and daily-loss halt; the broker adapters (switched to BFO/SENSEX per connection)
 
 Per cycle (1 s while a position is open, 2 s flat):
   1. the Predictor feed publishes a print every 5 min from the collector's SENSEX bars
-     (drift + 5-class, live/engine/proposer_predictor.py; regime from the opening gap);
+     (drift + 5-class, live/engine/proposer_predictor.py; regime from the opening gap, measured
+     at the close of the broker's 09:15 candle);
   2. each Proposer connection evaluates live/engine/proposer_engine.py on the latest print,
      the live SENSEX spot and the held option's live price (labs Kite data session);
   3. ENTER -> IOC BUY of ATM +/- 200 ITM, nearest weekly, priced from the ask after the gates;
@@ -47,6 +48,11 @@ PRINT_EVERY_MIN = 5
 ENTRY_CUTOFF = dtime(15, 20)
 EOD_FLAT = dtime(15, 25)
 STARTUP_ACT_SECS = 60          # a print older than this at boot is history, not a signal
+SENSEX_KITE_TOKEN = 265
+OPEN_BAR = dtime(9, 15)        # the gap regime reads this candle's close
+OPEN_READY = dtime(9, 16, 10)  # ten seconds after it closes, so the broker serves it whole
+OPEN_VERIFY_UNTIL = dtime(9, 20)   # ask the broker for it until then, afterwards the collector's bar
+OPEN_RETRY_S = 15
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -173,6 +179,25 @@ class KiteMarket:
         asks = [float(x.get("price") or 0) for x in depth.get("sell") or [] if float(x.get("price") or 0) > 0]
         return {"ltp": float(q.get("last_price") or 0) or None,
                 "bid": max(bids) if bids else None, "ask": min(asks) if asks else None}
+
+
+def broker_open_candle(day: date) -> dict | None:
+    """The broker's completed 09:15 one-minute SENSEX candle (open/high/low/close), or None."""
+    from auth.session_manager import get_kite
+    start = datetime.combine(day, OPEN_BAR)
+    try:
+        # through the next minute: a request that ends inside the candle returns it cut short
+        rows = get_kite().historical_data(SENSEX_KITE_TOKEN, start, start + timedelta(minutes=1), "minute")
+    except Exception as e:
+        log.warning("09:15 candle read failed: %s", type(e).__name__)
+        return None
+    for c in rows or []:
+        ts = c.get("date")
+        if getattr(ts, "tzinfo", None) is not None:
+            ts = ts.astimezone(IST).replace(tzinfo=None)
+        if ts == start and float(c.get("close") or 0) > 0:
+            return {k: float(c[k]) for k in ("open", "high", "low", "close")}
+    return None
 
 
 # ════════════════════════════════════════════════════════════ predictor feed ══
@@ -341,9 +366,10 @@ class PredictorFeed:
     """Publishes Proposer prints every PRINT_EVERY_MIN minutes (first once 7 bars of today exist)."""
 
     def __init__(self, bars_fn=spot_bars, chain_fn=option_chain, store=save_print,
-                 store_regime=save_regime, lookup_regime=get_regime):
+                 store_regime=save_regime, lookup_regime=get_regime, open_fn=broker_open_candle):
         self.bars_fn, self.chain_fn, self.store = bars_fn, chain_fn, store
-        self.store_regime, self.lookup_regime = store_regime, lookup_regime
+        self.store_regime, self.lookup_regime, self.open_fn = store_regime, lookup_regime, open_fn
+        self._open_try: datetime | None = None
         self.day: date | None = None
         self.prior: list = []
         self.regime: pp.Regime | None = None
@@ -375,13 +401,10 @@ class PredictorFeed:
         if not today:
             return None
         if self.regime is None:
-            prev_close = self.prior[-1][1] if self.prior else None
-            first_open = self._first_open(now.date()) or today[0][1]
-            gap = pp.regime_from_gap(prev_close, first_open)
+            gap = self._gap_regime(now, today)
+            if gap is None:
+                return None                     # still waiting for the broker's 09:15 candle
             day = now.date().isoformat()
-            self.store_regime(day, "gap_rule", {
-                "regime": gap.label, "p_bull": gap.p_bull, "p_bear": gap.p_bear, "p_chop": gap.p_chop,
-                "confidence": gap.confidence, "trigger": f"open {first_open} vs prev close {prev_close}"})
             self.regime = gap
             if regime_source() == "deepseek":
                 from live.engine import proposer_regime_llm as rl
@@ -390,9 +413,8 @@ class PredictorFeed:
                     self.regime = rl.to_regime(out)
                 else:
                     log.warning("PROPOSER_REGIME_SOURCE=deepseek but no DeepSeek regime today - using the gap rule")
-            log.info("regime %s (conf %.2f, source %s); gap rule says %s (prev %s open %s)",
-                     self.regime.label, self.regime.confidence, self.regime.source, gap.label,
-                     prev_close, first_open)
+            log.info("regime %s (conf %.2f, source %s); gap rule says %s",
+                     self.regime.label, self.regime.confidence, self.regime.source, gap.label)
         chain_rows = self.chain_fn(now.date())
         chain = None
         if not chain_rows.empty:
@@ -417,13 +439,37 @@ class PredictorFeed:
                  p["x5"], p["x5_conf"], p["drift_state"])
         return p
 
-    def _first_open(self, day: date) -> float | None:
-        path = DATA_DIR / f"{day.isoformat()}_{UNDERLYING}_spot_1min.csv"
-        try:
-            f = pd.read_csv(path, nrows=3)
-            return float(f["open"].iloc[0])
-        except Exception:
+    def _gap_regime(self, now: datetime, today: list) -> pp.Regime | None:
+        """Today's gap-rule regime: the 09:15 candle's close against the previous session's last
+        close. The broker's candle is asked for until OPEN_VERIFY_UNTIL (None while it is not
+        served - no print is due before 09:22), then the collector's own 09:15 bar stands in.
+        Decided once a day: a restart reads the stored decision back."""
+        day = now.date().isoformat()
+        stored = self.lookup_regime(day, "gap_rule")
+        if stored:
+            return pp.Regime(stored["regime"], float(stored["p_bull"]), float(stored["p_bear"]),
+                             float(stored["p_chop"]), float(stored["confidence"]))
+        if now.time() < OPEN_READY:
             return None
+        if self._open_try is not None and (now - self._open_try).total_seconds() < OPEN_RETRY_S:
+            return None
+        self._open_try = now
+        candle = self.open_fn(now.date())
+        if candle is None and now.time() < OPEN_VERIFY_UNTIL:
+            return None
+        if candle:
+            ref, src = candle["close"], f"broker 09:15 candle, open {candle['open']}"
+        else:
+            ref = next((c for t, c in today if t.time() == OPEN_BAR), None)
+            src = "collector 09:15 bar" if ref else "no 09:15 candle"
+        prev_close = self.prior[-1][1] if self.prior else None
+        gap = pp.regime_from_gap(prev_close, ref)
+        trigger = f"09:15 close {ref} ({src}) vs prev close {prev_close}"
+        self.store_regime(day, "gap_rule", {
+            "regime": gap.label, "p_bull": gap.p_bull, "p_bear": gap.p_bear, "p_chop": gap.p_chop,
+            "confidence": gap.confidence, "trigger": trigger})
+        log.info("gap rule %s: %s", gap.label, trigger)
+        return gap
 
 
 # ═══════════════════════════════════════════════════════ per-connection logic ══
