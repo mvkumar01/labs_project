@@ -373,6 +373,7 @@ LIVE_TABS = {
     "proposer_px": "Sensex Proposer + Renko",
     "proposer_v3": "Sensex Proposer v3",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
+    "gold_cci": "GOLD CCI short",
 }
 
 
@@ -397,6 +398,7 @@ def live_strategy():
     crude_rows, crude_trades, crude_stats = [], [], {}
     btc_rows, btc_trades, btc_stats = [], [], {}
     crudem_combo_rows, crudem_combo_trades, crudem_combo_stats = [], [], {}
+    gold_cci_rows, gold_cci_trades, gold_cci_stats = [], [], {}
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
@@ -896,6 +898,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_px_stats = {"error": str(exc)}
 
+        # MCX GOLD CCI short (paper): its own ledger and tab.
+        if active_live_tab == "gold_cci":
+            try:
+                from labs.engine.gold_cci_tracker import tab_data as gold_cci_tab_data
+                gold_cci_rows, gold_cci_trades, gold_cci_stats = gold_cci_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    gold_cci_stats = {"error": str(exc)}
+
         # CRUDEOILM consistent six-member combination (paper): its own ledger and tab.
         if active_live_tab == "crudem_combo":
             try:
@@ -1073,6 +1085,9 @@ def live_strategy():
         crudem_combo_rows=crudem_combo_rows,
         crudem_combo_trades=crudem_combo_trades,
         crudem_combo_stats=crudem_combo_stats,
+        gold_cci_rows=gold_cci_rows,
+        gold_cci_trades=gold_cci_trades,
+        gold_cci_stats=gold_cci_stats,
         proposer_px_rows=proposer_px_rows,
         proposer_px_trades=proposer_px_trades,
         proposer_px_stats=proposer_px_stats,
@@ -1117,6 +1132,25 @@ def proposer_px_backfill():
     try:
         return jsonify(run_backfill(
             start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/gold_cci/backfill", methods=["POST"])
+def gold_cci_backfill():
+    """Replay sessions of the paper-only MCX GOLD CCI short book that have no final row."""
+    from labs.engine.gold_cci_tracker import PAPER_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 10)), 1), 30)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", PAPER_START),
             end_date=request.args.get("end"),
             limit=limit,
             rebuild=request.args.get("rebuild", "0") == "1",

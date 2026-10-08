@@ -280,6 +280,9 @@
         (strategy <code>proposer_dt25_px</code>), so it is the like-for-like paper twin of that live variant.</p>
     {% endif %}
 
+    {% elif active_live_tab == 'gold_cci' %}
+    {% include '_gold_cci.html' %}
+
     {% elif active_live_tab == 'crudem_combo' %}
     {% include '_crudem_combo.html' %}
 
@@ -1123,6 +1126,43 @@
     if (refresh) refresh.addEventListener('click', () => run(refresh, false));
     if (rebuild) rebuild.addEventListener('click', () => {
       if (window.confirm('Clear this paper book and replay every session from 1 June?')) run(rebuild, true);
+    });
+  })();
+</script>
+{% endif %}
+{% if active_live_tab == 'gold_cci' %}
+<script>
+  (function () {
+    const button = document.getElementById('gold-cci-backfill');
+    const status = document.getElementById('gold-cci-backfill-status');
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      let completed = 0;
+      try {
+        while (true) {
+          status.textContent = 'Replaying... ' + completed + ' sessions done';
+          const response = await fetch('/labs/api/gold_cci/backfill?limit=10', {method: 'POST'});
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          completed += payload.done.length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            status.textContent = 'Done ' + completed + '; ' + errors[0] + ': ' + payload.errors[errors[0]];
+            button.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        status.textContent = 'Replay failed: ' + error.message;
+        button.disabled = false;
+      }
     });
   })();
 </script>

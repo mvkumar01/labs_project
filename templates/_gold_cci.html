@@ -1,0 +1,129 @@
+{# MCX GOLD CCI short tab (included from live_strategy.html) #}
+    <h1>GOLD CCI short (paper)</h1>
+    <p class="sub">Strategy Tester v2, MCX gold: <strong>short</strong> when the 5-minute CCI(14) turns above 100 while the
+      15-minute RSI(5) is above 50 and the 1-hour DI&minus; is above DI+ (ADX length 7). Entry at the next 1-minute
+      bar's open, one position at a time, 30-bar cooldown between signals. Stop 0.25% above the entry; once a
+      completed bar has traded one stop distance in favour the stop moves to the entry price; target three stop
+      distances; flat at 23:29. {{ gold_cci_stats.lots or 1 }} lot of GOLD (1 kg, &#8377;{{ gold_cci_stats.qty or 100 }} per rupee of price).</p>
+
+    <div class="formula">
+      Evidence status: a <strong>fit</strong>, not a tested edge. The rule was found on GOLD26OCTFUT candles from
+      10 March to 25 September 2026 (found again from five different sets of training weeks, and it held on each
+      run's own unseen weeks). The book is filled back to {{ gold_cci_stats.paper_start or '2026-06-01' }}, but only
+      sessions from <strong>{{ gold_cci_stats.first_unseen or '2026-09-28' }}</strong> are ones the rule had not seen;
+      the two stretches are shown apart below. To 25 September the book uses the October contract the Tester used;
+      from 28 September the December contract. Costs: MCX futures charges plus one tick (&#8377;1) of slippage each
+      side, about &#8377;2,850 a round trip. One full stop costs about &#8377;40,000 on one lot.
+    </div>
+
+    {% if gold_cci_stats.get('error') %}
+      <p class="empty">Gold CCI book unavailable ({{ gold_cci_stats.error }}).</p>
+    {% elif not gold_cci_rows %}
+      <p class="empty">No sessions recorded in this date range.</p>
+      <button type="button" id="gold-cci-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="gold-cci-backfill-status" class="muted"></span>
+    {% else %}
+      {% set u = gold_cci_stats.unseen %}{% set s = gold_cci_stats.seen %}
+      <div class="cards">
+        <div class="card"><div class="k">Since {{ gold_cci_stats.first_unseen }} (not seen)</div>
+          <div class="v {{ 'green' if u.net>0 else ('red' if u.net<0 else '') }}">&#8377;{{ "{:,.0f}".format(u.net) }}</div>
+          <div class="sub-k">{{ u.trades }} trades, {{ u.wins }} won, {{ u.win_days }} up / {{ u.loss_days }} down days{% if u.pf %}, PF {{ u.pf }}{% endif %}</div></div>
+        <div class="card"><div class="k">To 25 Sep (rule found here)</div>
+          <div class="v {{ 'green' if s.net>0 else ('red' if s.net<0 else '') }}">&#8377;{{ "{:,.0f}".format(s.net) }}</div>
+          <div class="sub-k">{{ s.trades }} trades, {{ s.wins }} won, {{ s.win_days }} up / {{ s.loss_days }} down days{% if s.pf %}, PF {{ s.pf }}{% endif %}</div></div>
+        <div class="card"><div class="k">Whole book</div>
+          <div class="v {{ 'green' if gold_cci_stats.net_total>0 else ('red' if gold_cci_stats.net_total<0 else '') }}">&#8377;{{ "{:,.0f}".format(gold_cci_stats.net_total) }}</div>
+          <div class="sub-k">{{ gold_cci_stats.trades }} trades, {{ gold_cci_stats.win_pct }}% won, after &#8377;{{ "{:,.0f}".format(gold_cci_stats.costs_total) }} costs</div></div>
+        <div class="card"><div class="k">Worst day</div>
+          <div class="v red">&#8377;{{ "{:,.0f}".format(gold_cci_stats.worst_day) }}</div>
+          <div class="sub-k">max drawdown &#8377;{{ "{:,.0f}".format(gold_cci_stats.max_dd) }}, trade by trade</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="gold-cci-backfill" class="btn-secondary">Refresh backfill</button>
+        <span id="gold-cci-backfill-status" class="muted"></span>
+        <span class="muted">Latest {{ gold_cci_stats.latest.trade_date }}: {{ gold_cci_stats.latest.status }}{% if gold_cci_stats.latest.through_ts %}, through {{ gold_cci_stats.latest.through_ts[11:16] }}{% endif %} &middot; {{ gold_cci_stats.latest.tradingsymbol or '' }}</span>
+      </div>
+
+      {% for t in gold_cci_stats.open_trades %}
+        <p class="note"><span class="amber">Open</span>: short {{ t.tradingsymbol }} from {{ "%.0f"|format(t.entry_price) }} at {{ t.entry_ts[11:16] }},
+          stop {{ "%.0f"|format(t.stop_price) }}{% if t.stop_moved %} (moved to entry){% endif %}, target {{ "%.0f"|format(t.target_price) }},
+          marked {{ "%.0f"|format(t.exit_price or 0) }} (&#8377;{{ "{:,.0f}".format(t.gross_rs or 0) }} before costs).</p>
+      {% endfor %}
+
+      <h2 style="margin-top:24px">By month</h2>
+      <table class="perf">
+        <thead><tr><th>Month</th><th>Sessions</th><th>Up days</th><th>Down days</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead>
+        <tbody>
+        {% for m in gold_cci_stats.months %}
+          <tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.win_days }}</td><td>{{ m.loss_days }}</td><td>{{ m.trades }}</td>
+            <td class="{{ 'green' if m.net_rs>0 else ('red' if m.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(m.net_rs) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(m.worst_day) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px">By exit</h2>
+      <table class="perf">
+        <thead><tr><th>Exit</th><th>Trades</th><th>Net &#8377;</th></tr></thead>
+        <tbody>
+        {% for b in gold_cci_stats.by_reason %}
+          <tr><td>{{ b.reason }}</td><td>{{ b.n }}</td>
+            <td class="{{ 'green' if b.net_rs>0 else ('red' if b.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(b.net_rs) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Every time the 5-minute CCI turned above 100 in this range:
+        {% for k, v in gold_cci_stats.outcomes.items() %}{{ v }} {{ k.replace('_', ' ') }}{{ ', ' if not loop.last else '.' }}{% endfor %}
+        (gate = RSI or DI condition off; cooldown = within 30 bars of the last signal; in trade = a position was open.)</p>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if gold_cci_trades %}
+      <table class="perf">
+        <thead><tr><th>Date</th><th>#</th><th>Contract</th><th>Entry &rarr; Exit</th><th>Sold</th><th>Bought</th><th>Stop</th>
+          <th>Target</th><th>R</th><th>Gross &#8377;</th><th>Costs</th><th>Net &#8377;</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in gold_cci_trades %}
+          <tr>
+            <td>{{ t.trade_date }}</td><td>{{ t.seq }}</td><td>{{ t.tradingsymbol }}</td>
+            <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+            <td>{{ "%.0f"|format(t.entry_price) }}</td>
+            <td>{{ "%.0f"|format(t.exit_price) if t.exit_price is not none else '&mdash;' }}</td>
+            <td class="muted">{{ "%.0f"|format(t.stop_price) }}{% if t.stop_moved %} &rarr; entry{% endif %}</td>
+            <td class="muted">{{ "%.0f"|format(t.target_price) }}</td>
+            <td>{{ "%+.2f"|format(t.r_multiple or 0) }}</td>
+            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format((t.charges_rs or 0) + (t.slippage_rs or 0)) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td>
+            <td>{% if t.status == 'open' %}<span class="amber">open</span>{% else %}{{ t.exit_reason }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="empty">No trades in this date range.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Contract</th><th>Bars</th><th>CCI turn-ons</th><th>Trades</th><th>Won</th>
+          <th>Gross &#8377;</th><th>Costs</th><th>Net &#8377;</th></tr></thead>
+        <tbody>
+        {% for r in gold_cci_rows %}
+          <tr>
+            <td>{{ r.trade_date }}{% if r.trade_date >= gold_cci_stats.first_unseen %} <span class="muted">&bull;</span>{% endif %}</td>
+            <td class="{{ 'amber' if r.status == 'live' else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+            <td>{{ r.tradingsymbol or '&mdash;' }}</td>
+            <td class="muted">{{ r.valid_bars if r.valid_bars is not none else '&mdash;' }}</td>
+            <td>{{ r.n_signals }}</td><td>{{ r.n_trades }}{% if r.open_trades %} <span class="amber">({{ r.open_trades }} open)</span>{% endif %}</td>
+            <td>{{ r.wins }}</td>
+            <td>&#8377;{{ "{:,.0f}".format(r.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format((r.charges_rs or 0) + (r.slippage_rs or 0)) }}</td>
+            <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">&bull; = a session the rule had not seen. Paper only; this book never calls a broker order API.
+        Stop and target are the back test's exact levels (not rounded to the &#8377;1 tick).</p>
+    {% endif %}
