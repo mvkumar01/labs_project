@@ -370,3 +370,132 @@ def test_paper_book_reads_the_gap_at_the_close_of_the_0915_bar(paper, monkeypatc
     r = tr.simulate_day("2026-09-30")
     gap = (c / prev - 1) * 100
     assert gap < -0.3 and r["gap_pct"] == pytest.approx(gap, abs=0.001) and r["regime"] == "bearish"
+
+
+# ══════════════════════════════════════════════════ v3: only with the day ══
+def test_v3_parameters_and_the_with_the_day_entry_filter():
+    assert pe.params_for(pe.STRATEGY_VERSION_V3) == pe.ProposerParams(with_day_pts=75.0)
+    eng, flat = pe.ProposerEngine(pe.params_for(pe.STRATEGY_VERSION_V3)), pe.Position()
+
+    def ask(x5, move, minute, regime="neutral", conf=0.6):
+        t = T0 + timedelta(minutes=minute)
+        return eng.evaluate(t, _p(x5, conf, regime, t), flat, option_ltp=None, spot=74000.0, day_move=move)
+
+    assert ask("strong_bull", 74.0, 0).reason == "against_the_day"            # up, but not by 75 points
+    assert ask("strong_bull", 200.0, 0).action == "HOLD"                      # that print is spent
+    assert ask("strong_bull", None, 5).reason == "day_move_unknown"           # never on an unknown day
+    assert ask("strong_bear", 120.0, 10).reason == "against_the_day"          # a put on an up day
+    sig = ask("strong_bull", 75.0, 15)
+    assert (sig.action, sig.side, sig.reason) == ("ENTER", "CALL", "proposer_5class_strong_bull")
+    sig = ask("strong_bear", -90.0, 20)
+    assert (sig.action, sig.side) == ("ENTER", "PUT")
+    # the regime-driven first trade is filtered the same way
+    assert ask("mild_bull", -20.0, 25, regime="bearish", conf=0.3).reason == "against_the_day"
+    sig = ask("mild_bull", -80.0, 30, regime="bearish", conf=0.3)
+    assert (sig.action, sig.side, sig.reason) == ("ENTER", "PUT", "proposer_bearish")
+    # the other variants never look at the day's move
+    base = pe.ProposerEngine()
+    assert base.evaluate(T0, _p(), flat, option_ltp=None, spot=74000.0).action == "ENTER"
+    assert base.evaluate(T0 + timedelta(minutes=5), _p(asof=T0 + timedelta(minutes=5)), flat, option_ltp=None,
+                         spot=74000.0, day_move=-500.0).action == "ENTER"
+
+
+def test_day_move_is_the_last_completed_close_against_the_0915_close():
+    base = datetime(2026, 10, 8, 9, 15)
+    bars = [(base + timedelta(minutes=i), 72414.0 - 10 * i) for i in range(8)]
+    assert pr.day_move(bars) == -70.0
+    assert pr.day_move(bars, open_ref=72400.0) == pytest.approx(-56.0)       # the gap rule's own 09:15 close
+    assert pr.day_move([]) is None and pr.day_move(bars[1:]) is None         # no 09:15 bar, no reference
+
+
+def test_v3_dry_run_takes_only_the_entry_that_goes_with_the_day(db, monkeypatch):
+    svc.set_config(USER, CONN, "strategy_version", pe.STRATEGY_VERSION_V3)
+    ex.set_mode(USER, CONN, ex.Mode.DRY_RUN)
+    monkeypatch.setattr(pr, "option_chain", lambda day: CHAIN)
+    monkeypatch.setattr(pr.SessionBars, "REFRESH_S", 0.0)
+    now = datetime.now(pr.IST).replace(tzinfo=None, hour=10, minute=0, second=10, microsecond=0)
+    first = now.replace(hour=9, minute=15, second=0)
+    box = {"bars": [(first + timedelta(minutes=i), 74180.0) for i in range(45)]}      # 09:15..09:59, flat
+    ctx = {"task_id": "prop-task", "adapters": {}, "reconciled": set(), "conns": {},
+           "bars": pr.SessionBars(bars_fn=lambda d: list(box["bars"]))}
+    feed, market = Feed(_p("strong_bull", 0.6, "neutral", now.replace(second=0))), Market()
+
+    class Adapter:
+        def __init__(self, **_kw):
+            pass
+
+        def connect(self):
+            pass
+
+        def is_connected(self):
+            return True
+
+        def account_ref(self):
+            return "zerodha:T"
+
+        def use_segment(self, *_a):
+            pass
+
+        def broker_symbol(self, s):
+            return s
+
+    def cycle(at):
+        return pr.process_connection(USER, CONN, ctx=ctx, feed=feed, market=market, now=at,
+                                     adapter_factory=Adapter)
+
+    assert cycle(now) is False                                               # a flat day: the bullish print is held
+    assert svc.get_trade_state(USER, CONN)["position"] == "NONE"
+    assert ctx["conns"][CONN].engine.params.with_day_pts == 75.0
+    # ten minutes on SENSEX has closed 80 points above the 09:15 close: the next bullish print is taken
+    later = now.replace(minute=10)
+    box["bars"] += [(now.replace(second=0) + timedelta(minutes=i), 74260.0) for i in range(10)]
+    feed.snap = _p("strong_bull", 0.7, "neutral", later.replace(second=0))
+    assert cycle(later) is True
+    st = svc.get_trade_state(USER, CONN)
+    assert st["position"] == "OPEN" and st["side"] == "CALL"
+
+
+def test_v3_paper_book_keeps_its_own_ledger_and_waits_for_the_day_to_move(paper):
+    tr, conn = paper
+    px = tr.simulate_day("2026-09-29")
+    v3 = tr.simulate_day("2026-09-29", book=tr.V3)
+    # the tape is flat until 09:30, then climbs 12 points a minute: 75 points up at the 09:36 close
+    assert v3["n_trades"] >= 1 and v3["trades"][0]["side"] == "CE"
+    assert v3["trades"][0]["entry_ts"] >= "2026-09-29T09:37"
+    assert v3["trades"][0]["entry_ts"] >= px["trades"][0]["entry_ts"]
+    out = tr.run_day("2026-09-29", connection=conn, book=tr.V3)
+    assert out["gross_rs"] == v3["gross_rs"]
+    assert conn.execute("SELECT strategy_version, bar_exit FROM proposer_v3_daily").fetchone() == ("proposer_dt25_v3", "")
+    assert conn.execute("SELECT COUNT(*) FROM proposer_v3_trades").fetchone()[0] == v3["n_trades"]
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name='proposer_px_daily'").fetchone() is None
+    from labs.engine import proposer_v3_book as book
+    rows, trades, stats = book.tab_data(conn)
+    assert stats["strategy_version"] == "proposer_dt25_v3" and stats["with_day_pts"] == 75.0
+    assert stats["unseen_days"] == 0 and stats["fitted_net"] == stats["net_total"] and len(trades) == v3["n_trades"]
+    assert book.BOOK.key == "proposer_v3" and book.FIRST_UNSEEN_SESSION == "2026-10-09"
+
+
+def test_v3_ui_patch_applies_next_to_the_px_wiring_and_is_idempotent(tmp_path):
+    for rel in ("labs/ui/routes.py", "templates/live_strategy.html", "pa_paper_tracker_loop.py",
+                "templates/_proposer_v3.html"):
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / rel, target)
+    for name in ("patch_proposer_px_ui.py", "patch_proposer_v3_ui.py"):
+        run = subprocess.run([sys.executable, str(ROOT / "scripts" / name), str(tmp_path)], capture_output=True, text=True)
+        assert run.returncode == 0, run.stderr
+    second = subprocess.run([sys.executable, str(ROOT / "scripts" / "patch_proposer_v3_ui.py"), str(tmp_path)],
+                            capture_output=True, text=True)
+    assert second.returncode == 0 and second.stdout.count("0 edits applied") == 3
+    routes = (tmp_path / "labs/ui/routes.py").read_text(encoding="utf-8")
+    assert routes.count('"proposer_v3": "Sensex Proposer v3"') == 1
+    assert routes.count('@labs_bp.route("/api/proposer_v3/backfill"') == 1
+    assert routes.count('"proposer_px": "Sensex Proposer + Renko"') == 1
+    loop = (tmp_path / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
+    assert loop.count('("proposer_v3", run_proposer_v3_day)') == 1
+    py_compile.compile(str(tmp_path / "labs/ui/routes.py"), doraise=True)
+    py_compile.compile(str(tmp_path / "pa_paper_tracker_loop.py"), doraise=True)
+    import jinja2
+    for rel in ("templates/live_strategy.html", "templates/_proposer_v3.html"):
+        jinja2.Environment().parse((tmp_path / rel).read_text(encoding="utf-8"))
+    assert "{% include '_proposer_v3.html' %}" in (tmp_path / "templates/live_strategy.html").read_text(encoding="utf-8")

@@ -1,6 +1,8 @@
-"""SENSEX Proposer + price-action exit: paper book.
+"""SENSEX Proposer paper books: the price-action exit variant (PX) and v3 (V3).
 
-Paper only. This module never calls a broker order API.
+Paper only. This module never calls a broker order API. One replay, two ledgers: a `Book` names
+the table prefix and the live strategy version it replays (PX = `proposer_dt25_px`: Renko-50 exit
+and one loss a day; V3 = `proposer_dt25_v3`: the base exits, entries only with the day).
 
 It replays a session with the SAME code the live bot runs: the engine
 (live/engine/proposer_engine.py, variant `proposer_dt25_px`), the ported
@@ -36,6 +38,7 @@ import io
 import math
 import sqlite3
 import tarfile
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 
 import pandas as pd
@@ -71,11 +74,22 @@ class ProposerPxInputError(RuntimeError):
     """Required market data is unavailable for the session."""
 
 
+@dataclass(frozen=True)
+class Book:
+    """One paper ledger: its table prefix and the live strategy version it replays."""
+    key: str
+    strategy_version: str
+
+
+PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
+V3 = Book("proposer_v3", pe.STRATEGY_VERSION_V3)
+
+
 # ------------------------------------------------------------------ schema ---
-def _ensure_tables(conn: sqlite3.Connection) -> None:
+def _ensure_tables(conn: sqlite3.Connection, book: Book = PX) -> None:
     conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS proposer_px_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {book.key}_daily (
             trade_date        TEXT PRIMARY KEY,
             status            TEXT NOT NULL,
             expiry_code       TEXT,
@@ -96,7 +110,7 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             error             TEXT,
             updated_at        TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS proposer_px_trades (
+        CREATE TABLE IF NOT EXISTS {book.key}_trades (
             trade_date     TEXT NOT NULL,
             seq            INTEGER NOT NULL,
             signal         TEXT NOT NULL,
@@ -257,7 +271,8 @@ def _rest_of_minute(sec: float, spot: float, bar) -> list[tuple[float, float]]:
 
 
 # --------------------------------------------------------------------- day ---
-def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None) -> dict:
+def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None,
+                 book: Book = PX) -> dict:
     """Replay one session to its last recorded minute. Pure: reads market data, writes nothing."""
     if date.fromisoformat(day).weekday() >= 5:
         raise ProposerPxInputError(f"{day} is not a trading weekday")
@@ -268,7 +283,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     snap_spot = {t.to_pydatetime(): float(v) for t, v in frame.groupby("timestamp")["spot"].first().items()}
     near = frame[(frame["expiry"] == str(expiry)) & (frame["ltp"] > 0)]
     cols = ["ltp", "bid", "ask"] + (["tradingsymbol"] if "tradingsymbol" in near.columns else [])
-    book = {(typ, int(k)): g.drop_duplicates("timestamp", keep="last").set_index("timestamp")[cols]
+    quote_book = {(typ, int(k)): g.drop_duplicates("timestamp", keep="last").set_index("timestamp")[cols]
             for (typ, k), g in near.groupby(["option_type", "strike"])}
     piv = near.pivot_table(index=["timestamp", "strike"], columns="option_type", values="oi",
                            aggfunc="last").fillna(0)
@@ -304,7 +319,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)
 
-    eng = pe.ProposerEngine(pe.params_for(STRATEGY_VERSION))
+    eng = pe.ProposerEngine(pe.params_for(book.strategy_version))
     pos, trades, realized, snap, hist = None, [], 0.0, {}, []
 
     def book_state():
@@ -340,6 +355,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             anchor = (q[0], q[1], pos["c"].delta(t)) if q else None
         path, i = _dense(_nodes(bar)), 0
         closes = [b[4] for b in hist]
+        # the with-the-day filter's input: last completed close against the 09:15 close
+        move = (hist[-1][4] - open_ref) if hist and open_ref else None
         while i < len(path):
             sec, spot = path[i]
             now_ = t + timedelta(seconds=sec)
@@ -368,10 +385,10 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         book_state()
                         eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot)
             elif fresh and snap:
-                sig = eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot)
+                sig = eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot, day_move=move)
                 if sig.action == "ENTER" and now_.time() < ENTRY_CUTOFF:
                     strike, typ = pe.itm_strike(spot, sig.side)
-                    quotes = book.get((typ, strike))
+                    quotes = quote_book.get((typ, strike))
                     c = _Contract(quotes, snap_spot) if quotes is not None else None
                     q = c.quote(t) if c else None
                     if q:
@@ -415,44 +432,45 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     }
 
 
-def _book_before(conn: sqlite3.Connection, day: str) -> float:
-    row = conn.execute("SELECT COALESCE(SUM(gross_rs), 0) FROM proposer_px_daily "
+def _book_before(conn: sqlite3.Connection, day: str, book: Book = PX) -> float:
+    row = conn.execute(f"SELECT COALESCE(SUM(gross_rs), 0) FROM {book.key}_daily "
                        "WHERE trade_date < ? AND status IN ('closed', 'no_trade')", (day,)).fetchone()
     return float(row[0] or 0.0)
 
 
 def run_day(trade_date: str | None = None, *, persist: bool = True,
-            connection: sqlite3.Connection | None = None, now: datetime | None = None) -> dict:
+            connection: sqlite3.Connection | None = None, now: datetime | None = None,
+            book: Book = PX) -> dict:
     """Replay a session (to now, for today) and store it. Idempotent."""
     now = now or datetime.now(IST)
     trade_date = trade_date or now.date().isoformat()
     own = connection is None
     conn = connection or get_conn()
-    _ensure_tables(conn)
+    _ensure_tables(conn, book)
     try:
-        result = simulate_day(trade_date, book_before=_book_before(conn, trade_date), now=now)
+        result = simulate_day(trade_date, book_before=_book_before(conn, trade_date, book), now=now, book=book)
         if persist:
-            _persist(conn, result)
+            _persist(conn, result, book)
         return {k: result[k] for k in ("trade_date", "status", "regime", "n_trades", "gross_rs", "net_rs")}
     finally:
         if own:
             conn.close()
 
 
-def _persist(conn: sqlite3.Connection, r: dict) -> None:
-    conn.execute("DELETE FROM proposer_px_trades WHERE trade_date=?", (r["trade_date"],))
+def _persist(conn: sqlite3.Connection, r: dict, book: Book = PX) -> None:
+    conn.execute(f"DELETE FROM {book.key}_trades WHERE trade_date=?", (r["trade_date"],))
     for seq, t in enumerate(r["trades"], start=1):
         conn.execute(
-            "INSERT INTO proposer_px_trades (trade_date,seq,signal,side,strike,tradingsymbol,expiry_code,"
+            f"INSERT INTO {book.key}_trades (trade_date,seq,signal,side,strike,tradingsymbol,expiry_code,"
             "entry_ts,exit_ts,entry_spot,exit_spot,entry_price,exit_price,gross_rs,charges_rs,net_rs,exit_rule) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (r["trade_date"], seq, t["signal"], t["side"], t["strike"], t.get("tradingsymbol"),
              t.get("expiry_code"), t["entry_ts"], t.get("exit_ts"), t.get("entry_spot"), t.get("exit_spot"),
              t.get("entry_price"), t.get("exit_price"), t.get("gross_rs"), t.get("charges_rs"),
              t.get("net_rs"), t.get("exit_rule")))
-    params = pe.params_for(STRATEGY_VERSION)
+    params = pe.params_for(book.strategy_version)
     conn.execute(
-        "INSERT INTO proposer_px_daily (trade_date,status,expiry_code,regime,gap_pct,n_trades,n_losses,"
+        f"INSERT INTO {book.key}_daily (trade_date,status,expiry_code,regime,gap_pct,n_trades,n_losses,"
         "day_banked,gross_rs,charges_rs,net_rs,book_gross_before,through_ts,lots,qty,bar_exit,"
         "strategy_version,error,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?) "
         "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,expiry_code=excluded.expiry_code,"
@@ -464,24 +482,25 @@ def _persist(conn: sqlite3.Connection, r: dict) -> None:
         "error=NULL,updated_at=excluded.updated_at",
         (r["trade_date"], r["status"], r["expiry_code"], r["regime"], r["gap_pct"], r["n_trades"],
          r["n_losses"], int(r["day_banked"]), r["gross_rs"], r["charges_rs"], r["net_rs"],
-         r["book_gross_before"], r["through_ts"], LOTS, QTY, params.bar_exit, STRATEGY_VERSION,
+         r["book_gross_before"], r["through_ts"], LOTS, QTY, params.bar_exit, book.strategy_version,
          datetime.now(IST).isoformat(timespec="seconds")))
     conn.commit()
 
 
-def record_unavailable(trade_date: str, error: str, *, connection: sqlite3.Connection | None = None) -> None:
+def record_unavailable(trade_date: str, error: str, *, connection: sqlite3.Connection | None = None,
+                       book: Book = PX) -> None:
     """An auditable no-result day; never an invented trade."""
     own = connection is None
     conn = connection or get_conn()
-    _ensure_tables(conn)
+    _ensure_tables(conn, book)
     try:
-        conn.execute("DELETE FROM proposer_px_trades WHERE trade_date=?", (trade_date,))
+        conn.execute(f"DELETE FROM {book.key}_trades WHERE trade_date=?", (trade_date,))
         conn.execute(
-            "INSERT INTO proposer_px_daily (trade_date,status,n_trades,gross_rs,charges_rs,net_rs,lots,qty,"
+            f"INSERT INTO {book.key}_daily (trade_date,status,n_trades,gross_rs,charges_rs,net_rs,lots,qty,"
             "strategy_version,error,updated_at) VALUES (?,?,0,0,0,0,?,?,?,?,?) "
             "ON CONFLICT(trade_date) DO UPDATE SET status=excluded.status,n_trades=0,n_losses=0,gross_rs=0,"
             "charges_rs=0,net_rs=0,error=excluded.error,updated_at=excluded.updated_at",
-            (trade_date, "unavailable", LOTS, QTY, STRATEGY_VERSION, str(error)[:500],
+            (trade_date, "unavailable", LOTS, QTY, book.strategy_version, str(error)[:500],
              datetime.now(IST).isoformat(timespec="seconds")))
         conn.commit()
     finally:

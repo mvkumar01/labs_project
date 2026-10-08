@@ -1,4 +1,5 @@
-"""Backfill for the SENSEX Proposer + price-action exit paper book.
+"""Backfill for the SENSEX Proposer paper books (the price-action exit variant by default, v3
+with `book=V3`).
 
 Every session with SENSEX quotes is replayed in date order, because each one starts from the
 book the sessions before it left (the recovery mode reads the lifetime gross). A session whose
@@ -12,6 +13,8 @@ from config.labs_config import SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR
 from labs.engine.proposer_px_tracker import (
     DEFAULT_START,
     IST,
+    PX,
+    Book,
     ProposerPxInputError,
     SYMBOL,
     _ensure_tables,
@@ -56,21 +59,21 @@ def sessions_with_quotes(start_date: str, end_date: str) -> list[str]:
 
 
 def run_backfill(*, start_date: str = DEFAULT_START, end_date: str | None = None,
-                 limit: int = 5, rebuild: bool = False) -> dict:
+                 limit: int = 5, rebuild: bool = False, book: Book = PX) -> dict:
     """Replay the next `limit` pending sessions, oldest first.
 
     `rebuild` first clears the book from `start_date` on: call it once, then continue without it.
     Date order is a hard requirement, so the run stops at the first session that errors."""
     end_date = end_date or _default_end_date()
     conn = get_conn()
-    _ensure_tables(conn)
+    _ensure_tables(conn, book)
     try:
         if rebuild:
-            conn.execute("DELETE FROM proposer_px_trades WHERE trade_date>=?", (start_date,))
-            conn.execute("DELETE FROM proposer_px_daily WHERE trade_date>=?", (start_date,))
+            conn.execute(f"DELETE FROM {book.key}_trades WHERE trade_date>=?", (start_date,))
+            conn.execute(f"DELETE FROM {book.key}_daily WHERE trade_date>=?", (start_date,))
             conn.commit()
         done = {row[0] for row in conn.execute(
-            "SELECT trade_date FROM proposer_px_daily WHERE trade_date>=? AND trade_date<=? "
+            f"SELECT trade_date FROM {book.key}_daily WHERE trade_date>=? AND trade_date<=? "
             "AND status IN ('closed','no_trade','unavailable')", (start_date, end_date))}
     finally:
         conn.close()
@@ -78,10 +81,10 @@ def run_backfill(*, start_date: str = DEFAULT_START, end_date: str | None = None
     completed, unavailable, errors = [], [], {}
     for session in pending[:max(1, min(int(limit), 20))]:
         try:
-            result = run_day(session)
+            result = run_day(session, book=book)
             completed.append({"date": session, "trades": result["n_trades"], "net_rs": result["net_rs"]})
         except ProposerPxInputError as exc:
-            record_unavailable(session, str(exc))
+            record_unavailable(session, str(exc), book=book)
             unavailable.append({"date": session, "reason": str(exc)})
         except Exception as exc:                                  # noqa: BLE001
             errors[session] = f"{type(exc).__name__}: {exc}"

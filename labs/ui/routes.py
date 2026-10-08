@@ -371,6 +371,7 @@ LIVE_TABS = {
     "baskets": "v2.11 Baskets",
     "sensex_alpha": "Sensex_alpha",
     "proposer_px": "Sensex Proposer + Renko",
+    "proposer_v3": "Sensex Proposer v3",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
 }
 
@@ -397,6 +398,7 @@ def live_strategy():
     btc_rows, btc_trades, btc_stats = [], [], {}
     crudem_combo_rows, crudem_combo_trades, crudem_combo_stats = [], [], {}
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
+    proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -874,6 +876,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # SENSEX Proposer v3 - only with the day (paper): its own ledger and tab.
+        if active_live_tab == "proposer_v3":
+            try:
+                from labs.engine.proposer_v3_book import tab_data as proposer_v3_tab_data
+                proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = proposer_v3_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_v3_stats = {"error": str(exc)}
+
         # SENSEX Proposer + price-action exit (paper): its own ledger and tab.
         if active_live_tab == "proposer_px":
             try:
@@ -1064,12 +1076,34 @@ def live_strategy():
         proposer_px_rows=proposer_px_rows,
         proposer_px_trades=proposer_px_trades,
         proposer_px_stats=proposer_px_stats,
+        proposer_v3_rows=proposer_v3_rows,
+        proposer_v3_trades=proposer_v3_trades,
+        proposer_v3_stats=proposer_v3_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@labs_bp.route("/api/proposer_v3/backfill", methods=["POST"])
+def proposer_v3_backfill():
+    """Backfill bounded batches of the paper-only SENSEX Proposer v3 (only with the day) book."""
+    from labs.engine.proposer_v3_book import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @labs_bp.route("/api/proposer_px/backfill", methods=["POST"])

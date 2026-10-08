@@ -540,6 +540,8 @@ STRATEGY_PRESETS = {
     "proposer_dt25": ("proposer", "proposer_dt25"),
     # The same Proposer with the 1-min price-action exit and a one-loss-per-day stop.
     "proposer_dt25_px": ("proposer", "proposer_dt25_px"),
+    # The base Proposer taking only entries that go with the day (75 points beyond the 09:15 close).
+    "proposer_dt25_v3": ("proposer", "proposer_dt25_v3"),
 }
 STRATEGY_LABELS = {
     "legacy_v211":   "Alpha v2.11 (legacy)",
@@ -552,6 +554,7 @@ STRATEGY_LABELS = {
     "champion_v213": "Alpha v2.13",
     "proposer_dt25": "SENSEX Proposer (2.5% day target)",
     "proposer_dt25_px": "SENSEX Proposer + Renko-50 exit, one loss per day",
+    "proposer_dt25_v3": "SENSEX Proposer v3 (improved: trades only with the day's direction)",
 }
 
 

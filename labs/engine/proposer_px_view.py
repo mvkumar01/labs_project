@@ -1,25 +1,26 @@
-"""Dashboard data for the SENSEX Proposer + price-action exit paper book (/labs/live tab)."""
+"""Dashboard data for the SENSEX Proposer paper books (/labs/live tabs): the price-action exit
+variant by default, v3 with `book=V3`."""
 from __future__ import annotations
 
 import sqlite3
 
-from labs.engine.proposer_px_tracker import LOTS
+from labs.engine.proposer_px_tracker import LOTS, PX, Book
 from live.engine import proposer_engine as pe
 
 
-def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) -> tuple:
+def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), book: Book = PX) -> tuple:
     """(daily rows, trades, stats), newest first."""
     cur = conn.execute(
         "SELECT trade_date,status,expiry_code,regime,gap_pct,n_trades,n_losses,day_banked,gross_rs,"
         "charges_rs,net_rs,book_gross_before,through_ts,lots,qty,bar_exit,strategy_version,error,updated_at "
-        f"FROM proposer_px_daily WHERE 1=1 {date_clause} ORDER BY trade_date DESC LIMIT 400",
+        f"FROM {book.key}_daily WHERE 1=1 {date_clause} ORDER BY trade_date DESC LIMIT 400",
         tuple(date_params))
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     cur = conn.execute(
         "SELECT trade_date,seq,signal,side,strike,tradingsymbol,expiry_code,entry_ts,exit_ts,entry_spot,"
         "exit_spot,entry_price,exit_price,gross_rs,charges_rs,net_rs,exit_rule "
-        f"FROM proposer_px_trades WHERE 1=1 {date_clause} ORDER BY trade_date DESC, seq DESC LIMIT 600",
+        f"FROM {book.key}_trades WHERE 1=1 {date_clause} ORDER BY trade_date DESC, seq DESC LIMIT 600",
         tuple(date_params))
     cols = [c[0] for c in cur.description]
     trades = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -65,7 +66,9 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         "months": [months[k] for k in sorted(months, reverse=True)],
         "by_rule": sorted(by_rule.values(), key=lambda b: -b["n"]),
         "open_trades": [t for t in trades if not t["exit_ts"]],
-        "lots": LOTS, "bar_exit": pe.PX_BAR_EXIT,
+        "lots": LOTS, "bar_exit": pe.params_for(book.strategy_version).bar_exit,
+        "strategy_version": book.strategy_version,
+        "with_day_pts": pe.params_for(book.strategy_version).with_day_pts,
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
     return rows, trades, stats

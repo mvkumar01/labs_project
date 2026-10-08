@@ -200,6 +200,16 @@ def broker_open_candle(day: date) -> dict | None:
     return None
 
 
+def day_move(bars: list, open_ref: float | None = None) -> float | None:
+    """SENSEX's last completed 1-min close minus the 09:15 close - the with-the-day entry filter's
+    input. `open_ref` is the 09:15 close the gap rule decided on (the broker's candle); without it
+    the collector's own 09:15 bar is used. None when either price is missing."""
+    if not bars:
+        return None
+    ref = open_ref or next((c for t, c in bars if t.time() == OPEN_BAR), None)
+    return None if not ref else float(bars[-1][1]) - float(ref)
+
+
 # ════════════════════════════════════════════════════════════ predictor feed ══
 def _read_bars(path: Path) -> list[tuple[datetime, float]]:
     f = pd.read_csv(path)
@@ -370,6 +380,7 @@ class PredictorFeed:
         self.bars_fn, self.chain_fn, self.store = bars_fn, chain_fn, store
         self.store_regime, self.lookup_regime, self.open_fn = store_regime, lookup_regime, open_fn
         self._open_try: datetime | None = None
+        self.open_ref: float | None = None          # today's 09:15 close, as the gap rule read it
         self.day: date | None = None
         self.prior: list = []
         self.regime: pp.Regime | None = None
@@ -378,6 +389,7 @@ class PredictorFeed:
 
     def _new_day(self, day: date) -> None:
         self.day, self.regime, self.latest, self.next_due = day, None, {}, None
+        self.open_ref = None
         self.prior = []
         for back in range(1, 11):
             bars = self.bars_fn(day - timedelta(days=back))
@@ -447,6 +459,7 @@ class PredictorFeed:
         day = now.date().isoformat()
         stored = self.lookup_regime(day, "gap_rule")
         if stored:
+            self.open_ref = stored.get("open_ref")
             return pp.Regime(stored["regime"], float(stored["p_bull"]), float(stored["p_bear"]),
                              float(stored["p_chop"]), float(stored["confidence"]))
         if now.time() < OPEN_READY:
@@ -467,7 +480,8 @@ class PredictorFeed:
         trigger = f"09:15 close {ref} ({src}) vs prev close {prev_close}"
         self.store_regime(day, "gap_rule", {
             "regime": gap.label, "p_bull": gap.p_bull, "p_bear": gap.p_bear, "p_chop": gap.p_chop,
-            "confidence": gap.confidence, "trigger": trigger})
+            "confidence": gap.confidence, "trigger": trigger, "open_ref": ref})
+        self.open_ref = ref
         log.info("gap rule %s: %s", gap.label, trigger)
         return gap
 
@@ -645,8 +659,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     pc = ctx["conns"].get(conn_id)
     if pc is None or pc.strategy != strategy:        # first cycle, or the operator switched variant
         pc = ctx["conns"][conn_id] = ProposerConnection(user_id, conn_id, strategy=strategy)
-        log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s", conn_id, strategy,
-                 pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off")
+        log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s", conn_id,
+                 strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
+                 pc.engine.params.with_day_pts or "off")
     pc.ensure_session(trade_date, dry_run, feed, now)
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
@@ -666,12 +681,18 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     if is_open and now.time() >= EOD_FLAT:
         sig = pe.Signal("EXIT", st.get("side"), "eod")
     elif snap and spot:
-        closes = entry_idx = None
+        closes = entry_idx = move = None
         if is_open and pc.engine.params.bar_exit:
             bars = session_bars.completed(now)
             closes, entry_idx = [b[1] for b in bars], entry_bar_index(bars, st.get("entry_time"))
+        if not is_open and pc.engine.params.with_day_pts:
+            move = day_move(session_bars.completed(now), getattr(feed, "open_ref", None))
         sig = pc.engine.evaluate(now, snap, pos, option_ltp=ltp, spot=spot,
-                                 closes=closes, entry_idx=entry_idx)
+                                 closes=closes, entry_idx=entry_idx, day_move=move)
+        if sig.reason in ("against_the_day", "day_move_unknown"):
+            log.info("entry held (%s): print %s %s, day move %s pts, needs %s with the trade", sig.reason,
+                     snap.get("x5_asof"), snap.get("x5"), None if move is None else round(move, 1),
+                     pc.engine.params.with_day_pts)
     else:
         sig = pe.Signal("HOLD")
 

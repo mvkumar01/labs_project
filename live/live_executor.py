@@ -55,7 +55,9 @@ LIVE_DECISION_ABI = "alpha-v2.14ab-entrybar-live-v1"
 PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v2 (2026-10-06): the runner also trades the proposer_dt25_px variant (1-min bar exit and
 # one-loss-per-day stop); a runner on the v1 contract must not place its orders.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v3"
+# v3 (2026-10-08): gap regime read at the close of the broker's 09:15 candle.
+# v4 (2026-10-08): the runner also trades proposer_dt25_v3 (entries only with the day).
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v4"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

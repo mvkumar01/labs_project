@@ -154,6 +154,9 @@
       </table>
     {% endif %}
 
+    {% elif active_live_tab == 'proposer_v3' %}
+    {% include '_proposer_v3.html' %}
+
     {% elif active_live_tab == 'proposer_px' %}
     <h1>SENSEX Proposer + Renko exit (paper)</h1>
     <p class="sub">The live SENSEX Proposer's own code, replayed on paper at {{ proposer_px_stats.lots or 100 }} lots:
@@ -1034,6 +1037,50 @@
       }
     });
   }
+</script>
+{% endif %}
+{% if active_live_tab == 'proposer_v3' %}
+<script>
+  (function () {
+    const status = document.getElementById('proposer-v3-backfill-status');
+    async function run(button, rebuild) {
+      button.disabled = true;
+      let completed = 0, first = rebuild;
+      try {
+        while (true) {
+          status.textContent = 'Backfilling... ' + completed + ' sessions completed';
+          const response = await fetch('/labs/api/proposer_v3/backfill?limit=5' + (first ? '&rebuild=1' : ''),
+                                       {method: 'POST'});
+          first = false;
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          completed += payload.done.length + (payload.unavailable || []).length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            status.textContent = 'Completed ' + completed + '; stopped at ' + errors[0] + ': ' + payload.errors[errors[0]];
+            button.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            status.textContent = 'Backfill complete: ' + completed + ' sessions';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        status.textContent = 'Backfill failed: ' + error.message;
+        button.disabled = false;
+      }
+    }
+    const refresh = document.getElementById('proposer-v3-backfill');
+    const rebuild = document.getElementById('proposer-v3-rebuild');
+    if (refresh) refresh.addEventListener('click', () => run(refresh, false));
+    if (rebuild) rebuild.addEventListener('click', () => {
+      if (window.confirm('Clear this paper book and replay every session from 1 June?')) run(rebuild, true);
+    });
+  })();
 </script>
 {% endif %}
 {% if active_live_tab == 'proposer_px' %}

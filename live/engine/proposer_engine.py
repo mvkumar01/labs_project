@@ -10,7 +10,11 @@ ENTRY (flat, only on a FRESH 10-min print, consumed when attempted):
     one-way stale latch), the 5-class drives - and only above the confidence gate (0.45);
   - a 300 s cooldown follows every exit except a signal flip;
   - no entries once the day is banked, or (variants with max_losses_per_day) once that many
-    trades have closed at a loss today.
+    trades have closed at a loss today;
+  - variants with with_day_pts (v3): only with the day - SENSEX's last completed 1-min close must be
+    at least that many points beyond the 09:15 close in the trade's direction. Not in Pramanaa's
+    engine - added 2026-10-08: the entries that are not with the day carried the big losers
+    (alphaIMB research, REBUILD.md sec. 18).
 EXIT (open), first match wins:
   loss_floor  - premium down to the floor (-30% in the live variant; the source default is -15%)
   spot_target - SENSEX moved spot_target_pts in favour (decisive width only for the
@@ -36,6 +40,9 @@ STRATEGY_VERSION = "proposer_dt25"
 # The same engine with the price-action exit and the one-loss-per-day stop switched on.
 STRATEGY_VERSION_PX = "proposer_dt25_px"
 PX_BAR_EXIT = "renko-50"
+# v3: the base rules (no bar exit, no loss cap) taking only entries that go with the day.
+STRATEGY_VERSION_V3 = "proposer_dt25_v3"
+V3_WITH_DAY_PTS = 75.0
 
 
 @dataclass(frozen=True)
@@ -59,12 +66,16 @@ class ProposerParams:
     # losing trades per day (0 = off). Both off reproduces Pramanaa's engine.
     bar_exit: str = ""
     max_losses_per_day: int = 0
+    # Entry filter (0 = off): points SENSEX must be beyond the 09:15 close in the trade's direction.
+    with_day_pts: float = 0.0
 
 
 def params_for(strategy_version: Optional[str]) -> ProposerParams:
     """The parameter set a strategy version trades with."""
     if str(strategy_version or "") == STRATEGY_VERSION_PX:
         return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1)
+    if str(strategy_version or "") == STRATEGY_VERSION_V3:
+        return ProposerParams(with_day_pts=V3_WITH_DAY_PTS)
     return ProposerParams()
 
 
@@ -202,9 +213,10 @@ class ProposerEngine:
     # ----------------------------------------------------------- evaluate ---
     def evaluate(self, now: datetime, p: dict, pos: Position, *, option_ltp: Optional[float],
                  spot: Optional[float], closes: Optional[Sequence[float]] = None,
-                 entry_idx: Optional[int] = None) -> Signal:
+                 entry_idx: Optional[int] = None, day_move: Optional[float] = None) -> Signal:
         """`closes` / `entry_idx` feed the bar_exit: the session's completed 1-min SENSEX closes and
-        the index of the bar the open position was entered in."""
+        the index of the bar the open position was entered in. `day_move` feeds the with-the-day
+        entry filter: the last completed 1-min close minus the 09:15 close (None = not known)."""
         if not self.regime_stale and is_strong_reversal(p.get("regime"), p.get("x5")):
             self.regime_stale = True
         if self.prev_open and not pos.open:         # an exit just completed
@@ -233,6 +245,11 @@ class ProposerEngine:
             return Signal("HOLD", reason="day_target_banked")
         if self.params.max_losses_per_day and self.day_losses >= self.params.max_losses_per_day:
             return Signal("HOLD", reason="day_loss_limit")
+        if self.params.with_day_pts > 0:
+            if day_move is None:                    # never enter on an unknown day direction
+                return Signal("HOLD", reason="day_move_unknown")
+            if (day_move if cp == "CALL" else -day_move) < self.params.with_day_pts:
+                return Signal("HOLD", reason="against_the_day")
         stale = self.regime_stale or self.regime_entry_used
         tag = f"5class_{p.get('x5')}" if stale or (p.get("regime") or "").lower() not in DECISIVE \
             else (p.get("regime") or "").lower()

@@ -1,0 +1,130 @@
+{# SENSEX Proposer v3 tab (included from live_strategy.html) #}
+    <h1>SENSEX Proposer v3 (paper)</h1>
+    <p class="sub">The live SENSEX Proposer's rules, replayed on paper at {{ proposer_v3_stats.lots or 100 }} lots, with
+      one entry filter: <strong>only with the day</strong>. A trade is taken only when SENSEX's last completed
+      1-minute close is at least {{ "%.0f"|format(proposer_v3_stats.with_day_pts or 75) }} points beyond the 09:15 close
+      in the trade's direction &mdash; calls when the day is up, puts when it is down. Everything else is the current
+      live bot: gap-rule regime read at the 09:15 close, 5-class print every five minutes, nearest weekly ATM
+      &#8723;200 ITM, &minus;30% premium floor, +100 / +40 spot points, opposite print above 0.45, 2.5% day target,
+      15:25. No Renko exit and no loss cap.</p>
+
+    <div class="formula">
+      Evidence status: a <strong>fit</strong>. The 75-point level was chosen on the sessions from 1 June to
+      8 October 2026; on those it cut the trades ending worse than &#8377;1 lakh from about 33 to 8 and the worst day
+      from about &minus;&#8377;10 lakh to &minus;&#8377;2.4 lakh, with most of the extra profit coming from June.
+      Sessions from <strong>{{ proposer_v3_stats.first_unseen or '2026-10-09' }}</strong> are the first it was not
+      chosen on. Fills inside a minute are estimates (recorded quote at the minute plus a fitted delta times the
+      SENSEX move along the bar's open &rarr; extreme &rarr; extreme &rarr; close path, half the recorded spread each
+      way, then charges), and totals move by lakhs with the second of the minute the entry lands on.
+    </div>
+
+    {% if proposer_v3_stats.get('error') %}
+      <p class="empty">Proposer v3 book unavailable ({{ proposer_v3_stats.error }}).</p>
+    {% elif not proposer_v3_rows %}
+      <p class="empty">No sessions recorded in this date range.</p>
+      <button type="button" id="proposer-v3-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="proposer-v3-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if proposer_v3_stats.net_total>0 else ('red' if proposer_v3_stats.net_total<0 else '') }}">&#8377;{{ "{:,.0f}".format(proposer_v3_stats.net_total) }}</div>
+          <div class="sub-k">&#8377;{{ "{:,.0f}".format(proposer_v3_stats.net_per_lot) }} per lot, after &#8377;{{ "{:,.0f}".format(proposer_v3_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Since {{ proposer_v3_stats.first_unseen }}</div>
+          <div class="v {{ 'green' if proposer_v3_stats.unseen_net>0 else ('red' if proposer_v3_stats.unseen_net<0 else '') }}">&#8377;{{ "{:,.0f}".format(proposer_v3_stats.unseen_net) }}</div>
+          <div class="sub-k">{{ proposer_v3_stats.unseen_days }} sessions the rule was not fitted on; &#8377;{{ "{:,.0f}".format(proposer_v3_stats.fitted_net) }} on the fitted ones</div></div>
+        <div class="card"><div class="k">Green days</div>
+          <div class="v">{{ proposer_v3_stats.green_pct }}%</div>
+          <div class="sub-k">{{ proposer_v3_stats.green_days }} green / {{ proposer_v3_stats.red_days }} red of {{ proposer_v3_stats.traded_days }} traded</div></div>
+        <div class="card"><div class="k">Trades</div>
+          <div class="v">{{ proposer_v3_stats.trades }}</div>
+          <div class="sub-k">over {{ proposer_v3_stats.days }} sessions</div></div>
+        <div class="card"><div class="k">Worst day</div>
+          <div class="v red">&#8377;{{ "{:,.0f}".format(proposer_v3_stats.worst_day) }}</div>
+          <div class="sub-k">worst trade &#8377;{{ "{:,.0f}".format(proposer_v3_stats.worst_trade) }}</div></div>
+        <div class="card"><div class="k">Max drawdown</div>
+          <div class="v">&#8377;{{ "{:,.0f}".format(proposer_v3_stats.max_dd) }}</div>
+          <div class="sub-k">on cumulative net, day by day</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="proposer-v3-backfill" class="btn-secondary">Refresh backfill</button>
+        <button type="button" id="proposer-v3-rebuild" class="btn-secondary">Rebuild from 1 June</button>
+        <span id="proposer-v3-backfill-status" class="muted"></span>
+        <span class="muted">Latest {{ proposer_v3_stats.latest.trade_date }}: {{ proposer_v3_stats.latest.status }}, through {{ (proposer_v3_stats.latest.through_ts or '')[11:16] }}</span>
+      </div>
+
+      <h2 style="margin-top:24px">By month</h2>
+      <table class="perf">
+        <thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead>
+        <tbody>
+        {% for m in proposer_v3_stats.months %}
+          <tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>
+            <td class="{{ 'green' if m.net_rs>0 else ('red' if m.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(m.net_rs) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(m.worst_day) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px">By exit</h2>
+      <table class="perf">
+        <thead><tr><th>Exit rule</th><th>Trades</th><th>Net &#8377;</th></tr></thead>
+        <tbody>
+        {% for b in proposer_v3_stats.by_rule %}
+          <tr><td>{{ b.rule }}</td><td>{{ b.n }}</td>
+            <td class="{{ 'green' if b.net_rs>0 else ('red' if b.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(b.net_rs) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if proposer_v3_trades %}
+      <table class="perf">
+        <thead><tr><th>Date</th><th>#</th><th>Signal</th><th>Contract</th><th>Entry &rarr; Exit</th><th>Spot in / out</th>
+          <th>Buy</th><th>Sell</th><th>Gross &#8377;</th><th>Charges</th><th>Net &#8377;</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in proposer_v3_trades %}
+          <tr>
+            <td>{{ t.trade_date }}</td><td>{{ t.seq }}</td><td>{{ t.signal }}</td>
+            <td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.side) }}</td>
+            <td>{{ t.entry_ts[11:19] }} &rarr; {{ t.exit_ts[11:19] if t.exit_ts else 'open' }}</td>
+            <td class="muted">{{ "%.0f"|format(t.entry_spot or 0) }} / {{ "%.0f"|format(t.exit_spot) if t.exit_spot is not none else '&mdash;' }}</td>
+            <td>{{ "%.2f"|format(t.entry_price or 0) }}</td>
+            <td>{{ "%.2f"|format(t.exit_price) if t.exit_price is not none else '&mdash;' }}</td>
+            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(t.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td>
+            <td>{% if not t.exit_ts %}<span class="amber">open</span>{% else %}{{ t.exit_rule }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="empty">No trades in this date range.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Gap</th><th>Expiry</th><th>Trades</th>
+          <th>Day target</th><th>Gross &#8377;</th><th>Charges</th><th>Net &#8377;</th><th>Book before</th></tr></thead>
+        <tbody>
+        {% for r in proposer_v3_rows %}
+          <tr>
+            <td>{{ r.trade_date }}</td>
+            <td class="{{ 'amber' if r.status in ['live', 'unavailable'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+            <td>{{ r.regime or '&mdash;' }}</td>
+            <td class="muted">{{ "%+.2f"|format(r.gap_pct) ~ '%' if r.gap_pct is not none else '&mdash;' }}</td>
+            <td>{{ r.expiry_code or '&mdash;' }}</td>
+            <td>{{ r.n_trades }}{% if r.n_losses %} <span class="muted">({{ r.n_losses }} loss)</span>{% endif %}</td>
+            <td>{{ '&check;' if r.day_banked else '&mdash;' }}</td>
+            <td>&#8377;{{ "{:,.0f}".format(r.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(r.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(r.book_gross_before or 0) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Paper only; this book never calls a broker order API. It trades the live bot's rules and signals
+        (strategy <code>proposer_dt25_v3</code>), so it is the like-for-like paper twin of the live preset
+        &ldquo;SENSEX Proposer v3&rdquo;.</p>
+    {% endif %}
