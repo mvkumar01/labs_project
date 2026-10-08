@@ -2,7 +2,7 @@
 
 Paper only. This module never calls a broker order API.
 
-The rules live in labs/engine/crudem_combo_engine.py, an exact port of Strategy Tester v2's saved
+The rules live in live/engine/crudem_combo_engine.py, an exact port of Strategy Tester v2's saved
 combination c8 (run crudem_20261005). Each run replays the rolled CRUDEOILM series up to the last
 completed minute and stores today's trades and every member signal, so it is idempotent and a
 restart loses nothing.
@@ -28,7 +28,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 
 from labs.engine import crude_macd_st_tracker as mcx
-from labs.engine import crudem_combo_engine as eng
+from live.engine import crudem_combo_engine as eng
 from labs.engine.charges import mcx_futures_round_trip_charges
 from storage.db import get_conn
 
@@ -324,6 +324,38 @@ def run_backfill(*, start_date: str = PAPER_START, end_date: str | None = None, 
 
 
 # ---------------------------------------------------------------- dashboard ---
+def dry_run_data(limit: int = 60) -> dict | None:
+    """What the real-time runner (live/crudem_runner.py, phase 0: dry run, no orders) has recorded
+    in live.db, for a side-by-side with this replayed book. None when it has recorded nothing."""
+    try:
+        from storage.live_db import get_live_conn
+        conn = get_live_conn()
+    except Exception:
+        return None
+    try:
+        cur = conn.execute(
+            "SELECT t.trade_date, t.cid, t.direction, t.entry_ts, t.exit_ts, t.entry_price, t.exit_price, "
+            "t.stop_price, t.target_price, t.exit_reason, t.net_rs, o.delay_s, o.bar_open "
+            "FROM live_crudem_trades t LEFT JOIN live_crudem_orders o ON o.trade_ref = t.trade_ref AND o.kind = 'entry' "
+            "WHERE t.book = 'dry' ORDER BY t.entry_ts DESC LIMIT ?", (int(limit),))
+        cols = [c[0] for c in cur.description]
+        trades = [dict(zip(cols, r)) for r in cur.fetchall()]
+    except Exception:                                   # the runner has not created its tables yet
+        return None
+    finally:
+        conn.close()
+    if not trades:
+        return None
+    closed = [t for t in trades if t["exit_ts"]]
+    delays = [t["delay_s"] for t in trades if t["delay_s"] is not None]
+    slips = [(t["entry_price"] - t["bar_open"]) * (1 if t["direction"] == "long" else -1)
+             for t in trades if t["bar_open"] is not None]
+    return {"trades": trades, "closed": len(closed),
+            "net_total": round(sum(float(t["net_rs"] or 0) for t in closed), 2),
+            "avg_delay": sum(delays) / len(delays) if delays else None,
+            "avg_slip": sum(slips) / len(slips) if slips else None, "slip_n": len(slips)}
+
+
 def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) -> tuple:
     """(daily rows, trades, stats) for the /labs/live tab, newest first."""
     cur = conn.execute(
@@ -376,7 +408,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         "max_dd": round(max_dd, 2),
         "worst_day": round(min((float(r["net_rs"] or 0) for r in days), default=0.0), 2),
         "by_member": sorted(by_member.values(), key=lambda b: order.index(b["cid"])),
-        "outcomes": outcomes, "paper_start": PAPER_START, "lots": LOTS,
+        "outcomes": outcomes, "paper_start": PAPER_START, "lots": LOTS, "dry": dry_run_data(),
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
     return rows, trades, stats

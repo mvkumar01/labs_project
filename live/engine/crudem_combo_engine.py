@@ -23,6 +23,9 @@ definition; this file follows it function by function:
 
 It is a FIT to 1 Jun - 6 Oct 2026, not a tested edge; nothing here may be tuned from paper or live
 results. tests/test_crudem_combo.py checks this port against the engine's 136 reference trades.
+
+It lives under live/engine so the real-money stack can use it (live/ never imports labs.engine);
+the paper book (labs/engine/crudem_combo_tracker.py) imports it from here.
 """
 from __future__ import annotations
 
@@ -622,3 +625,41 @@ def stitch(frames: list[tuple[str, date, pd.DataFrame]], today: date) -> tuple[p
             s[["open", "high", "low", "close"]] = s[["open", "high", "low", "close"]] + adj
         out.append(s)
     return pd.concat(out, ignore_index=True), rows
+
+
+# ------------------------------------------------------------------- live ---
+def pending_fires(frame: pd.DataFrame, start: date | str, cutoff: datetime) -> list[dict]:
+    """What a live runner needs at a minute boundary: the members that signal on the bar that has
+    just closed (the minute before ``cutoff``) and would enter at the open of ``cutoff``.
+
+    Judged only from bars complete before ``cutoff``. A member already in its own (replayed) trade,
+    inside its cooldown or with a gate off is not returned. The list is in priority order: with no
+    position held, the first one takes the trade. The stop distance of a percentage stop depends
+    on the fill, so only the ATR stop carries a distance here.
+    """
+    cutoff = pd.Timestamp(cutoff).floor("min")
+    f = frame[frame["ts"] < cutoff].sort_values("ts", kind="stable")
+    minute = cutoff.hour * 60 + cutoff.minute
+    if (f.empty or f["ts"].iloc[-1] != cutoff - pd.Timedelta(minutes=1) or cutoff.weekday() >= 5
+            or not (SESSION_OPEN_MIN < minute <= SESSION_CLOSE_MIN)):
+        return []
+    px = float(f["close"].iloc[-1])
+    # a stand-in for the bar about to open: it only makes the signal bar "have a next bar"
+    probe = pd.concat([f, pd.DataFrame([{"ts": cutoff, "open": px, "high": px, "low": px, "close": px,
+                                         "volume": 0.0}])], ignore_index=True)
+    out = replay(probe, start, (cutoff + pd.Timedelta(minutes=1)).to_pydatetime())
+    signal_ts = cutoff - pd.Timedelta(minutes=1)
+    fires = []
+    for m in MEMBERS:
+        for t in out["members"][m.cid]:
+            if t["signal_ts"] == signal_ts:
+                fires.append({"cid": m.cid, "side": m.side, "stop_kind": m.stop_kind, "stop_value": m.stop_value,
+                              "target_r": m.target_r, "signal_ts": signal_ts,
+                              "atr_stop_dist": t["stop_dist"] if m.stop_kind == "atr" else None})
+    return fires
+
+
+def levels(member: Member, entry_price: float, atr_stop_dist: float | None = None) -> tuple[float, float, float]:
+    """(stop distance, stop price, target price) for a fill at ``entry_price``."""
+    dist = entry_price * member.stop_value / 100.0 if member.stop_kind == "pct" else float(atr_stop_dist)
+    return dist, entry_price - member.side * dist, entry_price + member.side * member.target_r * dist
