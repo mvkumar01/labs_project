@@ -1,0 +1,170 @@
+{# Crypto cross-sectional taker-imbalance tab (included from live_strategy.html) #}
+    {% set st = crypto_xs_stats %}
+    <h1>Crypto taker imbalance (paper)</h1>
+    <p class="sub">Binance USDT perpetual futures. Each day at 00:00 UTC, take the {{ st.top or 50 }} most liquid
+      contracts and rank them by who was the aggressor over the last 24 hours: (taker buys &minus; taker sells) / volume.
+      Go long the most bought and short the most sold, in equal dollars (rank-weighted, market-neutral, gross exposure =
+      equity). The book held is the average of the last {{ st.hold_days or 7 }} daily targets, traded at the 01:00 UTC
+      price. Result = price moves &minus; funding paid &minus; {{ "%.0f"|format(st.cost_bps or 7) }} bps of everything
+      traded. Paper equity starts at ${{ "{:,.0f}".format(st.equity_start or 100000) }} on {{ st.paper_start or '2026-06-01' }}.</p>
+
+    <div class="formula">
+      Evidence status: <strong>a candidate being watched, not a proven edge</strong>. The rule comes from the crypto
+      research project and is fixed. Two periods are kept apart and must not be pooled:
+      <strong>1 June &ndash; 31 August 2026</strong> is covered by the research backtest (where it lost 6.6% to 30 August, its last complete day), and
+      this book has to reproduce it; <strong>from {{ st.first_unseen or '2026-09-01' }}</strong> the research had not seen
+      the data, and no parameter may be tuned on it. Limits of this ledger: the server cannot reach Binance's live
+      API, so it reads Binance's public archive &mdash; the book runs about two days behind; funding for the
+      current month is <em>estimated</em> from the premium index until Binance publishes the month's rates, then
+      replaced; and whether a contract could be traded at the rebalance is judged from its own bar (a price and
+      volume in the hour to 01:00), not from the exchange's status. Fills are assumed at the hourly close with a flat
+      cost; order-book depth in the smaller contracts is not modelled.
+    </div>
+
+    {% if st.get('error') %}
+      <p class="empty">Crypto book unavailable ({{ st.error }}).</p>
+    {% elif not st %}
+      <p class="empty">No days recorded yet. The paper loop builds the book from Binance's archive on its next cycle
+        (the first build downloads seven months of hourly bars and takes several minutes).</p>
+    {% else %}
+      {% set r = st.research %}{% set u = st.unseen %}{% set rc = st.reconcile %}
+      <div class="cards">
+        <div class="card"><div class="k">Paper equity</div>
+          <div class="v {{ 'green' if st.equity > st.equity_start else ('red' if st.equity < st.equity_start else '') }}">${{ "{:,.0f}".format(st.equity) }}</div>
+          <div class="sub-k">from ${{ "{:,.0f}".format(st.equity_start) }}; last completed day {{ st.last_done.decision_date if st.last_done else '—' }}</div></div>
+        <div class="card"><div class="k">June &ndash; August (research period)</div>
+          <div class="v {{ 'green' if r.days and r.net_pct>0 else ('red' if r.days and r.net_pct<0 else '') }}">{{ "%+.2f"|format(r.net_pct) if r.days else '—' }}%</div>
+          <div class="sub-k">{{ r.days }} days; {{ 'matches the research backtest day for day' if rc.ok else 'does NOT match the research backtest' }}</div></div>
+        <div class="card"><div class="k">Since {{ st.first_unseen }} (not seen)</div>
+          <div class="v {{ 'green' if u.days and u.net_pct>0 else ('red' if u.days and u.net_pct<0 else '') }}">{{ "%+.2f"|format(u.net_pct) if u.days else '—' }}%</div>
+          <div class="sub-k">{{ u.days }} days{% if u.days %}; {{ u.estimated_days }} with estimated funding{% endif %}</div></div>
+        <div class="card"><div class="k">Data</div>
+          <div class="v">{{ st.state.data_through or '—' }}</div>
+          <div class="sub-k">bars through this UTC day; actual funding through {{ st.state.funding_through or '—' }}{% if st.state.error %}; <span class="red">last check failed: {{ st.state.error }}</span>{% endif %}</div></div>
+      </div>
+
+      {% if not rc.ok %}
+        <p class="note"><span class="red">Reconciliation failed.</span> June &ndash; August should compound to
+          {% for m, v in rc.want.items() %}{{ m }} {{ "%+.2f"|format(v) }}%{{ ', ' if not loop.last }}{% endfor %}
+          (August to the 30th); this ledger has
+          {% for m, v in rc.got.items() %}{{ m }} {{ "%+.2f"|format(v) }}%{{ ', ' if not loop.last }}{% endfor %}.
+          Treat everything after August as untrusted until this is resolved.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">The two periods</h2>
+      <table class="perf">
+        <thead><tr><th></th><th>Days</th><th>Net (compounded)</th><th>Price moves</th><th>Funding</th><th>Costs</th>
+          <th>Up days</th><th>Worst day</th><th>Best day</th><th>Deepest fall</th><th>Traded a day</th><th>Flagged days</th></tr></thead>
+        <tbody>
+        {% for label, p in [('June &ndash; August (research period)', r), ('September onward (not seen)', u)] %}
+          <tr>
+            <td>{{ label|safe }}</td>
+            {% if p.days %}
+            <td>{{ p.days }}</td>
+            <td class="{{ 'green' if p.net_pct>0 else ('red' if p.net_pct<0 else '') }}">{{ "%+.2f"|format(p.net_pct) }}%</td>
+            <td>{{ "%+.2f"|format(p.gross_pct) }}%</td><td>{{ "%+.2f"|format(p.funding_pct) }}%</td>
+            <td>{{ "%+.2f"|format(-p.cost_pct) }}%</td>
+            <td>{{ p.up_days }} of {{ p.days }}</td>
+            <td>{{ "%+.2f"|format(p.worst_pct) }}% <span class="muted">{{ p.worst_day }}</span></td>
+            <td>{{ "%+.2f"|format(p.best_pct) }}% <span class="muted">{{ p.best_day }}</span></td>
+            <td>{{ "%+.2f"|format(p.max_drawdown_pct) }}%</td>
+            <td>{{ "%.0f"|format(100 * p.turnover) }}% of equity</td>
+            <td>{{ p.flagged }}</td>
+            {% else %}<td colspan="11" class="muted">no completed days yet</td>{% endif %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Price moves, funding and costs are sums of daily figures, in % of equity; net is compounded, so the
+        three do not add up to it exactly.</p>
+
+      <h2 style="margin-top:24px">Month by month</h2>
+      <table class="perf">
+        <thead><tr><th>Month</th><th>Days</th><th>Net (compounded)</th><th>Price moves</th><th>Funding</th><th>Costs</th><th>Funding source</th></tr></thead>
+        <tbody>
+        {% for p in [r, u] %}{% for m in p.months or [] %}
+          <tr>
+            <td>{{ m.month }}{% if m.month >= st.first_unseen[:7] %} <span class="muted">&bull;</span>{% endif %}</td>
+            <td>{{ m.days }}</td>
+            <td class="{{ 'green' if m.net_pct>0 else ('red' if m.net_pct<0 else '') }}">{{ "%+.2f"|format(m.net_pct) }}%</td>
+            <td>{{ "%+.2f"|format(m.gross_pct) }}%</td><td>{{ "%+.2f"|format(m.funding_pct) }}%</td>
+            <td>{{ "%+.2f"|format(-m.cost_pct) }}%</td>
+            <td>{% if m.estimated_days %}<span class="amber">estimated on {{ m.estimated_days }} of {{ m.days }} days</span>{% else %}actual{% endif %}</td>
+          </tr>
+        {% endfor %}{% endfor %}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px">Flags</h2>
+      {% if st.flagged %}
+      <table class="perf">
+        <thead><tr><th>Day</th><th>Net</th><th>What</th></tr></thead>
+        <tbody>
+        {% for f in st.flagged %}
+          <tr><td>{{ f.decision_date }}</td>
+            <td>{{ "%+.2f"|format(100 * f.net) if f.net is not none else '—' }}%</td><td>{{ f.flags }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="empty">None: no contract has moved the book by more than 3% of equity in a day, and every contract held
+          had a price and volume at its rebalance.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">The book now ({{ st.latest.decision_date }}{{ '' if st.latest.complete else ', hold in progress' }})</h2>
+      <p class="note">{{ st.latest.n_held }} contracts held: today's universe is {{ st.latest.n_eligible }}, the rest are
+        carried from the last {{ st.hold_days }} days' rankings;
+        long {{ "%.0f"|format(100 * (st.latest.long_exposure or 0)) }}% / short {{ "%.0f"|format(100 * ((st.latest.exposure or 0) - (st.latest.long_exposure or 0))) }}% of equity;
+        {{ "%.0f"|format(100 * (st.latest.turnover or 0)) }}% of equity traded at this rebalance.</p>
+      <table class="perf">
+        <thead><tr><th>Longs</th><th>Weight</th><th>24h imbalance</th><th></th><th>Shorts</th><th>Weight</th><th>24h imbalance</th></tr></thead>
+        <tbody>
+        {% set longs = crypto_xs_book|selectattr('weight', 'gt', 0)|list %}
+        {% set shorts = crypto_xs_book|selectattr('weight', 'lt', 0)|list|reverse|list %}
+        {% for i in range(12) %}
+          {% set a = longs[i] if i < longs|length else none %}{% set b = shorts[i] if i < shorts|length else none %}
+          {% if a or b %}
+          <tr>
+            <td>{{ a.symbol if a else '' }}</td><td class="green">{{ "%+.2f"|format(100 * a.weight) ~ '%' if a else '' }}</td>
+            <td class="muted">{{ "%+.3f"|format(a.signal) if a and a.signal is not none else '' }}</td><td></td>
+            <td>{{ b.symbol if b else '' }}</td><td class="red">{{ "%+.2f"|format(100 * b.weight) ~ '%' if b else '' }}</td>
+            <td class="muted">{{ "%+.3f"|format(b.signal) if b and b.signal is not none else '' }}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">The twelve largest on each side. A weight is a share of equity; the imbalance is the latest
+        24-hour reading, while the weight averages the last {{ st.hold_days }} days' rankings.</p>
+
+      <h2 style="margin-top:24px">Day by day</h2>
+      <table class="perf">
+        <thead><tr><th>Decision (00:00 UTC)</th><th>Universe</th><th>Held</th><th>Gross exposure</th><th>Traded</th><th>Price moves</th>
+          <th>Funding</th><th>Costs</th><th>Net</th><th>Equity</th><th>Largest contract</th><th>Flags</th></tr></thead>
+        <tbody>
+        {% for d in crypto_xs_rows %}
+          <tr>
+            <td>{{ d.decision_date }}{% if d.decision_date >= st.first_unseen %} <span class="muted">&bull;</span>{% endif %}{% if not d.complete %} <span class="amber">open</span>{% endif %}</td>
+            <td class="muted">{{ d.n_eligible }}</td><td class="muted">{{ d.n_held }}</td>
+            <td class="muted">{{ "%.2f"|format(d.exposure or 0) }}</td>
+            <td class="muted">{{ "%.0f"|format(100 * (d.turnover or 0)) }}%</td>
+            {% if d.complete %}
+            <td>{{ "%+.2f"|format(100 * d.gross) }}%</td>
+            <td>{{ "%+.2f"|format(100 * d.funding) }}%{% if d.funding_source != 'actual' %} <span class="amber">est</span>{% endif %}</td>
+            <td>{{ "%+.3f"|format(-100 * d.cost) }}%</td>
+            <td class="{{ 'green' if d.net>0 else ('red' if d.net<0 else '') }}">{{ "%+.2f"|format(100 * d.net) }}%</td>
+            <td>${{ "{:,.0f}".format(d.equity) }}</td>
+            <td class="muted">{{ d.top_symbol or '' }} {{ "%+.2f"|format(100 * d.top_contribution) ~ '%' if d.top_contribution is not none else '' }}</td>
+            {% else %}
+            <td colspan="6" class="muted">held until the next 01:00 UTC price is published; costs {{ "%.3f"|format(100 * (d.cost or 0)) }}%</td>
+            {% endif %}
+            <td>{{ d.flags or '' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">&bull; = after the research data ended. <span class="amber">est</span> = funding estimated from the
+        premium index, replaced when Binance publishes the month's rates. A day is stamped by its 00:00 UTC decision and
+        covers 01:00 UTC to 01:00 UTC the next day. Last checked {{ st.state.checked_at or '—' }} (the paper loop
+        checks the archive every half hour). Paper only; this book has no exchange credentials and places no orders.</p>
+    {% endif %}

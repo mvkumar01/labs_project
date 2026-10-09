@@ -51,6 +51,7 @@ def main() -> None:
     from labs.engine.crudem_combo_tracker import run_live as run_crudem_combo_live
     from labs.engine.gold_cci_tracker import run_live as run_gold_cci_live
     from labs.engine.btc_rsi_roc_tracker import run_live as run_btc_rsi_roc_live
+    from labs.engine.crypto_xs_tracker import run_live as run_crypto_xs_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
@@ -72,6 +73,7 @@ def main() -> None:
         "crudem_combo": None,
         "gold_cci": None,
         "btc_rsi_roc": None,
+        "crypto_xs": None,
     }
     while True:
         now = datetime.now(IST)
@@ -153,6 +155,15 @@ def main() -> None:
                 last_log["btc_rsi_roc"] = shown
         except Exception as exc:
             print(f"[paper-loop:btc_rsi_roc] error: {type(exc).__name__}: {exc}", flush=True)
+        # The crypto cross-sectional book reads Binance's public archive, published about a day
+        # late. The call only starts a background check when one is due, so it never holds the loop.
+        try:
+            res = run_crypto_xs_live(now)
+            if res != last_log["crypto_xs"]:
+                print(f"[paper-loop:crypto_xs] {now.strftime('%H:%M')} {res}", flush=True)
+                last_log["crypto_xs"] = res
+        except Exception as exc:
+            print(f"[paper-loop:crypto_xs] error: {type(exc).__name__}: {exc}", flush=True)
         _time.sleep(POLL_MARKET)
 
 

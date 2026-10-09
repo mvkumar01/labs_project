@@ -373,6 +373,7 @@ LIVE_TABS = {
     "proposer_px": "Sensex Proposer + Renko",
     "proposer_v3": "Sensex Proposer v3",
     "infy_tcs_pair": "INFY / TCS pair",
+    "crypto_xs": "Crypto taker imbalance",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
     "gold_cci": "GOLD CCI short",
 }
@@ -403,6 +404,7 @@ def live_strategy():
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
     infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
+    crypto_xs_rows, crypto_xs_book, crypto_xs_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -880,6 +882,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # Crypto cross-sectional taker imbalance (paper, Binance archive): its own ledger and tab.
+        if active_live_tab == "crypto_xs":
+            try:
+                from labs.engine.crypto_xs_tracker import tab_data as crypto_xs_tab_data
+                crypto_xs_rows, crypto_xs_book, crypto_xs_stats = crypto_xs_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    crypto_xs_stats = {"error": str(exc)}
+
         # Infosys / TCS divergence pair (paper, daily bars): its own ledger and tab.
         if active_live_tab == "infy_tcs_pair":
             try:
@@ -1109,6 +1121,9 @@ def live_strategy():
         infy_tcs_rows=infy_tcs_rows,
         infy_tcs_trades=infy_tcs_trades,
         infy_tcs_stats=infy_tcs_stats,
+        crypto_xs_rows=crypto_xs_rows,
+        crypto_xs_book=crypto_xs_book,
+        crypto_xs_stats=crypto_xs_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
