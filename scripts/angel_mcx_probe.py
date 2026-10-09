@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -108,7 +109,9 @@ def main() -> int:
             for product in ("INTRADAY", "CARRYFORWARD"):
                 for qty in qtys:
                     payload = {"positions": [{"exchange": "MCX", "qty": qty, "price": 0, "productType": product,
-                                              "token": str(ins.get("token")), "tradeType": "SELL"}]}
+                                              "token": str(ins.get("token")), "tradeType": "SELL",
+                                              "orderType": "MARKET"}]}      # AB4033 without an order type
+                    time.sleep(0.6)                                          # stay under Angel's rate limit
                     try:
                         resp = _margin(smart, payload) or {}
                         data = resp.get("data") or {}
