@@ -51,6 +51,37 @@
           marked {{ "%.0f"|format(t.exit_price or 0) }} (&#8377;{{ "{:,.0f}".format(t.gross_rs or 0) }} before costs).</p>
       {% endfor %}
 
+      {% set dry = gold_cci_stats.dry %}
+      <h2 style="margin-top:24px">Real-time dry run (GOLDM, no orders)</h2>
+      {% if dry %}
+      <p class="note">The real-time runner decides at each minute boundary on GOLD's candle and "fills" one lot of
+        GOLDM (100 g, &#8377;10 per rupee) at the price read at that moment; stop and target are watched on polled
+        prices. {{ dry.closed }} closed, net &#8377;{{ "{:,.0f}".format(dry.net_total) }}{% if dry.avg_delay is not none %},
+        average decision delay {{ "%.1f"|format(dry.avg_delay) }} s{% endif %}.
+        {% for k, v in dry.decisions.items() %}{{ v }} {{ k.replace('_', ' ') }}{{ ', ' if not loop.last else '.' }}{% endfor %}</p>
+      {% if dry.trades %}
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Contract</th><th>Signal</th><th>Entry &rarr; Exit</th><th>Delay</th><th>Sold</th>
+          <th>Bought</th><th>Stop</th><th>Target</th><th>Net &#8377;</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in dry.trades %}
+          <tr><td>{{ t.trade_date }}</td><td>{{ t.symbol }}</td><td class="muted">{{ t.signal_ts[11:16] }}</td>
+            <td>{{ t.entry_ts[11:19] }} &rarr; {{ t.exit_ts[11:19] if t.exit_ts else 'open' }}</td>
+            <td class="muted">{{ "%.0f s"|format(t.delay_s) if t.delay_s is not none else '&mdash;' }}</td>
+            <td>{{ "%.0f"|format(t.entry_price) }}</td>
+            <td>{{ "%.0f"|format(t.exit_price) if t.exit_price is not none else '&mdash;' }}</td>
+            <td class="muted">{{ "%.0f"|format(t.stop_price) }}{% if t.stop_moved_at %} &rarr; entry {{ t.stop_moved_at[11:16] }}{% endif %}</td>
+            <td class="muted">{{ "%.0f"|format(t.target_price) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">{{ '&#8377;' ~ "{:,.0f}".format(t.net_rs) if t.net_rs is not none else '&mdash;' }}</td>
+            <td>{% if not t.exit_ts %}<span class="amber">open</span>{% else %}{{ t.exit_reason }}{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+      {% else %}
+      <p class="note">The real-time runner has recorded nothing yet. It starts with the session of 9 October 2026.</p>
+      {% endif %}
+
       <h2 style="margin-top:24px">By month</h2>
       <table class="perf">
         <thead><tr><th>Month</th><th>Sessions</th><th>Up days</th><th>Down days</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead>

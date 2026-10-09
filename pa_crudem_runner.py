@@ -1,7 +1,9 @@
-"""PythonAnywhere-safe launcher for the CRUDEOILM combination real-time runner (phase 0: dry run).
+"""PythonAnywhere-safe launcher for the MCX real-time DRY runners (phase 0): the CRUDEOILM
+combination and the gold CCI short, stepped in one process (live/mcx_dry_loop.py).
 
-Its own always-on PA task. Phase 0 has no broker code path: it reads Kite market data and writes
-its decisions to live.db (live_crudem_* tables). See live/crudem_runner.py.
+One always-on PA task. Phase 0 has no broker code path: the runners read Kite market data and
+write their decisions to live.db (live_crudem_* and live_gold_* tables). See live/crudem_runner.py
+and live/gold_runner.py.
 """
 from pathlib import Path
 import runpy
@@ -15,4 +17,4 @@ from live.env_loader import load_private_env
 
 if __name__ == "__main__":
     load_private_env(BASE_DIR)
-    runpy.run_module("live.crudem_runner", run_name="__main__")
+    runpy.run_module("live.mcx_dry_loop", run_name="__main__")

@@ -218,6 +218,31 @@ def replay(frame: pd.DataFrame, start: date | str, cutoff: datetime | None = Non
     return {"grid": g, "trades": trades, "signals": signals}
 
 
+def pending_fire(frame: pd.DataFrame, start: date | str, cutoff: datetime) -> dict | None:
+    """What a live runner needs at a minute boundary: does the rule signal on the bar that has just
+    closed (the minute before ``cutoff``), to enter at the open of ``cutoff``?
+
+    Judged only from bars complete before ``cutoff``. Returns None when there is no signal, a gate
+    is off, the cooldown is running or the replayed book is already in a trade."""
+    cutoff = pd.Timestamp(cutoff).floor("min")
+    f = frame[frame["ts"] < cutoff].sort_values("ts", kind="stable")
+    minute = cutoff.hour * 60 + cutoff.minute
+    if (f.empty or f["ts"].iloc[-1] != cutoff - pd.Timedelta(minutes=1) or cutoff.weekday() >= 5
+            or not (base.SESSION_OPEN_MIN < minute <= base.SESSION_CLOSE_MIN)):
+        return None
+    px = float(f["close"].iloc[-1])
+    # a stand-in for the bar about to open: it only makes the signal bar "have a next bar"
+    probe = pd.concat([f, pd.DataFrame([{"ts": cutoff, "open": px, "high": px, "low": px, "close": px,
+                                         "volume": 0.0}])], ignore_index=True)
+    out = replay(probe, start, (cutoff + pd.Timedelta(minutes=1)).to_pydatetime())
+    signal_ts = cutoff - pd.Timedelta(minutes=1)
+    for s in out["signals"]:
+        if s["signal_ts"] == signal_ts and s["outcome"] == "taken":
+            return {"signal_ts": signal_ts, "cci": s["cci"], "rsi": s["rsi"], "plus_di": s["plus_di"],
+                    "minus_di": s["minus_di"]}
+    return None
+
+
 def levels(entry_price: float) -> tuple[float, float, float]:
     """(stop distance, stop price, target price) for a short filled at ``entry_price``."""
     dist = entry_price * STOP_PCT / 100.0

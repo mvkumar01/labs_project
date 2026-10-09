@@ -361,6 +361,36 @@ def run_backfill(*, start_date: str = PAPER_START, end_date: str | None = None, 
 
 
 # ---------------------------------------------------------------- dashboard ---
+def dry_run_data(limit: int = 60) -> dict | None:
+    """What the real-time runner (live/gold_runner.py, phase 0: dry run on GOLDM, no orders) has
+    recorded in live.db, for a side-by-side with this replayed book. None when it has nothing."""
+    try:
+        from storage.live_db import get_live_conn
+        conn = get_live_conn()
+    except Exception:
+        return None
+    try:
+        cur = conn.execute(
+            "SELECT t.trade_date, t.symbol, t.signal_symbol, t.qty, t.signal_ts, t.entry_ts, t.exit_ts, t.entry_price, "
+            "t.exit_price, t.stop_price, t.target_price, t.stop_moved_at, t.exit_reason, t.net_rs, o.delay_s "
+            "FROM live_gold_trades t LEFT JOIN live_gold_orders o ON o.trade_ref = t.trade_ref AND o.kind = 'entry' "
+            "WHERE t.book = 'dry' ORDER BY t.entry_ts DESC LIMIT ?", (int(limit),))
+        cols = [c[0] for c in cur.description]
+        trades = [dict(zip(cols, r)) for r in cur.fetchall()]
+        held = conn.execute("SELECT outcome, COUNT(*) FROM live_gold_decisions WHERE book='dry' GROUP BY outcome").fetchall()
+    except Exception:                                   # the runner has not created its tables yet
+        return None
+    finally:
+        conn.close()
+    if not trades and not held:
+        return None
+    closed = [t for t in trades if t["exit_ts"]]
+    delays = [t["delay_s"] for t in trades if t["delay_s"] is not None]
+    return {"trades": trades, "closed": len(closed), "decisions": dict(held),
+            "net_total": round(sum(float(t["net_rs"] or 0) for t in closed), 2),
+            "avg_delay": sum(delays) / len(delays) if delays else None}
+
+
 def _block(rows: list[dict], trades: list[dict]) -> dict:
     """Figures of one stretch of the book (rows = final/live sessions, trades = their closed trades)."""
     wins = [t for t in trades if float(t["net_rs"] or 0) > 0]
@@ -432,7 +462,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         "months": [months[k] for k in sorted(months, reverse=True)],
         "by_reason": sorted(by_reason.values(), key=lambda b: -b["n"]),
         "outcomes": outcomes, "paper_start": PAPER_START, "first_unseen": FIRST_UNSEEN, "lots": LOTS, "qty": QTY,
-        "exit_desc": eng.EXIT_DESC,
+        "exit_desc": eng.EXIT_DESC, "dry": dry_run_data(),
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
     return rows, trades, stats
