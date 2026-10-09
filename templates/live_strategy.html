@@ -154,6 +154,9 @@
       </table>
     {% endif %}
 
+    {% elif active_live_tab == 'infy_tcs_pair' %}
+    {% include '_infy_tcs_pair.html' %}
+
     {% elif active_live_tab == 'proposer_v3' %}
     {% include '_proposer_v3.html' %}
 
@@ -1040,6 +1043,30 @@
       }
     });
   }
+</script>
+{% endif %}
+{% if active_live_tab == 'infy_tcs_pair' %}
+<script>
+  (function () {
+    const button = document.getElementById('infy-tcs-refresh');
+    const status = document.getElementById('infy-tcs-refresh-status');
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      status.textContent = 'Fetching daily candles...';
+      try {
+        const response = await fetch('/labs/api/infy_tcs_pair/refresh', {method: 'POST'});
+        const payload = await response.json();
+        if (!response.ok || payload.error) {
+          throw new Error(payload.error || ('HTTP ' + response.status));
+        }
+        window.location.reload();
+      } catch (error) {
+        status.textContent = 'Refresh failed: ' + error.message;
+        button.disabled = false;
+      }
+    });
+  })();
 </script>
 {% endif %}
 {% if active_live_tab == 'proposer_v3' %}

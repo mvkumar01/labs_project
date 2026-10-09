@@ -372,6 +372,7 @@ LIVE_TABS = {
     "sensex_alpha": "Sensex_alpha",
     "proposer_px": "Sensex Proposer + Renko",
     "proposer_v3": "Sensex Proposer v3",
+    "infy_tcs_pair": "INFY / TCS pair",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
     "gold_cci": "GOLD CCI short",
 }
@@ -401,6 +402,7 @@ def live_strategy():
     gold_cci_rows, gold_cci_trades, gold_cci_stats = [], [], {}
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
+    infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -878,6 +880,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # Infosys / TCS divergence pair (paper, daily bars): its own ledger and tab.
+        if active_live_tab == "infy_tcs_pair":
+            try:
+                from labs.engine.infy_tcs_pair_tracker import tab_data as infy_tcs_tab_data
+                infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = infy_tcs_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    infy_tcs_stats = {"error": str(exc)}
+
         # SENSEX Proposer v3 - only with the day (paper): its own ledger and tab.
         if active_live_tab == "proposer_v3":
             try:
@@ -1094,12 +1106,25 @@ def live_strategy():
         proposer_v3_rows=proposer_v3_rows,
         proposer_v3_trades=proposer_v3_trades,
         proposer_v3_stats=proposer_v3_stats,
+        infy_tcs_rows=infy_tcs_rows,
+        infy_tcs_trades=infy_tcs_trades,
+        infy_tcs_stats=infy_tcs_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@labs_bp.route("/api/infy_tcs_pair/refresh", methods=["POST"])
+def infy_tcs_pair_refresh():
+    """Fetch the latest daily candles and rebuild the paper-only Infosys / TCS pair book."""
+    from labs.engine.infy_tcs_pair_tracker import run_day
+    try:
+        return jsonify(run_day(force=True))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @labs_bp.route("/api/proposer_v3/backfill", methods=["POST"])

@@ -1,0 +1,104 @@
+{# Infosys / TCS divergence pair tab (included from live_strategy.html) #}
+    <h1>Infosys / TCS pair (paper)</h1>
+    <p class="sub">Daily bars. When Infosys and TCS drift unusually far apart, bet on them coming back together:
+      the gap is ln(INFY close) &minus; ln(TCS close), measured against its own last {{ infy_tcs_stats.window or 60 }} days
+      (z-score). At a close with |z| &ge; {{ infy_tcs_stats.entry_z or 2 }}, enter at the next day's open with equal rupees on
+      each leg &mdash; short the rich one, long the cheap one. Exit at the next open once z has crossed back through its
+      average, or after {{ infy_tcs_stats.max_hold or 20 }} trading days. No stop-loss, one position at a time.
+      &#8377;{{ "{:,.0f}".format(infy_tcs_stats.notional or 1000000) }} on each leg; costs {{ infy_tcs_stats.cost_pct or 0.2 }}% a round trip.</p>
+
+    <div class="formula">
+      Evidence status: a <strong>lead, not a proven edge</strong>. Walk-forward on three years of daily data, the test
+      period (January 2025 &ndash; October 2026) made +22% per rupee of one leg in 12 trades, 8 of them winners. But the
+      15 months before it lost 7&ndash;9%, all the profit came from seven consecutive winners, and over the full three
+      years the average trade is not distinguishable from zero. The book is filled back to
+      {{ infy_tcs_stats.paper_start or '2026-06-01' }}; sessions from <strong>{{ infy_tcs_stats.first_unseen or '2026-10-12' }}</strong>
+      are the first the research had not seen. Not modelled: this uses cash share prices and fractional shares, while a
+      real version needs stock futures on both legs (lot sizes, basis and roll costs); and it is not confirmed whether
+      the daily candles are adjusted for dividends &mdash; an ex-dividend drop would look like a move in the gap.
+    </div>
+
+    {% if infy_tcs_stats.get('error') %}
+      <p class="empty">Pair book unavailable ({{ infy_tcs_stats.error }}).</p>
+    {% elif not infy_tcs_rows %}
+      <p class="empty">No sessions recorded yet.</p>
+      <button type="button" id="infy-tcs-refresh" class="btn-secondary">Build from 1 June</button>
+      <span id="infy-tcs-refresh-status" class="muted"></span>
+    {% else %}
+      {% set lz = infy_tcs_stats.latest_z %}
+      <div class="cards">
+        <div class="card"><div class="k">Gap now (z)</div>
+          <div class="v {{ 'amber' if lz and (lz.z >= 2 or lz.z <= -2) else '' }}">{{ "%+.2f"|format(lz.z) if lz else '&mdash;' }}</div>
+          <div class="sub-k">{% if lz %}at the close of {{ lz.trade_date }}; a signal needs &plusmn;{{ infy_tcs_stats.entry_z }}{% endif %}</div></div>
+        <div class="card"><div class="k">Position</div>
+          <div class="v">{{ infy_tcs_stats.latest.position or 'flat' }}</div>
+          <div class="sub-k">{{ infy_tcs_stats.pending or 'no order due at the next open' }}</div></div>
+        <div class="card"><div class="k">Closed trades</div>
+          <div class="v {{ 'green' if infy_tcs_stats.net_total>0 else ('red' if infy_tcs_stats.net_total<0 else '') }}">&#8377;{{ "{:,.0f}".format(infy_tcs_stats.net_total) }}</div>
+          <div class="sub-k">{{ infy_tcs_stats.trades }} trades, {{ infy_tcs_stats.wins }} won, {{ "%+.2f"|format(infy_tcs_stats.net_pct_total) }}% of one leg after costs</div></div>
+        <div class="card"><div class="k">Since {{ infy_tcs_stats.first_unseen }} (not seen)</div>
+          <div class="v {{ 'green' if infy_tcs_stats.unseen_net>0 else ('red' if infy_tcs_stats.unseen_net<0 else '') }}">&#8377;{{ "{:,.0f}".format(infy_tcs_stats.unseen_net) }}</div>
+          <div class="sub-k">{{ infy_tcs_stats.unseen_trades }} closed trades entered after the research data ended</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="infy-tcs-refresh" class="btn-secondary">Refresh</button>
+        <span id="infy-tcs-refresh-status" class="muted"></span>
+        <span class="muted">Latest {{ infy_tcs_stats.latest.trade_date }}{{ '' if infy_tcs_stats.latest.final else ' (session in progress)' }} &middot;
+          in a trade on {{ infy_tcs_stats.days_in_trade }} of {{ infy_tcs_stats.days }} sessions</span>
+      </div>
+
+      {% for t in infy_tcs_stats.open_trades %}
+        <p class="note"><span class="amber">Open</span> since {{ t.entry_date }}: long {{ t.long_leg }} / short {{ t.short_leg }}
+          (signal z {{ "%+.2f"|format(t.signal_z) }}), day {{ t.days + 1 }}, marked {{ "%+.2f"|format(t.net_pct) }}% after costs
+          (&#8377;{{ "{:,.0f}".format(t.net_rs) }}).</p>
+      {% endfor %}
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if infy_tcs_trades %}
+      <table class="perf">
+        <thead><tr><th>Signal</th><th>z</th><th>Long / short</th><th>Entry (open)</th><th>INFY</th><th>TCS</th><th>Exit (open)</th>
+          <th>INFY</th><th>TCS</th><th>Days</th><th>Gross %</th><th>Net %</th><th>Net &#8377;</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in infy_tcs_trades %}
+          <tr>
+            <td>{{ t.signal_date }}</td><td>{{ "%+.2f"|format(t.signal_z) }}</td>
+            <td>{{ t.long_leg }} / {{ t.short_leg }}</td>
+            <td>{{ t.entry_date }}{% if t.entry_date >= infy_tcs_stats.first_unseen %} <span class="muted">&bull;</span>{% endif %}</td>
+            <td class="muted">{{ "%.1f"|format(t.a_entry) }}</td><td class="muted">{{ "%.1f"|format(t.b_entry) }}</td>
+            <td>{{ t.exit_date or 'open' }}</td>
+            <td class="muted">{{ "%.1f"|format(t.a_exit) if t.a_exit is not none else '&mdash;' }}</td>
+            <td class="muted">{{ "%.1f"|format(t.b_exit) if t.b_exit is not none else '&mdash;' }}</td>
+            <td>{{ t.days }}</td>
+            <td>{{ "%+.2f"|format(t.gross_pct or 0) }}</td>
+            <td class="{{ 'green' if (t.net_pct or 0)>0 else ('red' if (t.net_pct or 0)<0 else '') }}">{{ "%+.2f"|format(t.net_pct or 0) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td>
+            <td>{% if t.status == 'open' %}<span class="amber">open</span>{% else %}{{ t.exit_reason }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p class="empty">No trades entered since {{ infy_tcs_stats.paper_start }}.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Day by day</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>INFY open</th><th>INFY close</th><th>TCS open</th><th>TCS close</th><th>z</th><th>Position</th><th>Event</th></tr></thead>
+        <tbody>
+        {% for r in infy_tcs_rows %}
+          <tr>
+            <td>{{ r.trade_date }}{% if not r.final %} <span class="amber">live</span>{% endif %}</td>
+            <td class="muted">{{ "%.1f"|format(r.a_open) }}</td>
+            <td>{{ "%.1f"|format(r.a_close) if r.a_close is not none else '&mdash;' }}</td>
+            <td class="muted">{{ "%.1f"|format(r.b_open) }}</td>
+            <td>{{ "%.1f"|format(r.b_close) if r.b_close is not none else '&mdash;' }}</td>
+            <td class="{{ 'amber' if r.z is not none and (r.z >= 2 or r.z <= -2) else '' }}">{{ "%+.2f"|format(r.z) if r.z is not none else '&mdash;' }}</td>
+            <td class="{{ 'muted' if r.position == 'flat' else '' }}">{{ r.position }}</td>
+            <td>{{ r.event or '' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">&bull; = entered after the research data ended. Paper only; this book never calls a broker order API.</p>
+    {% endif %}
