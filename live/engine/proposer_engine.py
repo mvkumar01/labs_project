@@ -16,7 +16,8 @@ ENTRY (flat, only on a FRESH 10-min print, consumed when attempted):
     engine - added 2026-10-08: the entries that are not with the day carried the big losers
     (alphaIMB research, REBUILD.md sec. 18).
 EXIT (open), first match wins:
-  loss_floor  - premium down to the floor (-30% in the live variant; the source default is -15%)
+  loss_floor  - premium down to the floor (-30% in the live variant, -20% in v3; the source default
+                is -15%)
   spot_target - SENSEX moved spot_target_pts in favour (decisive width only for the
                 regime-driven entry, neutral width otherwise), less a 1-pt tolerance
   signal_flip - a gate-passing opposite print (exit, no cooldown so the reverse can follow)
@@ -40,9 +41,13 @@ STRATEGY_VERSION = "proposer_dt25"
 # The same engine with the price-action exit and the one-loss-per-day stop switched on.
 STRATEGY_VERSION_PX = "proposer_dt25_px"
 PX_BAR_EXIT = "renko-50"
-# v3: the base rules (no bar exit, no loss cap) taking only entries that go with the day.
+# v3: the base rules (no bar exit, no loss cap) taking only entries that go with the day, with the
+# premium floor at -20%: none of v3's winning trades in the 1 Jun - 8 Oct 2026 replay dipped below
+# -20% before winning, while most of its sizeable losers passed it on the way to -30%
+# (alphaIMB research, REBUILD.md sec. 20).
 STRATEGY_VERSION_V3 = "proposer_dt25_v3"
 V3_WITH_DAY_PTS = 75.0
+V3_LOSS_FLOOR_PCT = -0.20
 
 
 @dataclass(frozen=True)
@@ -75,7 +80,7 @@ def params_for(strategy_version: Optional[str]) -> ProposerParams:
     if str(strategy_version or "") == STRATEGY_VERSION_PX:
         return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1)
     if str(strategy_version or "") == STRATEGY_VERSION_V3:
-        return ProposerParams(with_day_pts=V3_WITH_DAY_PTS)
+        return ProposerParams(with_day_pts=V3_WITH_DAY_PTS, loss_floor_pct=V3_LOSS_FLOOR_PCT)
     return ProposerParams()
 
 

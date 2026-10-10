@@ -57,7 +57,8 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # one-loss-per-day stop); a runner on the v1 contract must not place its orders.
 # v3 (2026-10-08): gap regime read at the close of the broker's 09:15 candle.
 # v4 (2026-10-08): the runner also trades proposer_dt25_v3 (entries only with the day).
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v4"
+# v5 (2026-10-10): proposer_dt25_v3's premium floor is -20%.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v5"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

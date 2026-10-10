@@ -3,14 +3,16 @@
 Paper only. This module never calls a broker order API.
 
 v3 is the live SENSEX Proposer (`proposer_dt25`: gap-rule regime read at the 09:15 close, 5-class
-print, -30% floor, +100 / +40 spot points, opposite print, 2.5% day target, 15:25) with one entry
-filter: a trade is taken only WITH THE DAY - SENSEX's last completed 1-minute close must be at
-least 75 points beyond the 09:15 close in the trade's direction. No Renko exit, no loss cap.
+print, +100 / +40 spot points, opposite print, 2.5% day target, 15:25) with one entry filter - a
+trade is taken only WITH THE DAY: SENSEX's last completed 1-minute close must be at least 75 points
+beyond the 09:15 close in the trade's direction - and the premium floor at -20% (the other presets:
+-30%; changed 2026-10-10, the book was rebuilt from 1 June then). No Renko exit, no loss cap.
 Live preset `proposer_dt25_v3` runs the same engine parameters.
 
 Why: on 1 Jun - 8 Oct 2026 the entries that were not with the day carried most of the trades that
-ended worse than Rs 1 lakh at 100 lots (alphaIMB research, REBUILD.md sec. 18). The 75-point
-level was chosen on that same data, so this book is the test of it, from 9 Oct 2026 on.
+ended worse than Rs 1 lakh at 100 lots, and none of v3's winners dipped below -20% before winning
+(alphaIMB research, REBUILD.md sec. 18 and 20). Both levels were chosen on that same data, so this
+book is the test of them: the 75 points from 9 Oct 2026 on, the -20% floor from 12 Oct 2026 on.
 
 The replay, fills model and ledger layout are the price-action book's
 (labs/engine/proposer_px_tracker.py); this module binds them to the v3 ledger

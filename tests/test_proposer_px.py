@@ -374,7 +374,12 @@ def test_paper_book_reads_the_gap_at_the_close_of_the_0915_bar(paper, monkeypatc
 
 # ══════════════════════════════════════════════════ v3: only with the day ══
 def test_v3_parameters_and_the_with_the_day_entry_filter():
-    assert pe.params_for(pe.STRATEGY_VERSION_V3) == pe.ProposerParams(with_day_pts=75.0)
+    assert pe.params_for(pe.STRATEGY_VERSION_V3) == pe.ProposerParams(with_day_pts=75.0, loss_floor_pct=-0.20)
+    held = pe.Position("CE", 400.0, 74000.0, 20)                              # 21% under water
+    for version, action in ((pe.STRATEGY_VERSION_V3, "EXIT"), (pe.STRATEGY_VERSION, "HOLD")):
+        e = pe.ProposerEngine(pe.params_for(version))
+        sig = e.evaluate(T0, _p(), held, option_ltp=316.0, spot=74000.0)
+        assert sig.action == action and (sig.reason == "loss_floor" or action == "HOLD")
     eng, flat = pe.ProposerEngine(pe.params_for(pe.STRATEGY_VERSION_V3)), pe.Position()
 
     def ask(x5, move, minute, regime="neutral", conf=0.6):

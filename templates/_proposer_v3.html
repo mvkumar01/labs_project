@@ -5,13 +5,15 @@
       1-minute close is at least {{ "%.0f"|format(proposer_v3_stats.with_day_pts or 75) }} points beyond the 09:15 close
       in the trade's direction &mdash; calls when the day is up, puts when it is down. Everything else is the current
       live bot: gap-rule regime read at the 09:15 close, 5-class print every five minutes, nearest weekly ATM
-      &#8723;200 ITM, &minus;30% premium floor, +100 / +40 spot points, opposite print above 0.45, 2.5% day target,
-      15:25. No Renko exit and no loss cap.</p>
+      &#8723;200 ITM, +100 / +40 spot points, opposite print above 0.45, 2.5% day target, 15:25 &mdash; with the
+      premium floor at <strong>&minus;20%</strong> (the other presets stop at &minus;30%). No Renko exit and no loss cap.</p>
 
     <div class="formula">
       Evidence status: a <strong>fit</strong>. The 75-point level was chosen on the sessions from 1 June to
       8 October 2026; on those it cut the trades ending worse than &#8377;1 lakh from about 33 to 8 and the worst day
       from about &minus;&#8377;10 lakh to &minus;&#8377;2.4 lakh, with most of the extra profit coming from June.
+      The &minus;20% floor was added on 10 October from the same sessions: none of v3's winning trades there dipped
+      below &minus;20% before winning, and most of its sizeable losers passed it on the way to &minus;30%.
       Sessions from <strong>{{ proposer_v3_stats.first_unseen or '2026-10-09' }}</strong> are the first it was not
       chosen on. Fills inside a minute are estimates (recorded quote at the minute plus a fitted delta times the
       SENSEX move along the bar's open &rarr; extreme &rarr; extreme &rarr; close path, half the recorded spread each
