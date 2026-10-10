@@ -372,6 +372,7 @@ LIVE_TABS = {
     "sensex_alpha": "Sensex_alpha",
     "proposer_px": "Sensex Proposer + Renko",
     "proposer_v3": "Sensex Proposer v3",
+    "nifty_expiry_sale": "NIFTY Expiry Straddle Sale",
     "infy_tcs_pair": "INFY / TCS pair",
     "crypto_xs": "Crypto taker imbalance",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
@@ -403,6 +404,7 @@ def live_strategy():
     gold_cci_rows, gold_cci_trades, gold_cci_stats = [], [], {}
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
+    nifty_expiry_sale_rows, nifty_expiry_sale_books, nifty_expiry_sale_stats = [], [], {}
     infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
     crypto_xs_rows, crypto_xs_book, crypto_xs_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
@@ -902,6 +904,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     infy_tcs_stats = {"error": str(exc)}
 
+        # NIFTY expiry-day straddle sale (paper): its own ledger and tab.
+        if active_live_tab == "nifty_expiry_sale":
+            try:
+                from labs.engine.nifty_expiry_sale_tracker import tab_data as nifty_expiry_sale_tab_data
+                nifty_expiry_sale_rows, nifty_expiry_sale_books, nifty_expiry_sale_stats = nifty_expiry_sale_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    nifty_expiry_sale_stats = {"error": str(exc)}
+
         # SENSEX Proposer v3 - only with the day (paper): its own ledger and tab.
         if active_live_tab == "proposer_v3":
             try:
@@ -1118,6 +1130,9 @@ def live_strategy():
         proposer_v3_rows=proposer_v3_rows,
         proposer_v3_trades=proposer_v3_trades,
         proposer_v3_stats=proposer_v3_stats,
+        nifty_expiry_sale_rows=nifty_expiry_sale_rows,
+        nifty_expiry_sale_books=nifty_expiry_sale_books,
+        nifty_expiry_sale_stats=nifty_expiry_sale_stats,
         infy_tcs_rows=infy_tcs_rows,
         infy_tcs_trades=infy_tcs_trades,
         infy_tcs_stats=infy_tcs_stats,
@@ -1138,6 +1153,25 @@ def infy_tcs_pair_refresh():
     from labs.engine.infy_tcs_pair_tracker import run_day
     try:
         return jsonify(run_day(force=True))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/nifty_expiry_sale/backfill", methods=["POST"])
+def nifty_expiry_sale_backfill():
+    """Examine bounded batches of sessions for the paper-only NIFTY expiry-day straddle sale."""
+    from labs.engine.nifty_expiry_sale_tracker import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 10)), 1), 40)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 

@@ -1,12 +1,14 @@
 {# Overview: one card per running book (data from labs/services/book_overview.py). #}
-{% macro money(v, signed=true) -%}
+{% macro money(v, signed=true, cur='&#8377;') -%}
   {%- if v is none -%}&mdash;{%- else -%}
-  {{ ('+' if signed and v > 0 else ('-' if v < 0 else '')) }}&#8377;{{ "{:,.0f}".format(v|abs) }}
+  {{ ('+' if signed and v > 0 else ('-' if v < 0 else '')) }}{{ cur|safe }}{{ "{:,.0f}".format(v|abs) }}
   {%- endif -%}
 {%- endmacro %}
 {% set live_cards = overview_cards | rejectattr('error', 'defined') | list %}
-{% set today_total = live_cards | sum(attribute='today_net') %}
-{% set grand_total = live_cards | sum(attribute='total_net') %}
+{# rupee totals: cards in dollars and status-only cards (real-money accounts) stay out #}
+{% set rupee_cards = live_cards | rejectattr('no_figures', 'defined') | rejectattr('usd', 'defined') | list %}
+{% set today_total = rupee_cards | sum(attribute='today_net') %}
+{% set grand_total = rupee_cards | sum(attribute='total_net') %}
 
 <style>
   .ov-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:4px 0 18px}
@@ -22,6 +24,9 @@
   .ov-pill{font-size:13px;font-weight:600;padding:3px 12px;border-radius:6px;white-space:nowrap}
   .ov-pill.run{background:var(--c-14532d);color:var(--c-4ade80)}
   .ov-pill.wait{background:var(--c-1e2235);color:var(--c-94a3b8)}
+  .ov-pill.kind{background:transparent;border:1px solid var(--c-2d3148);color:var(--c-94a3b8);font-weight:500;margin-right:6px}
+  .ov-pill.kind.live{border-color:var(--c-f87171);color:var(--c-f87171)}
+  .ov-note{color:var(--c-94a3b8);font-size:13px;margin-top:10px;line-height:1.45}
   .ov-pill.pos{background:var(--c-1e2235);color:var(--c-e2e8f0);font-weight:600}
   .ov-pill.pos.open{background:var(--c-1e3a5f);color:var(--c-93c5fd)}
   .ov-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;font-size:15px}
@@ -55,29 +60,33 @@
         <div class="ov-title">{{ c.label }}</div>
         <div class="ov-meta">{{ c.size }} &middot; {{ c.instrument }}</div>
       </div>
-      <span class="ov-pill {{ 'run' if c.status == 'Running' else 'wait' }}">{{ c.status }}</span>
+      <span style="white-space:nowrap"><span class="ov-pill kind {{ 'live' if c.kind == 'Live' else '' }}">{{ c.kind or 'Simulated' }}</span><span class="ov-pill {{ 'run' if c.status in ['Running', 'Armed'] else 'wait' }}">{{ c.status }}</span></span>
     </div>
 
+    {% set cur = '$' if c.usd is defined else '&#8377;' %}
     {% if c.error is defined %}
       <div class="ov-row"><span class="l">No sessions recorded yet</span></div>
+    {% elif c.no_figures is defined %}
+      <div class="ov-note">{{ c.note }}</div>
     {% else %}
     <div style="margin-top:14px">
       <div class="ov-row"><span class="l">Today</span>
-        <span class="r {{ 'ov-pos' if c.today_net > 0 else ('ov-neg' if c.today_net < 0 else '') }}">{{ money(c.today_net) }}</span></div>
+        <span class="r {{ 'ov-pos' if c.today_net > 0 else ('ov-neg' if c.today_net < 0 else '') }}">{{ money(c.today_net, true, cur) }}</span></div>
       <div class="ov-row"><span class="l">Position</span>
-        <span class="ov-pill pos {{ 'open' if c.position != 'Flat' else '' }}">{{ c.position }}{% if c.open_net %} &middot; {{ money(c.open_net) }}{% endif %}</span></div>
+        <span class="ov-pill pos {{ 'open' if c.position != 'Flat' else '' }}">{{ c.position }}{% if c.open_net %} &middot; {{ money(c.open_net, true, cur) }}{% endif %}</span></div>
       <div class="ov-row"><span class="l">Win days</span>
         <span class="r">{% if c.win_pct is not none %}{{ c.win_pct }}% <small>{{ c.win_days }}/{{ c.active_days }}</small>{% else %}&mdash;{% endif %}</span></div>
     </div>
     <div class="ov-sep"></div>
     <div class="ov-row"><span class="l" title="Largest single commitment: premium paid, margin or defined-risk capital">Capital deployed</span>
-      <span class="r">{{ money(c.capital, false) }}</span></div>
+      <span class="r">{{ money(c.capital, false, cur) }}</span></div>
     <div class="ov-row"><span class="l">Total P&amp;L</span>
-      <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net) }}{% if c.return_pct is not none %} ({{ "%+.1f"|format(c.return_pct) }}%){% endif %}</span></div>
-    <div class="ov-meta" style="margin-top:2px">{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
+      <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net, true, cur) }}{% if c.return_pct is not none %} ({{ "%+.1f"|format(c.return_pct) }}%){% endif %}</span></div>
+    <div class="ov-meta" style="margin-top:2px">{% if c.trades is defined %}{{ c.trades }} trades &middot; {% endif %}{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
+    {% if c.note is defined %}<div class="ov-note">{{ c.note }}</div>{% endif %}
     {% endif %}
-    <a class="ov-btn" href="{{ url_for('labs.live_strategy', tab=c.key) }}">View Details</a>
+    <a class="ov-btn" href="{{ c.href if c.href is defined else url_for('labs.live_strategy', tab=(c.tab if c.tab is defined else c.key)) }}">View Details</a>
   </div>
 {% endfor %}
 </div>
-<p class="ov-foot">Net of charges. Capital deployed is each book's largest single commitment (premium paid, margin, or defined-risk capital); the percentage is total P&amp;L on that capital.</p>
+<p class="ov-foot">Net of charges. Capital deployed is each book's largest single commitment (premium paid, margin, or defined-risk capital); the percentage is total P&amp;L on that capital. The totals at the top add the rupee books: simulated and dry run. Dollar books are shown on their own card, and real-money accounts show their status only &mdash; their trades and P&amp;L are on the Live Trading page.</p>

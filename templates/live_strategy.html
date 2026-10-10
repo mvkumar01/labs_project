@@ -160,6 +160,9 @@
     {% elif active_live_tab == 'infy_tcs_pair' %}
     {% include '_infy_tcs_pair.html' %}
 
+    {% elif active_live_tab == 'nifty_expiry_sale' %}
+    {% include '_nifty_expiry_sale.html' %}
+
     {% elif active_live_tab == 'proposer_v3' %}
     {% include '_proposer_v3.html' %}
 
@@ -1068,6 +1071,50 @@
         status.textContent = 'Refresh failed: ' + error.message;
         button.disabled = false;
       }
+    });
+  })();
+</script>
+{% endif %}
+{% if active_live_tab == 'nifty_expiry_sale' %}
+<script>
+  (function () {
+    const status = document.getElementById('nifty-expiry-sale-backfill-status');
+    async function run(button, rebuild) {
+      button.disabled = true;
+      let examined = 0, first = rebuild;
+      try {
+        while (true) {
+          status.textContent = 'Backfilling... ' + examined + ' sessions examined';
+          const response = await fetch('/labs/api/nifty_expiry_sale/backfill?limit=10' + (first ? '&rebuild=1' : ''),
+                                       {method: 'POST'});
+          first = false;
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          examined += payload.done.length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            status.textContent = 'Examined ' + examined + '; stopped at ' + errors[0] + ': ' + payload.errors[errors[0]];
+            button.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            status.textContent = 'Backfill complete: ' + examined + ' sessions examined';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        status.textContent = 'Backfill failed: ' + error.message;
+        button.disabled = false;
+      }
+    }
+    const refresh = document.getElementById('nifty-expiry-sale-backfill');
+    const rebuild = document.getElementById('nifty-expiry-sale-rebuild');
+    if (refresh) refresh.addEventListener('click', () => run(refresh, false));
+    if (rebuild) rebuild.addEventListener('click', () => {
+      if (window.confirm('Clear this paper book and replay every expiry day from 1 June?')) run(rebuild, true);
     });
   })();
 </script>

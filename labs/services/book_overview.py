@@ -174,4 +174,7 @@ def build_overview(conn: sqlite3.Connection, today: str | None = None) -> list[d
             cards.append(build())
         except sqlite3.OperationalError as exc:            # table not created yet
             cards.append({"key": key, **BOOKS[key], "status": "Waiting", "error": str(exc)})
+    # the books added after the first fifteen, the dry-run runners and the real-money runners
+    from labs.services.book_overview_more import more_cards
+    cards.extend(more_cards(conn, today))
     return cards

@@ -1,0 +1,97 @@
+{# NIFTY expiry-day straddle sale tab (included from live_strategy.html) #}
+    <h1>NIFTY expiry-day straddle sale (paper)</h1>
+    <p class="sub">On every NIFTY expiry day &mdash; the day the nearest contract in the chain expires &mdash; the
+      at-the-money straddle of that contract is sold in the morning and both legs are bought back at the first
+      snapshot at or after 15:15. One lot ({{ nifty_expiry_sale_stats.qty or 65 }} units a leg). Three books:
+      <strong>A</strong> sells at 09:45 at the strike nearest the index;
+      <strong>B</strong> sells at 09:21 at the strike nearest the forward the chain implies;
+      <strong>B50</strong> is B with a stop on the pair at 50% (both legs bought back at the first snapshot that
+      shows the two together half as dear again as they were sold for).</p>
+
+    <div class="formula">
+      Evidence status: a <strong>lead</strong>, not a tested edge. It was found by the Strategy Tester on 46 expiry
+      days (July 2025 to 18 August 2026); the rows tagged &ldquo;in the research sample&rdquo; are the eight of those
+      on or after 1 June 2026. Rows tagged &ldquo;not seen in research&rdquo; and everything from
+      {{ nifty_expiry_sale_stats.live_from or '2026-10-10' }} on are the new evidence. Nothing here is tuned from what
+      the book shows. Fills: each leg is sold at its bid and bought back at its ask, then the short-option charges.
+      &ldquo;Research gross&rdquo; is the same trade on middle prices before costs, in basis points of the index
+      &mdash; the number to hold against the research. Selling a straddle needs margin and its bad days are large
+      (research: worst day &minus;77 bps on quotes, &minus;321 bps on daily files). A day without usable quotes at
+      the entry or the exit is skipped with the reason; no other time is substituted.
+    </div>
+
+    {% if nifty_expiry_sale_stats.get('error') %}
+      <p class="empty">Expiry straddle book unavailable ({{ nifty_expiry_sale_stats.error }}).</p>
+    {% elif not nifty_expiry_sale_rows %}
+      <p class="empty">No expiry days recorded in this date range.</p>
+      <button type="button" id="nifty-expiry-sale-backfill" class="btn-secondary">Backfill from 1 June</button>
+      <span id="nifty-expiry-sale-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        {% for b in nifty_expiry_sale_books %}
+        <div class="card"><div class="k">{{ b.label }}</div>
+          <div class="v {{ 'green' if b.net_rs>0 else ('red' if b.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(b.net_rs) }}</div>
+          <div class="sub-k">{{ b.days }} expiry days, {{ b.wins }} up{% if b.win_pct is not none %} ({{ b.win_pct }}%){% endif %};
+            {% if b.avg_net_bps is not none %}{{ "%+.1f"|format(b.avg_net_bps) }} bps a day after costs{% endif %}</div>
+          <div class="sub-k">worst &#8377;{{ "{:,.0f}".format(b.worst_rs or 0) }}, best &#8377;{{ "{:,.0f}".format(b.best_rs or 0) }}{% if b.key == 'B50' %}; stop hit {{ b.stops }} times{% endif %}{% if b.skipped %}; {{ b.skipped }} skipped{% endif %}</div>
+          {% if b.open %}<div class="sub-k"><span class="amber">open</span>: short {{ b.open.strike }} straddle since {{ b.open.entry_ts[11:16] }}, marked &#8377;{{ "{:,.0f}".format(b.open.net_rs or 0) }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="nifty-expiry-sale-backfill" class="btn-secondary">Refresh backfill</button>
+        <button type="button" id="nifty-expiry-sale-rebuild" class="btn-secondary">Rebuild from 1 June</button>
+        <span id="nifty-expiry-sale-backfill-status" class="muted"></span>
+        <span class="muted">{{ nifty_expiry_sale_stats.expiry_days }} expiry days, {{ nifty_expiry_sale_stats.first_date }} to {{ nifty_expiry_sale_stats.last_date }}</span>
+      </div>
+
+      <h2 style="margin-top:24px">Seen by the research or not</h2>
+      <table class="perf">
+        <thead><tr><th>Book</th><th>Seen by the research</th><th>Expiry days</th><th>Up</th><th>Net &#8377;</th><th>Net bps a day</th>
+          <th>Research gross bps a day</th><th>Worst day &#8377;</th></tr></thead>
+        <tbody>
+        {% for b in nifty_expiry_sale_books %}{% for s in b.by_sample %}
+          <tr><td>{{ b.key }}</td><td>{{ s.sample }}</td><td>{{ s.days }}</td><td>{{ s.wins }}</td>
+            <td class="{{ 'green' if s.net_rs>0 else ('red' if s.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(s.net_rs) }}</td>
+            <td>{{ "%+.1f"|format(s.avg_net_bps) if s.avg_net_bps is not none else '&mdash;'|safe }}</td>
+            <td class="muted">{{ "%+.1f"|format(s.avg_research_gross_bps) if s.avg_research_gross_bps is not none else '&mdash;'|safe }}</td>
+            <td class="muted">{{ ("&#8377;" ~ "{:,.0f}".format(s.worst_rs))|safe if s.worst_rs is not none else '&mdash;'|safe }}</td></tr>
+        {% endfor %}{% endfor %}
+        </tbody>
+      </table>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Book</th><th>Seen by research</th><th>Strike</th><th>Sold &rarr; bought back</th>
+          <th>Index / forward</th><th>Call sold / back</th><th>Put sold / back</th><th>Gross &#8377;</th><th>Charges</th>
+          <th>Net &#8377;</th><th>Net bps</th><th>Research gross bps</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for t in nifty_expiry_sale_rows %}
+          {% if t.status == 'skipped' %}
+          <tr><td>{{ t.trade_date }}</td><td>{{ t.book }}</td><td class="muted">{{ t.sample }}</td>
+            <td colspan="11" class="amber">skipped: {{ t.error }}</td></tr>
+          {% else %}
+          <tr>
+            <td>{{ t.trade_date }}</td><td>{{ t.book }}</td>
+            <td class="muted">{{ t.sample }}{% if t.source == 'backfill' %} &middot; backfilled{% endif %}</td>
+            <td>{{ t.strike }} <span class="muted">{{ t.expiry_code }}</span></td>
+            <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+            <td class="muted">{{ "%.0f"|format(t.index_at_entry or 0) }}{% if t.forward_at_entry %} / {{ "%.0f"|format(t.forward_at_entry) }}{% endif %}</td>
+            <td title="entry bid {{ t.call_entry_bid }} ask {{ t.call_entry_ask }}; exit bid {{ t.call_exit_bid }} ask {{ t.call_exit_ask }}">{{ "%.2f"|format(t.call_sold or 0) }} / {{ "%.2f"|format(t.call_bought or 0) }}</td>
+            <td title="entry bid {{ t.put_entry_bid }} ask {{ t.put_entry_ask }}; exit bid {{ t.put_exit_bid }} ask {{ t.put_exit_ask }}">{{ "%.2f"|format(t.put_sold or 0) }} / {{ "%.2f"|format(t.put_bought or 0) }}</td>
+            <td class="{{ 'green' if (t.gross_rs or 0)>0 else ('red' if (t.gross_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(t.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td>
+            <td>{{ "%+.1f"|format(t.net_bps or 0) }}</td>
+            <td class="muted">{{ "%+.1f"|format(t.research_gross_bps or 0) }}</td>
+            <td>{% if t.status == 'open' %}<span class="amber">open</span>{% elif t.stop_triggered %}pair stop {{ t.stop_ts[11:16] }}{% else %}{{ t.exit_reason }}{% endif %}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="note">Paper only; this book never calls a broker order API. Hover a call or put price for the bid and
+        ask at the entry and the exit. Basis points are measured on the level the strike came from: the index for
+        book A, the implied forward for B and B50.</p>
+    {% endif %}
