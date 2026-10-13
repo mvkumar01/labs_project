@@ -46,7 +46,10 @@ from live.notify import notify_telegram
 from live.brokers.zerodha import ZerodhaAdapter
 from live.engine.signal_engine import AlphaSignalEngine, v711_drift_update
 from live.engine import champion_decider, champion_inputs, minute_ticks
-from live.engine.champion_sim import V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR
+from live.engine.champion_sim import (
+    V212_B10_EXIT_BUFFER, V214_CHECK_ENTRY_BAR, V214C_RENKO_BRICK, V214C_RENKO_REVERSAL,
+    V214E_NO_ENTRY_FROM_MINUTE,
+)
 from market_data.expiry import select_symbol_for_expiry
 log = logging.getLogger("live.runner")
 
@@ -90,6 +93,9 @@ class ChampionLivePolicy:
     suppress_pc50_call_entries: bool = False
     entry_spot_exit_buffer: float = 0.0
     entry_spot_check_entry_bar: bool = False
+    entry_spot_renko_brick: float = 0.0
+    entry_spot_renko_reversal: int = 2
+    no_entry_from_minute: int | None = None
 
 
 def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
@@ -117,20 +123,38 @@ def champion_live_policy(strategy_version: str) -> ChampionLivePolicy:
     entry suppression. Both (shown as Alpha v2.14 A / B) also watch the entry
     bar's own minutes, closing the overlay's post-entry blind spot.
 
+    v2.14e (shown as Alpha v2.14 E) is v2.14 with the paper book v2.14 C's overlay
+    -- a Renko chart of one-minute closes, V214C_RENKO_BRICK bricks, classic
+    V214C_RENKO_REVERSAL-brick reversal, in place of the 10-point barrier -- and no
+    new position from V214E_NO_ENTRY_FROM_MINUTE (14:00). It decides on the same
+    boundary clock as v2.14. Same constants as its paper twin alpha_v214e.
+
     v2.13 is the explicit additive-risk variant and alone retains a buffered
     intraminute tick stop and the next-open fallback.
     """
     additive = strategy_version == "v2.13"
-    b10 = strategy_version in ("v2.12_b10", "v2.14")
+    v214e = strategy_version == "v2.14e"
+    b10 = strategy_version in ("v2.12_b10", "v2.14") or v214e
     return ChampionLivePolicy(
         fast_stop_overlay=additive,
         next_open_fallback=additive,
         boundary_tick_close=(
             b10 or strategy_version == "v2.12_closed_confirmed"),
-        suppress_pc50_call_entries=strategy_version in ("v2.11b", "v2.14"),
+        suppress_pc50_call_entries=strategy_version in ("v2.11b", "v2.14", "v2.14e"),
         entry_spot_exit_buffer=V212_B10_EXIT_BUFFER if b10 else 0.0,
         entry_spot_check_entry_bar=V214_CHECK_ENTRY_BAR if b10 else False,
+        entry_spot_renko_brick=V214C_RENKO_BRICK if v214e else 0.0,
+        entry_spot_renko_reversal=V214C_RENKO_REVERSAL,
+        no_entry_from_minute=V214E_NO_ENTRY_FROM_MINUTE if v214e else None,
     )
+
+
+def entries_closed_now(policy: ChampionLivePolicy, now: datetime) -> bool:
+    """Has the strategy's cut-off for opening a position passed (IST wall clock)?"""
+    if policy.no_entry_from_minute is None:
+        return False
+    now = now.astimezone(IST) if now.tzinfo is not None else now
+    return now.hour * 60 + now.minute >= policy.no_entry_from_minute
 
 
 def _now_iso() -> str:
@@ -1529,6 +1553,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     v212_close_confirmed = strategy_version == "v2.12_closed_confirmed"
     # v2.14 is B10 plus the PC50 CALL suppression carried by live_policy.
     v212_b10 = strategy_version in ("v2.12_b10", "v2.14")
+    # v2.14e runs on the same close-confirmed replay; its Renko overlay and 14:00
+    # entry cut-off are carried by live_policy.
+    v212_b10 = v212_b10 or strategy_version == "v2.14e"
     v213_additive = strategy_version == "v2.13"
     live_policy = champion_live_policy(strategy_version)
     recovery_replay = (v212_recovery or v212_close_confirmed or v212_b10
@@ -1687,6 +1714,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             entry_spot_exit_buffer=live_policy.entry_spot_exit_buffer,
             entry_spot_check_entry_bar=live_policy.entry_spot_check_entry_bar,
             suppress_pc50_call_entries=live_policy.suppress_pc50_call_entries,
+            entry_spot_renko_brick=live_policy.entry_spot_renko_brick,
+            entry_spot_renko_reversal=live_policy.entry_spot_renko_reversal,
+            no_entry_from_minute=live_policy.no_entry_from_minute,
             enable_v211_risk_authority=v213_additive,
             live_execution_spot=live_execution_spot,
             extra_minutes=boundary_minutes)
@@ -1762,6 +1792,16 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         log.info("signal conn=%s ts=%s tier=%s alpha=%s pos=%s sig=%s",
                  conn_id, alpha_bar.get("timestamp"), alpha_bar.get("tier"),
                  alpha_bar.get("alpha"), "OPEN" if current_open else "NONE", sig)
+
+    # The replay already opens nothing from the cut-off. This covers what the replay
+    # cannot see: a position it opened earlier that this account does not hold (armed
+    # late, an entry that never filled, a restart) must not be bought after the cut-off.
+    if (sig["action"] == "ENTER" and not current_open
+            and entries_closed_now(live_policy, _now_ist())):
+        log.info("%s conn=%s: no new position from %02d:%02d -- staying flat (replay holds %s)",
+                 strategy_version, conn_id, live_policy.no_entry_from_minute // 60,
+                 live_policy.no_entry_from_minute % 60, sig.get("side"))
+        return
 
     if (sig["action"] == "ENTER" and not current_open and not blocked
             and check_daily_loss(user_id, conn_id)):

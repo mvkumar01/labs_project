@@ -63,6 +63,9 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
                     entry_spot_exit_buffer: float = 0.0,
                     entry_spot_check_entry_bar: bool = False,
                     suppress_pc50_call_entries: bool = False,
+                    entry_spot_renko_brick: float = 0.0,
+                    entry_spot_renko_reversal: int = 2,
+                    no_entry_from_minute: int | None = None,
                     enable_v211_risk_authority: bool = False,
                     live_execution_spot: float | None = None,
                     extra_minutes: dict | None = None) -> dict | None:
@@ -166,6 +169,9 @@ def champion_target(trade_date: str | None = None, now_ist: datetime | None = No
             entry_spot_exit_buffer=entry_spot_exit_buffer,
             entry_spot_check_entry_bar=entry_spot_check_entry_bar,
             suppress_pc50_call_entries=suppress_pc50_call_entries,
+            entry_spot_renko_brick=entry_spot_renko_brick,
+            entry_spot_renko_reversal=entry_spot_renko_reversal,
+            no_entry_from_minute=no_entry_from_minute,
             close_eod=False, return_state=True, entries_until_ts=cutoff)
 
     economic_trades = [

@@ -50,7 +50,9 @@ log = logging.getLogger("live.executor")
 # ── configured constants (spec §6, §10, §13) ──────────────────────────────
 # No lot ceiling (operator, 2026-10-02): size is bounded by the daily loss cap,
 # broker margin and the exchange freeze quantity per order.
-LIVE_DECISION_ABI = "alpha-v2.14ab-entrybar-live-v1"
+# v2 (2026-10-13): the runner also trades v2.14e (Renko 30 overlay, no new position from
+# 14:00). A runner on the v1 contract would trade it as plain v2.11.
+LIVE_DECISION_ABI = "alpha-v2.14abe-renko-cutoff-live-v2"
 # The SENSEX Proposer runs in its own runner process with its own decision contract.
 PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v2 (2026-10-06): the runner also trades the proposer_dt25_px variant (1-min bar exit and

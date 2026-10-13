@@ -284,6 +284,7 @@ def replay_v212(
     check_entry_bar: bool = False,
     renko_brick: float = 0.0,
     renko_reversal: int = 2,
+    no_entry_from_minute: int | None = None,
     recovery_trace: list | None = None,
     range_offsets: tuple[int, int] | None = None,
 ) -> dict:
@@ -297,6 +298,8 @@ def replay_v212(
     entry blind spot (Alpha v2.14 A and B pass V214_CHECK_ENTRY_BAR).
     `renko_brick` / `renko_reversal` swap the overlay for Renko exits and re-entries
     (Alpha v2.14 C); `recovery_trace` collects each overlay re-entry minute.
+    `no_entry_from_minute` opens no position from that minute of the day (Alpha
+    v2.14 E passes V214E_NO_ENTRY_FROM_MINUTE).
     `range_offsets` (lo, hi) replaces the locked alpha range with
     round50(prev_close) + (lo, hi) (Alpha v2.14 D's gap-up call range).
     """
@@ -365,6 +368,7 @@ def replay_v212(
         entry_spot_check_entry_bar=check_entry_bar,
         entry_spot_renko_brick=renko_brick,
         entry_spot_renko_reversal=renko_reversal,
+        no_entry_from_minute=no_entry_from_minute,
         entry_spot_recovery_trace=recovery_trace,
         entries_until_ts=cutoff,
     )

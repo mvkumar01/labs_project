@@ -47,6 +47,9 @@ V214_CHECK_ENTRY_BAR = True
 # of the anchor barrier -- 30-point bricks, classic two-brick reversal.
 V214C_RENKO_BRICK = 30.0
 V214C_RENKO_REVERSAL = 2
+# Alpha v2.14 E: v2.14 C that opens no position from 14:00 (no_entry_from_minute).
+# Shared by the paper book and the live runner.
+V214E_NO_ENTRY_FROM_MINUTE = 14 * 60
 EOD_EXIT_MINUTE = 15 * 60 + 25
 
 # v7.6 ALPHA_STALL (PC50 gap-UP CALL)
@@ -278,6 +281,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
              entry_spot_anchor_at_fill=False,
              entry_spot_renko_brick=0.0,
              entry_spot_renko_reversal=2,
+             no_entry_from_minute=None,
              entry_spot_recovery_trace=None,
              # ── Alpha-CPR paper overlay (isolated; all default OFF) ──────────
              no_alpha_exits=False,
@@ -349,6 +353,12 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
     at the CURRENT close (not the old anchor). Alpha cancellation of a pending
     re-entry is unchanged. `entry_spot_recovery_trace` (a list) collects the minute
     of every overlay re-entry, so pricing can move each one to the next snapshot.
+
+    `no_entry_from_minute` (minutes from midnight; Alpha v2.14 E passes
+    V214E_NO_ENTRY_FROM_MINUTE = 14:00) stops every NEW position from that time:
+    an Alpha entry on a five-minute mark at or after it, and an overlay re-entry
+    whose one-minute candle closes at or after it (the order would be sent then).
+    A position already open keeps every one of its exits. None = no cut-off.
 
     Alpha-CPR paper overlay (all flags default OFF — v2.11 / v2.12 / v2.13 and
     the live runner are byte-for-byte unchanged when they are not passed):
@@ -452,6 +462,11 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
             else (alpha >= 0 or alpha <= -100)
         )
 
+    def reentry_closed(bar_start):
+        """An overlay re-entry is ordered when its one-minute candle closes."""
+        return (no_entry_from_minute is not None
+                and _bar_minutes_from_midnight(bar_start) + 1 >= no_entry_from_minute)
+
     i = 0
     revisit = False
     while True:
@@ -468,6 +483,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         ca = float(c["alpha"])
         denom_alg = float(c["denom"])
         bar_minutes = _bar_minutes_from_midnight(c["timestamp"])
+        entries_closed = (no_entry_from_minute is not None
+                          and bar_minutes >= no_entry_from_minute)
         # STOPS-ONLY partial bar: the in-progress 5-min bucket (ts beyond the
         # completed-bar cutoff). Spot stops + recovery re-entry fire on its 1-min
         # sub-bars; alpha entries/exits are suppressed (they stay on the 5-min
@@ -526,6 +543,8 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
 
             confirmed_ts = None
             for bts, bh, bl, bc in ohlc.get_1min_bar_closes(c["timestamp"]):
+                if reentry_closed(bts):
+                    break
                 if renko_ev or entry_spot_renko_brick > 0:
                     _ev = renko_ev.get(pd.Timestamp(bts).strftime("%H:%M"), "")
                     if ("u" in _ev) if recovery_pos == "call" else ("d" in _ev):
@@ -646,7 +665,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                                 entry_rule=entry_rule, tier=tier,
                             ))
                             active_at_end = False
-                            if favourable_close:
+                            if favourable_close and not reentry_closed(bts):
                                 active_at_end = True
                                 fill_entry_spot = esp
                                 entry_ts = bts
@@ -659,7 +678,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
                         if entry_spot_renko_brick > 0:
                             _ev = renko_ev.get(pd.Timestamp(bts).strftime("%H:%M"), "")
                             crossed = ("u" in _ev) if pos == "call" else ("d" in _ev)
-                        if crossed:
+                        if crossed and not reentry_closed(bts):
                             if entry_spot_renko_brick > 0:
                                 esp = float(bc)   # Renko re-enters at the current close
                             if entry_spot_recovery_trace is not None:
@@ -910,7 +929,7 @@ def simulate(adf, ce_map, pe_map, ohlc: OHLC, date_str, day_use_trail, sgap,
         # Alpha-crossover entries (Rule 1/2/3, D2) are 5-min-grid only — never on
         # a stops-only partial bar. (Entry-spot recovery RE-ENTRY is handled above
         # in the recovery block and DOES fire intra-bar.)
-        if pos is None and not partial_bar and not overlay_only:
+        if pos is None and not partial_bar and not overlay_only and not entries_closed:
             sp = ohlc.get_spot(c["timestamp"]) or float(c["spot"])
             if entry_spot_anchor_at_fill:
                 sp = float(c["spot"])

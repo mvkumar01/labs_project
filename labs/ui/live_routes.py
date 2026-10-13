@@ -535,6 +535,8 @@ STRATEGY_PRESETS = {
     ),
     "champion_v212_b10": ("champion_replay", "v2.12_b10"),
     "champion_v214": ("champion_replay", "v2.14"),
+    # v2.14 with the Renko 30 overlay of paper book v2.14 C and no new position from 14:00.
+    "champion_v214e": ("champion_replay", "v2.14e"),
     "champion_v213": ("champion_replay", "v2.13"),
     # SENSEX options, run by its own runner process (live/proposer_runner.py).
     "proposer_dt25": ("proposer", "proposer_dt25"),
@@ -552,6 +554,7 @@ STRATEGY_LABELS = {
     "champion_v212_close_confirmed": "Alpha v2.12 (close-confirmed)",
     "champion_v212_b10": "Alpha v2.14 A (B10: 10-pt stop buffer)",
     "champion_v214": "Alpha v2.14 B (v2.11 replay (B) + B10)",
+    "champion_v214e": "Alpha v2.14 E (v2.14 C: Renko 30 exit and re-entry; no new position from 14:00)",
     "champion_v213": "Alpha v2.13",
     "proposer_dt25": "SENSEX Proposer (2.5% day target)",
     "proposer_dt25_px": "SENSEX Proposer + Renko-50 exit, one loss per day",
@@ -572,6 +575,8 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
         return "champion_v212_b10"
     if de == "champion_replay" and sv == "v2.14":
         return "champion_v214"
+    if de == "champion_replay" and sv == "v2.14e":
+        return "champion_v214e"
     if de == "champion_replay" and sv == "v2.12_closed_confirmed":
         return "champion_v212_close_confirmed"
     if de == "champion_replay" and sv == "v2.12":
@@ -584,6 +589,20 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURE — lots + decision strategy + daily-loss (this user's conn)
 # ══════════════════════════════════════════════════════════════════════════
+def _runner_not_ready_for(user_id: str, conn_id: str, preset: str) -> str | None:
+    """A NIFTY strategy the running runner has not loaded must not be selected: a runner
+    process from an earlier release trades a version it does not know as plain v2.11. The
+    runner publishes the decision contract it loaded with every heartbeat."""
+    decision_engine, version = STRATEGY_PRESETS[preset]
+    if decision_engine != "champion_replay":
+        return None
+    loaded = svc.get_config(user_id, conn_id, "runner_decision_abi") or ""
+    if loaded.startswith("alpha-") and loaded != ex.expected_decision_abi(version):
+        return ("The NIFTY runner is still running an earlier release and has not loaded this "
+                "strategy. It has to be restarted first; the strategy was not changed.")
+    return None
+
+
 def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
     return render_template(
         "live_configure.html",
@@ -625,6 +644,9 @@ def configure():
                         "has an open position. Close it first, then save."
                     ),
                 )
+            not_ready = _runner_not_ready_for(user_id, conn_id, strat)
+            if not_ready:
+                return _render_configure(user_id, conn_id, error=not_ready)
 
         try:
             lots = int(request.form.get("lots", "1"))
