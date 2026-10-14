@@ -6,17 +6,7 @@
       in the trade's direction &mdash; calls when the day is up, puts when it is down. Everything else is the current
       live bot: gap-rule regime read at the 09:15 close, 5-class print every five minutes, nearest weekly ATM
       &#8723;200 ITM, +100 / +40 spot points, opposite print above 0.45, 2.5% day target, 15:25 &mdash; with the
-      premium floor at <strong>&minus;20%</strong> (the other presets stop at &minus;30%). No Renko exit and no loss cap.
-      The companion 3.5% book changes only the day target and has the same full-history start.</p>
-
-    <div class="formula">
-      Day-target evidence: in the 1 June&ndash;8 October Labs replay at 100 lots, 3.5% averaged
-      <strong>+&#8377;8.4 lakh</strong> across the 20 / 25 / 30-second print phases versus
-      <strong>+&#8377;6.1 lakh</strong> at 2.5%, but its bad-phase drawdowns were deeper. In Pramanaa's
-      forward paper bots from 3 September&ndash;14 October at 25 lots, 3.5% made &#8377;2,09,428 after
-      charges versus &#8377;1,50,556 at 2.5%, with the same 40 trades and 35 winners. This is a fit on
-      history plus six weeks of forward paper, not a guarantee; the operator intends to start at one lot.
-    </div>
+      premium floor at <strong>&minus;20%</strong> (the other presets stop at &minus;30%). No Renko exit and no loss cap.</p>
 
     <div class="formula">
       Evidence status: a <strong>fit</strong>. The 75-point level was chosen on the sessions from 1 June to
@@ -115,22 +105,6 @@
       {% endif %}
 
       {% set sh = proposer_v3_stats.shadow or {} %}
-      {% if sh and not sh.get('error') %}
-      <h2 style="margin-top:24px">v3 day-target comparison (full paper books)</h2>
-      <p class="note">Both books start on 1 June 2026 and use the same prints, entries, premium floor, exits and
-        recovery rules. Only the day target changes.</p>
-      <table class="perf">
-        <thead><tr><th>Live preset</th><th>Sessions</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th><th>Max drawdown</th></tr></thead>
-        <tbody>
-        {% for b in sh.books if b.key in ['proposer_v3', 'proposer_v3_dt35'] %}
-          <tr><td><strong>{{ b.label }}</strong></td><td>{{ b.sessions }}</td><td>{{ b.trades }}</td>
-            <td class="{{ 'green' if b.total_net>0 else ('red' if b.total_net<0 else '') }}">&#8377;{{ "{:,.0f}".format(b.total_net) }}</td>
-            <td class="{{ 'red' if b.worst_day<0 else '' }}">&#8377;{{ "{:,.0f}".format(b.worst_day) }}</td>
-            <td>&#8377;{{ "{:,.0f}".format(b.max_dd) }}</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
       <h2 style="margin-top:24px">Shadows: Pramanaa's rules and Pramanaa's clock</h2>
       <p class="note">Paper only; no live preset runs these. Pramanaa's predictor prints on its own clock: one loop that
         works, sleeps 60 s and prints once 300 s have passed since the last print, so a print comes every

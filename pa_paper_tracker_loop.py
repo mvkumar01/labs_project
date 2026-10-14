@@ -47,6 +47,7 @@ def main() -> None:
     from labs.engine.theta_iron_fly_tracker import run_day as run_theta_iron_fly_day
     from labs.engine.proposer_px_tracker import run_day as run_proposer_px_day
     from labs.engine.proposer_v3_book import run_day as run_proposer_v3_day
+    from labs.engine.proposer_v3_dt35_book import run_day as run_proposer_v3_dt35_day
     from labs.engine.nifty_expiry_sale_tracker import run_day as run_nifty_expiry_sale_day
     from labs.engine.infy_tcs_pair_tracker import run_day as run_infy_tcs_pair_day
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
@@ -71,6 +72,7 @@ def main() -> None:
         "theta_iron_fly": None,
         "proposer_px": None,
         "proposer_v3": None,
+        "proposer_v3_dt35": None,
         "nifty_expiry_sale": None,
         "infy_tcs_pair": None,
         "crude_macd_st": None,
@@ -97,6 +99,7 @@ def main() -> None:
                 ("theta_iron_fly", run_theta_iron_fly_day),
                 ("proposer_px", run_proposer_px_day),
                 ("proposer_v3", run_proposer_v3_day),
+                ("proposer_v3_dt35", run_proposer_v3_dt35_day),
                 ("nifty_expiry_sale", run_nifty_expiry_sale_day),
                 ("infy_tcs_pair", run_infy_tcs_pair_day),
             ):

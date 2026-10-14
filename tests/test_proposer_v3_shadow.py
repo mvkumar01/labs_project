@@ -66,8 +66,7 @@ def test_the_loop_runs_the_shadow_after_v3_and_a_shadow_failure_never_stops_v3(m
 
     monkeypatch.setattr(v3._tracker, "run_day", fake)
     assert v3.run_day("2026-10-08")["status"] == "closed"
-    assert calls == ["proposer_v3", "proposer_v3_dt35", "proposer_dt25_shadow", "proposer_dt25_clock",
-                     "proposer_v3_clock"]
+    assert calls == ["proposer_v3", "proposer_dt25_shadow", "proposer_dt25_clock", "proposer_v3_clock"]
     rules = {b.key: (b.strategy_version, b.print_gap_s) for b, _ in v3.SHADOWS}
     assert rules == {"proposer_dt25_shadow": ("proposer_dt25", 300.0), "proposer_dt25_clock": ("proposer_dt25", 310.5),
                      "proposer_v3_clock": ("proposer_dt25_v3", 310.5)}
@@ -77,8 +76,7 @@ def test_backfill_starts_the_shadows_where_pramanaas_ledger_starts(monkeypatch):
     seen = []
     monkeypatch.setattr(v3._backfill, "run_backfill", lambda **kw: seen.append((kw["book"].key, kw["start_date"])) or {})
     v3.run_backfill(start_date="2026-06-01", limit=5)
-    assert seen == [("proposer_v3", "2026-06-01"), ("proposer_v3_dt35", "2026-06-01"),
-                    ("proposer_dt25_shadow", "2026-09-21"),
+    assert seen == [("proposer_v3", "2026-06-01"), ("proposer_dt25_shadow", "2026-09-21"),
                     ("proposer_dt25_clock", "2026-09-21"), ("proposer_v3_clock", "2026-09-21")]
 
 
@@ -142,9 +140,6 @@ def test_comparison_lines_up_the_books_and_pramanaa(tmp_path):
     _four(conn, {
         "proposer_v3": [("2026-09-25", -112807.0, ["14:02", "14:07", "14:12"], "14:07:25"),
                         ("2026-09-26", 0.0, ["10:00"], None), ("2026-10-12", 5000.0, ["09:22"], "09:22:25")],
-        "proposer_v3_dt35": [("2026-09-25", -100000.0, ["14:02", "14:07", "14:12"], "14:07:25"),
-                              ("2026-09-26", 0.0, ["10:00"], None),
-                              ("2026-10-12", 9000.0, ["09:22"], "09:22:25")],
         "proposer_dt25_shadow": [("2026-09-25", -112807.0, ["14:02", "14:07", "14:12"], "14:07:25"),
                                  ("2026-09-26", 0.0, ["10:00"], None), ("2026-10-12", 7000.0, ["09:22"], "09:22:25")],
         "proposer_dt25_clock": [("2026-09-25", 34944.0, ["14:05", "14:10", "14:15"], "14:10:28"),
@@ -164,14 +159,11 @@ def test_comparison_lines_up_the_books_and_pramanaa(tmp_path):
     assert by["2026-09-26"]["pramanaa_net"] == 0.0                   # inside the ledger's span, no trade
     assert by["2026-10-12"]["pramanaa_net"] is None                  # after it: not captured
     books = {b["key"]: b for b in s["books"]}
-    assert [b["key"] for b in s["books"]] == ["proposer_v3", "proposer_v3_dt35", "proposer_dt25_shadow",
+    assert [b["key"] for b in s["books"]] == ["proposer_v3", "proposer_dt25_shadow",
                                                "proposer_dt25_clock", "proposer_v3_clock"]
     assert (books["proposer_dt25_shadow"]["minute_match_pct"], books["proposer_dt25_clock"]["minute_match_pct"]) == (33.3, 66.7)
     assert (books["proposer_dt25_clock"]["net_on_pramanaa_days"], books["proposer_dt25_shadow"]["net_on_pramanaa_days"]) ==         (34944.0, -112807.0)
     assert books["proposer_dt25_clock"]["net"] == 41944.0 and books["proposer_dt25_clock"]["same_as_pramanaa_side_days"] == 1
-    assert (books["proposer_v3_dt35"]["total_net"], books["proposer_v3_dt35"]["worst_day"],
-            books["proposer_v3_dt35"]["max_dd"], books["proposer_v3_dt35"]["trades"]) == (-91000.0, -100000.0,
-                                                                                           100000.0, 2)
     assert (s["sessions"], s["pramanaa_days"], s["pramanaa_net"], s["pramanaa_traded_days"]) == (3, 2, 38100.0, 1)
     assert s["pramanaa_print_count"] == 3
 
@@ -187,7 +179,6 @@ def test_v3_tab_renders_with_and_without_the_comparison(tmp_path):
     conn.row_factory = sqlite3.Row
     _four(conn, {k: [("2026-09-25", net, [m], e)] for k, net, m, e in (
         ("proposer_v3", -112807.0, "14:07", "14:07:25"), ("proposer_dt25_shadow", -112807.0, "14:07", "14:07:25"),
-        ("proposer_v3_dt35", 209428.0, "14:07", "14:07:25"),
         ("proposer_dt25_clock", 34944.0, "14:10", "14:10:28"), ("proposer_v3_clock", 34944.0, "14:10", "14:10:28"))})
     for shadow in ({}, v3.shadow_comparison(conn)):
         html = page.render(proposer_v3_stats={**stats, "shadow": shadow},
@@ -200,4 +191,4 @@ def test_v3_tab_renders_with_and_without_the_comparison(tmp_path):
         assert "Shadows: Pramanaa" in html
     assert "34,944" in html and "none imported" in html and "Pramanaa&#39;s rules, Pramanaa&#39;s clock" not in html
     assert "Pramanaa's rules, Pramanaa's clock" in html
-    assert "v3 day-target comparison" in html and "209,428" in html
+    assert "v3 day-target comparison" not in html and "proposer_v3_dt35" not in html

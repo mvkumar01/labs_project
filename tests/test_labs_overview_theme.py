@@ -59,7 +59,8 @@ def test_missing_book_tables_degrade_to_waiting_cards(tmp_path, monkeypatch):
     cards = build_overview(sqlite3.connect(":memory:"), TODAY)
     assert [c["key"] for c in cards][:len(BOOKS)] == list(BOOKS)
     # the later books and the dry-run runners follow (labs/services/book_overview_more.py)
-    assert {"proposer_v3", "nifty_expiry_sale_A", "crudem_combo", "dry_crudem"} <= {c["key"] for c in cards}
+    assert {"proposer_v3", "proposer_v3_dt35", "nifty_expiry_sale_A", "crudem_combo", "dry_crudem"} <= {
+        c["key"] for c in cards}
     assert all(c["status"] == "Waiting" for c in cards if c.get("kind") != "Live")
 
 

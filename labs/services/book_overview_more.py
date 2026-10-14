@@ -19,6 +19,7 @@ SENSEX_PAPER_QTY = 2000          # the Proposer paper books trade 100 lots of 20
 MORE_BOOKS = {
     "proposer_px": {"label": "Sensex Proposer + Renko", "instrument": "SENSEX options", "size": "100 lots"},
     "proposer_v3": {"label": "Sensex Proposer v3", "instrument": "SENSEX options", "size": "100 lots"},
+    "proposer_v3_dt35": {"label": "Sensex V3 3.5%", "instrument": "SENSEX options", "size": "100 lots"},
     "nifty_expiry_sale_A": {"label": "Expiry straddle sale A", "instrument": "NIFTY options, expiry days",
                             "size": "1 lot per leg", "tab": "nifty_expiry_sale"},
     "nifty_expiry_sale_B": {"label": "Expiry straddle sale B", "instrument": "NIFTY options, expiry days",
@@ -176,6 +177,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
     builders = {
         "proposer_px": lambda: _proposer(conn, "proposer_px", today),
         "proposer_v3": lambda: _proposer(conn, "proposer_v3", today),
+        "proposer_v3_dt35": lambda: _proposer(conn, "proposer_v3_dt35", today),
         "nifty_expiry_sale_A": lambda: _expiry_sale(conn, "A", today),
         "nifty_expiry_sale_B": lambda: _expiry_sale(conn, "B", today),
         "nifty_expiry_sale_B50": lambda: _expiry_sale(conn, "B50", today),

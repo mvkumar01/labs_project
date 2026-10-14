@@ -67,6 +67,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
         "by_rule": sorted(by_rule.values(), key=lambda b: -b["n"]),
         "open_trades": [t for t in trades if not t["exit_ts"]],
         "lots": LOTS, "bar_exit": pe.params_for(book.strategy_version).bar_exit,
+        "daily_target_pct": pe.params_for(book.strategy_version).daily_target_pct,
         "strategy_version": book.strategy_version,
         "with_day_pts": pe.params_for(book.strategy_version).with_day_pts,
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
