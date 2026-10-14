@@ -545,6 +545,8 @@ STRATEGY_PRESETS = {
     # The base Proposer taking only entries that go with the day (75 points beyond the 09:15 close),
     # premium floor at -20%.
     "proposer_dt25_v3": ("proposer", "proposer_dt25_v3"),
+    # v3 with only the day target raised from 2.5% to 3.5%.
+    "proposer_dt35_v3": ("proposer", "proposer_dt35_v3"),
 }
 STRATEGY_LABELS = {
     "legacy_v211":   "Alpha v2.11 (legacy)",
@@ -559,6 +561,7 @@ STRATEGY_LABELS = {
     "proposer_dt25": "SENSEX Proposer (2.5% day target)",
     "proposer_dt25_px": "SENSEX Proposer + Renko-50 exit, one loss per day",
     "proposer_dt25_v3": "SENSEX Proposer v3 (improved: trades only with the day's direction, stop at -20%)",
+    "proposer_dt35_v3": "SENSEX Proposer v3 at 3.5% (with the day, stop -20%, day target 3.5%)",
 }
 
 

@@ -9,6 +9,9 @@ beyond the 09:15 close in the trade's direction - and the premium floor at -20% 
 -30%; changed 2026-10-10, the book was rebuilt from 1 June then). No Renko exit, no loss cap.
 Live preset `proposer_dt25_v3` runs the same engine parameters.
 
+The companion `proposer_dt35_v3` book and live preset change only the day target from 2.5% to 3.5%.
+Unlike the Pramanaa-clock shadows, both v3 books replay the full history from 1 June 2026.
+
 Why: on 1 Jun - 8 Oct 2026 the entries that were not with the day carried most of the trades that
 ended worse than Rs 1 lakh at 100 lots, and none of v3's winners dipped below -20% before winning
 (alphaIMB research, REBUILD.md sec. 18 and 20). Both levels were chosen on that same data, so this
@@ -37,6 +40,8 @@ from labs.engine import proposer_px_view as _view
 
 log = logging.getLogger("labs.proposer_v3")
 BOOK = _tracker.V3
+# Full-history live-preset companions. These deliberately do not inherit SHADOW_START.
+VARIANTS = ((_tracker.V3_DT35, "v3 at 3.5% (live preset), our clock"),)
 # (book, label) - the order the comparison shows them in
 SHADOWS = ((_tracker.DT25, "Pramanaa's rules, our clock"),
            (_tracker.DT25_CLOCK, "Pramanaa's rules, Pramanaa's clock"),
@@ -52,20 +57,25 @@ record_unavailable = partial(_tracker.record_unavailable, book=BOOK)
 
 
 def run_day(trade_date: str | None = None, **kwargs) -> dict:
-    """The paper loop's entry point: the v3 book, then its shadows. A failing shadow never holds
-    up v3 or the other shadows."""
+    """The paper loop's entry point: v3, its full-history variants, then its shadows."""
     result = _tracker.run_day(trade_date, book=BOOK, **kwargs)
-    for book, _ in SHADOWS:
+    for book, _ in VARIANTS + SHADOWS:
         try:
             _tracker.run_day(trade_date, book=book, **kwargs)
         except Exception as exc:                           # noqa: BLE001 - logged, v3 unaffected
-            log.warning("proposer shadow %s failed for %s: %s", book.key, trade_date, exc)
+            log.warning("proposer comparison book %s failed for %s: %s", book.key, trade_date, exc)
     return result
 
 
 def run_backfill(**kwargs) -> dict:
-    """Backfill v3, then the same sessions for each shadow."""
+    """Backfill v3 and 3.5% from the requested start, then shadows from SHADOW_START."""
     result = _backfill.run_backfill(book=BOOK, **kwargs)
+    result["variants"] = {}
+    for book, _ in VARIANTS:
+        try:
+            result["variants"][book.key] = _backfill.run_backfill(book=book, **kwargs)
+        except Exception as exc:                           # noqa: BLE001
+            result["variants"][book.key] = {"error": f"{type(exc).__name__}: {exc}"}
     result["shadows"] = {}
     shadow_kwargs = {**kwargs, "start_date": max(kwargs.get("start_date") or DEFAULT_START, SHADOW_START)}
     for book, _ in SHADOWS:
@@ -89,7 +99,8 @@ def shadow_comparison(conn) -> dict:
     """Day by day: v3 and its shadows and, where Pramanaa's pages have been imported, Pramanaa's
     prints (minute by minute) and its paper bot's trades."""
     done = "status IN ('closed','no_trade')"
-    books = [(BOOK.key, "v3 (live preset), our clock")] + [(b.key, label) for b, label in SHADOWS]
+    books = ([(BOOK.key, "v3 at 2.5% (live preset), our clock")]
+             + [(b.key, label) for b, label in VARIANTS + SHADOWS])
     nets, minutes, entries = {}, {}, {}
     for key, _ in books:
         nets[key] = {r["trade_date"]: float(r["net_rs"] or 0) for r in _table_rows(
@@ -98,8 +109,8 @@ def shadow_comparison(conn) -> dict:
             minutes.setdefault((key, r["trade_date"]), set()).add(r["minute"])
         for r in _table_rows(conn, f"SELECT trade_date, entry_ts, side FROM {key}_trades ORDER BY entry_ts"):
             entries.setdefault((key, r["trade_date"]), []).append(f"{r['entry_ts'][11:19]} {r['side']}")
-    shadow_days = set().union(*(set(nets[b.key]) for b, _ in SHADOWS))
-    if not shadow_days:
+    comparison_days = set().union(*(set(nets[b.key]) for b, _ in VARIANTS + SHADOWS))
+    if not comparison_days:
         return {}
     pram_prints: dict = {}
     for r in _table_rows(conn, "SELECT trade_date, minute FROM pramanaa_prints"):
@@ -129,8 +140,19 @@ def shadow_comparison(conn) -> dict:
     summary = []
     for key, label in books:
         t = match_tot[key]
+        ordered_nets = [nets[key][day] for day in sorted(nets[key])]
+        equity = peak = max_dd = 0.0
+        for net in ordered_nets:
+            equity += net
+            peak = max(peak, equity)
+            max_dd = max(max_dd, peak - equity)
         summary.append({
             "key": key, "label": label, "net": round(sum(d["books"][key]["net"] for d in days), 2),
+            "total_net": round(sum(ordered_nets), 2),
+            "worst_day": round(min(ordered_nets, default=0.0), 2),
+            "max_dd": round(max_dd, 2),
+            "trades": sum(len(entries.get((key, day), [])) for day in nets[key]),
+            "sessions": len(ordered_nets),
             "net_on_pramanaa_days": round(sum(d["books"][key]["net"] for d in with_pram), 2),
             "minute_match_pct": round(100 * t[0] / t[1], 1) if t[1] else None,
             "same_as_pramanaa_side_days": sum(

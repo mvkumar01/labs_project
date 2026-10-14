@@ -60,7 +60,8 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v3 (2026-10-08): gap regime read at the close of the broker's 09:15 candle.
 # v4 (2026-10-08): the runner also trades proposer_dt25_v3 (entries only with the day).
 # v5 (2026-10-10): proposer_dt25_v3's premium floor is -20%.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v5"
+# v6 (2026-10-14): the runner also trades proposer_dt35_v3 (v3 with a 3.5% day target).
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v6"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

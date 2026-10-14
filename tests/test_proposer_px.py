@@ -405,6 +405,16 @@ def test_v3_parameters_and_the_with_the_day_entry_filter():
                          spot=74000.0, day_move=-500.0).action == "ENTER"
 
 
+def test_v3_dt35_changes_only_the_day_target():
+    from labs.engine import proposer_px_tracker as tr
+
+    expected = pe.ProposerParams(with_day_pts=75.0, loss_floor_pct=-0.20, daily_target_pct=0.035)
+    assert pe.params_for(pe.STRATEGY_VERSION_V3_DT35) == expected
+    assert pe.STRATEGY_VERSION_V3_DT35 == "proposer_dt35_v3"
+    assert pe.V3_DT35_DAY_TARGET_PCT == 0.035
+    assert tr.V3_DT35 == tr.Book("proposer_v3_dt35", "proposer_dt35_v3")
+
+
 def test_day_move_is_the_last_completed_close_against_the_0915_close():
     base = datetime(2026, 10, 8, 9, 15)
     bars = [(base + timedelta(minutes=i), 72414.0 - 10 * i) for i in range(8)]

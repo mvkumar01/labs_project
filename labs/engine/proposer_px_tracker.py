@@ -1,9 +1,10 @@
-"""SENSEX Proposer paper books: the price-action exit variant (PX) and v3 (V3).
+"""SENSEX Proposer paper books: the price-action exit variant (PX) and v3 variants.
 
 Paper only. This module never calls a broker order API. One replay, several ledgers: a `Book` names
 the table prefix, the strategy version it replays and its print clock (PX = `proposer_dt25_px`:
 Renko-50 exit and one loss a day; V3 = `proposer_dt25_v3`: the base exits, entries only with the
-day). Three shadows that no live preset runs sit beside v3 for the comparison with Pramanaa:
+day). V3_DT35 changes only v3's day target from 2.5% to 3.5%. Three shadows that no live preset
+runs sit beside v3 for the comparison with Pramanaa:
 DT25 = Pramanaa's own rules (the base `proposer_dt25`) on our clock, DT25_CLOCK = the same on
 Pramanaa's print clock, V3_CLOCK = v3 on Pramanaa's print clock.
 
@@ -98,6 +99,7 @@ class Book:
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
 V3 = Book("proposer_v3", pe.STRATEGY_VERSION_V3)
+V3_DT35 = Book("proposer_v3_dt35", pe.STRATEGY_VERSION_V3_DT35)
 V3_CLOCK = Book("proposer_v3_clock", pe.STRATEGY_VERSION_V3, PRAMANAA_PRINT_GAP_S)
 DT25 = Book("proposer_dt25_shadow", pe.STRATEGY_VERSION)
 DT25_CLOCK = Book("proposer_dt25_clock", pe.STRATEGY_VERSION, PRAMANAA_PRINT_GAP_S)

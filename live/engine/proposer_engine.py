@@ -21,7 +21,8 @@ EXIT (open), first match wins:
   spot_target - SENSEX moved spot_target_pts in favour (decisive width only for the
                 regime-driven entry, neutral width otherwise), less a 1-pt tolerance
   signal_flip - a gate-passing opposite print (exit, no cooldown so the reverse can follow)
-  daily_target- day realized + this trade's unrealized >= 2.5% of this trade's entry capital
+  daily_target- day realized + this trade's unrealized >= the configured share of this trade's
+                entry capital (2.5% normally; 3.5% in proposer_dt35_v3)
   bar_exit    - variants with a bar_exit spec only: the completed 1-min SENSEX bars since the
                 entry turned against the position (proposer_bar_exit: Renko bricks or a run of
                 adverse closes). Not in Pramanaa's engine - added 2026-10-06 because the flip
@@ -48,6 +49,9 @@ PX_BAR_EXIT = "renko-50"
 STRATEGY_VERSION_V3 = "proposer_dt25_v3"
 V3_WITH_DAY_PTS = 75.0
 V3_LOSS_FLOOR_PCT = -0.20
+# v3 with the only changed parameter being the per-trade day target (3.5% vs 2.5%).
+STRATEGY_VERSION_V3_DT35 = "proposer_dt35_v3"
+V3_DT35_DAY_TARGET_PCT = 0.035
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,12 @@ def params_for(strategy_version: Optional[str]) -> ProposerParams:
         return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1)
     if str(strategy_version or "") == STRATEGY_VERSION_V3:
         return ProposerParams(with_day_pts=V3_WITH_DAY_PTS, loss_floor_pct=V3_LOSS_FLOOR_PCT)
+    if str(strategy_version or "") == STRATEGY_VERSION_V3_DT35:
+        return ProposerParams(
+            with_day_pts=V3_WITH_DAY_PTS,
+            loss_floor_pct=V3_LOSS_FLOOR_PCT,
+            daily_target_pct=V3_DT35_DAY_TARGET_PCT,
+        )
     return ProposerParams()
 
 
