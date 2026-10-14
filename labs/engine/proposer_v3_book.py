@@ -17,26 +17,137 @@ book is the test of them: the 75 points from 9 Oct 2026 on, the -20% floor from 
 The replay, fills model and ledger layout are the price-action book's
 (labs/engine/proposer_px_tracker.py); this module binds them to the v3 ledger
 (tables proposer_v3_daily / proposer_v3_trades).
+
+Shadows (from 2026-10-14), paper only, no live preset runs them: Pramanaa's own rules (the base
+`proposer_dt25`, no with-the-day filter) on our five-minute print clock and on Pramanaa's own print
+clock (a print every 310.5 s, the gap of its scheduler's loop), and v3 on Pramanaa's clock. They are
+compared, day by day, with what Pramanaa's predictor printed and its paper bot traded
+(labs/engine/pramanaa_capture.py): the pair on Pramanaa's rules isolates what the clock alone does.
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
 from functools import partial
 
+from labs.engine import pramanaa_capture as _pramanaa
 from labs.engine import proposer_px_backfill as _backfill
 from labs.engine import proposer_px_tracker as _tracker
 from labs.engine import proposer_px_view as _view
 
+log = logging.getLogger("labs.proposer_v3")
 BOOK = _tracker.V3
+# (book, label) - the order the comparison shows them in
+SHADOWS = ((_tracker.DT25, "Pramanaa's rules, our clock"),
+           (_tracker.DT25_CLOCK, "Pramanaa's rules, Pramanaa's clock"),
+           (_tracker.V3_CLOCK, "v3, Pramanaa's clock"))
 DEFAULT_START = _tracker.DEFAULT_START
 FIRST_UNSEEN_SESSION = "2026-10-09"       # sessions before this are the ones the rule was fitted on
+# The shadows start where the saved Pramanaa ledger starts. Their books are separate from 1 June: a
+# shadow whose running total goes negative early loses the day-target stop (recovery mode) and
+# its replay runs away from anything Pramanaa did, which would swamp the comparison.
+SHADOW_START = "2026-09-21"
 
-run_day = partial(_tracker.run_day, book=BOOK)
-run_backfill = partial(_backfill.run_backfill, book=BOOK)
 record_unavailable = partial(_tracker.record_unavailable, book=BOOK)
 
 
+def run_day(trade_date: str | None = None, **kwargs) -> dict:
+    """The paper loop's entry point: the v3 book, then its shadows. A failing shadow never holds
+    up v3 or the other shadows."""
+    result = _tracker.run_day(trade_date, book=BOOK, **kwargs)
+    for book, _ in SHADOWS:
+        try:
+            _tracker.run_day(trade_date, book=book, **kwargs)
+        except Exception as exc:                           # noqa: BLE001 - logged, v3 unaffected
+            log.warning("proposer shadow %s failed for %s: %s", book.key, trade_date, exc)
+    return result
+
+
+def run_backfill(**kwargs) -> dict:
+    """Backfill v3, then the same sessions for each shadow."""
+    result = _backfill.run_backfill(book=BOOK, **kwargs)
+    result["shadows"] = {}
+    shadow_kwargs = {**kwargs, "start_date": max(kwargs.get("start_date") or DEFAULT_START, SHADOW_START)}
+    for book, _ in SHADOWS:
+        try:
+            result["shadows"][book.key] = _backfill.run_backfill(book=book, **shadow_kwargs)
+        except Exception as exc:                           # noqa: BLE001
+            result["shadows"][book.key] = {"error": f"{type(exc).__name__}: {exc}"}
+    return result
+
+
+def _table_rows(conn, sql: str, params=()) -> list[dict]:
+    try:
+        cur = conn.execute(sql, tuple(params))
+    except sqlite3.OperationalError:                       # table not created yet
+        return []
+    cols = [c[0] for c in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def shadow_comparison(conn) -> dict:
+    """Day by day: v3 and its shadows and, where Pramanaa's pages have been imported, Pramanaa's
+    prints (minute by minute) and its paper bot's trades."""
+    done = "status IN ('closed','no_trade')"
+    books = [(BOOK.key, "v3 (live preset), our clock")] + [(b.key, label) for b, label in SHADOWS]
+    nets, minutes, entries = {}, {}, {}
+    for key, _ in books:
+        nets[key] = {r["trade_date"]: float(r["net_rs"] or 0) for r in _table_rows(
+            conn, f"SELECT trade_date, net_rs FROM {key}_daily WHERE {done}")}
+        for r in _table_rows(conn, f"SELECT trade_date, minute FROM {key}_prints"):
+            minutes.setdefault((key, r["trade_date"]), set()).add(r["minute"])
+        for r in _table_rows(conn, f"SELECT trade_date, entry_ts, side FROM {key}_trades ORDER BY entry_ts"):
+            entries.setdefault((key, r["trade_date"]), []).append(f"{r['entry_ts'][11:19]} {r['side']}")
+    shadow_days = set().union(*(set(nets[b.key]) for b, _ in SHADOWS))
+    if not shadow_days:
+        return {}
+    pram_prints: dict = {}
+    for r in _table_rows(conn, "SELECT trade_date, minute FROM pramanaa_prints"):
+        pram_prints.setdefault(r["trade_date"], set()).add(r["minute"])
+    pram_trades: dict = {}
+    for r in _table_rows(conn, "SELECT trade_date, entry_time, side, pnl_rs FROM pramanaa_trades ORDER BY entry_time"):
+        pram_trades.setdefault(r["trade_date"], []).append(r)
+
+    common = sorted(set.intersection(*(set(nets[k]) for k, _ in books)), reverse=True)
+    days, match_tot = [], {k: [0, 0] for k, _ in books}
+    for day in common:
+        row = {"trade_date": day, "books": {}}
+        pram = pram_prints.get(day)
+        for key, _ in books:
+            ours = minutes.get((key, day))
+            m = (sum(1 for x in pram if x in ours), len(pram)) if pram and ours is not None else None
+            if m and all(minutes.get((k, day)) is not None for k, _ in books):
+                match_tot[key][0] += m[0]
+                match_tot[key][1] += m[1]
+            row["books"][key] = {"net": nets[key][day], "entries": entries.get((key, day), []), "match": m}
+        pt = pram_trades.get(day, [])
+        known = bool(pt) or _pramanaa.covered(conn, "trades", day)
+        row["pramanaa_net"] = round(sum(float(r["pnl_rs"] or 0) for r in pt), 2) if known else None
+        row["pramanaa_entries"] = [f"{r['entry_time']} {r['side'] or ''}".strip() for r in pt]
+        days.append(row)
+    with_pram = [d for d in days if d["pramanaa_net"] is not None]
+    summary = []
+    for key, label in books:
+        t = match_tot[key]
+        summary.append({
+            "key": key, "label": label, "net": round(sum(d["books"][key]["net"] for d in days), 2),
+            "net_on_pramanaa_days": round(sum(d["books"][key]["net"] for d in with_pram), 2),
+            "minute_match_pct": round(100 * t[0] / t[1], 1) if t[1] else None,
+            "same_as_pramanaa_side_days": sum(
+                1 for d in with_pram if d["pramanaa_entries"] and d["books"][key]["entries"]
+                and d["books"][key]["entries"][0].split()[-1] == d["pramanaa_entries"][0].split()[-1]),
+        })
+    return {
+        "days": days[:120], "sessions": len(days), "books": summary,
+        "pramanaa_days": len(with_pram), "pramanaa_net": round(sum(d["pramanaa_net"] for d in with_pram), 2),
+        "pramanaa_traded_days": sum(1 for d in with_pram if d["pramanaa_entries"]),
+        "pramanaa_print_count": match_tot[BOOK.key][1], "gap_s": _tracker.PRAMANAA_PRINT_GAP_S,
+    }
+
+
 def tab_data(conn, date_clause: str = "", date_params=()) -> tuple:
-    """(daily rows, trades, stats) for the /labs/live tab, with the fitted / unseen split."""
+    """(daily rows, trades, stats) for the /labs/live tab, with the fitted / unseen split and the
+    shadow comparison."""
     rows, trades, stats = _view.tab_data(conn, date_clause, date_params, book=BOOK)
     if stats:
         done = [r for r in rows if r["status"] in ("closed", "no_trade")]
@@ -45,4 +156,8 @@ def tab_data(conn, date_clause: str = "", date_params=()) -> tuple:
         stats["unseen_days"] = len(unseen)
         stats["unseen_net"] = round(sum(float(r["net_rs"] or 0) for r in unseen), 2)
         stats["fitted_net"] = round(stats["net_total"] - stats["unseen_net"], 2)
+        try:
+            stats["shadow"] = shadow_comparison(conn)
+        except Exception as exc:                           # noqa: BLE001 - the v3 tab still renders
+            stats["shadow"] = {"error": f"{type(exc).__name__}: {exc}"}
     return rows, trades, stats

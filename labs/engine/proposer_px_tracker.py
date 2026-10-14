@@ -1,8 +1,11 @@
 """SENSEX Proposer paper books: the price-action exit variant (PX) and v3 (V3).
 
-Paper only. This module never calls a broker order API. One replay, two ledgers: a `Book` names
-the table prefix and the live strategy version it replays (PX = `proposer_dt25_px`: Renko-50 exit
-and one loss a day; V3 = `proposer_dt25_v3`: the base exits, entries only with the day).
+Paper only. This module never calls a broker order API. One replay, several ledgers: a `Book` names
+the table prefix, the strategy version it replays and its print clock (PX = `proposer_dt25_px`:
+Renko-50 exit and one loss a day; V3 = `proposer_dt25_v3`: the base exits, entries only with the
+day). Three shadows that no live preset runs sit beside v3 for the comparison with Pramanaa:
+DT25 = Pramanaa's own rules (the base `proposer_dt25`) on our clock, DT25_CLOCK = the same on
+Pramanaa's print clock, V3_CLOCK = v3 on Pramanaa's print clock.
 
 It replays a session with the SAME code the live bot runs: the engine
 (live/engine/proposer_engine.py, variant `proposer_dt25_px`), the ported
@@ -69,6 +72,16 @@ ENTRY_CUTOFF, EOD = time(15, 20), time(15, 25)
 SESSION_OPEN = time(9, 15)
 DEFAULT_START = "2026-06-01"
 
+# Pramanaa's own print clock (services/market-predictor/scheduler.py at 62ef7d4): one loop that does
+# its work, sleeps 60 s, and prints the 5-class once 300 s have passed since the last print - so a
+# print comes on every fifth pass, 5 x (60 s + the pass's work), and its minute slides through the
+# day. The work is how long Pramanaa's server took, so it is measured: 310.5 s between prints on the
+# median day of its captured prints, 22 Jun - 29 Sep 2026 (309 - 315 s). Used only by the shadow
+# book below; the live bot and the other books print every PRINT_EVERY_MIN minutes.
+PRAMANAA_LOOP_SLEEP_S, PRAMANAA_MIN_GAP_S, PRAMANAA_PASS_WORK_S = 60.0, 300.0, 2.1
+_PASS_S = PRAMANAA_LOOP_SLEEP_S + PRAMANAA_PASS_WORK_S
+PRAMANAA_PRINT_GAP_S = math.ceil(PRAMANAA_MIN_GAP_S / _PASS_S) * _PASS_S        # 310.5
+
 
 class ProposerPxInputError(RuntimeError):
     """Required market data is unavailable for the session."""
@@ -76,13 +89,18 @@ class ProposerPxInputError(RuntimeError):
 
 @dataclass(frozen=True)
 class Book:
-    """One paper ledger: its table prefix and the live strategy version it replays."""
+    """One paper ledger: its table prefix, the live strategy version it replays and the gap between
+    its prints."""
     key: str
     strategy_version: str
+    print_gap_s: float = PRINT_EVERY_MIN * 60.0
 
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
 V3 = Book("proposer_v3", pe.STRATEGY_VERSION_V3)
+V3_CLOCK = Book("proposer_v3_clock", pe.STRATEGY_VERSION_V3, PRAMANAA_PRINT_GAP_S)
+DT25 = Book("proposer_dt25_shadow", pe.STRATEGY_VERSION)
+DT25_CLOCK = Book("proposer_dt25_clock", pe.STRATEGY_VERSION, PRAMANAA_PRINT_GAP_S)
 
 
 # ------------------------------------------------------------------ schema ---
@@ -128,6 +146,15 @@ def _ensure_tables(conn: sqlite3.Connection, book: Book = PX) -> None:
             charges_rs     REAL,
             net_rs         REAL,
             exit_rule      TEXT,
+            PRIMARY KEY (trade_date, seq)
+        );
+        CREATE TABLE IF NOT EXISTS {book.key}_prints (
+            trade_date TEXT NOT NULL,
+            seq        INTEGER NOT NULL,
+            minute     TEXT NOT NULL,
+            sec        REAL NOT NULL,
+            x5         TEXT,
+            x5_conf    REAL,
             PRIMARY KEY (trade_date, seq)
         );
         """
@@ -225,27 +252,34 @@ class _Contract:
 
 # --------------------------------------------------------------- predictor ---
 def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: dict,
-            through: datetime) -> tuple[list[dict], pp.Regime]:
-    """The live feed's prints, replayed: gap-rule regime, a 5-class call every 5 minutes from the
-    first valid one, each from completed bars only (bars before its minute)."""
+            through: datetime, gap_s: float = PRINT_EVERY_MIN * 60.0) -> tuple[list[dict], pp.Regime]:
+    """The live feed's prints, replayed: gap-rule regime, the first 5-class call as soon as one is
+    valid (PRINT_LAG_S into its minute), then one every `gap_s` seconds; each from completed bars
+    only (bars before its minute). `sec` is the second of minute `t` at which the print is acted
+    on. At the default gap (exactly five minutes) every print lands PRINT_LAG_S into its minute,
+    as the live feed's do; at PRAMANAA_PRINT_GAP_S the second and the minute slide."""
     regime = pp.regime_from_gap(prior[-1][1] if prior else None, open_ref)
-    out, due = [], None
-    m = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + timedelta(minutes=1)
-    while m <= through and m.time() <= PRINT_UNTIL:
-        if due is None or m >= due:
-            done = [b for b in today if b[0] < m]
-            chain = None
-            if done and m in chains:
-                k, ce, pe_ = chains[m]
-                idx = abs(k - done[-1][1]).argsort()[:7]
-                chain = {"spot": done[-1][1],
-                         "atm_pcr": (pe_[idx].sum() / ce[idx].sum()) if ce[idx].sum() > 0 else None}
-            x = pp.predict_x5(prior, done, chain, regime) if done else None
-            if x:
-                out.append({"t": m, "regime": regime.label, "x5": x["x5"], "x5_conf": x["x5_conf"],
-                            "x5_asof": m.isoformat(), "drift_state": pp.drift_state(x["micro"])})
-                due = m + timedelta(minutes=PRINT_EVERY_MIN)
-        m += timedelta(minutes=1)
+    out = []
+    at = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + timedelta(minutes=1, seconds=PRINT_LAG_S)
+    while True:
+        m = at.replace(second=0, microsecond=0)
+        if m > through or m.time() > PRINT_UNTIL:
+            break
+        done = [b for b in today if b[0] < m]
+        chain = None
+        if done and m in chains:
+            k, ce, pe_ = chains[m]
+            idx = abs(k - done[-1][1]).argsort()[:7]
+            chain = {"spot": done[-1][1],
+                     "atm_pcr": (pe_[idx].sum() / ce[idx].sum()) if ce[idx].sum() > 0 else None}
+        x = pp.predict_x5(prior, done, chain, regime) if done else None
+        if x:
+            out.append({"t": m, "sec": (at - m).total_seconds(), "regime": regime.label, "x5": x["x5"],
+                        "x5_conf": x["x5_conf"], "x5_asof": m.isoformat(),
+                        "drift_state": pp.drift_state(x["micro"])})
+            at += timedelta(seconds=gap_s)
+        else:
+            at += timedelta(minutes=1)          # not valid yet: the feed asks again a minute later
     return out, regime
 
 
@@ -314,7 +348,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     closes_today = [(b[0], b[4]) for b in bars]
     # the gap is read at the close of the 09:15 bar, as the live feed reads the broker's candle
     open_ref = bars[0][4] if bars[0][0].time() == SESSION_OPEN else None
-    prints, regime = _prints(day, prior, closes_today, open_ref, chains, min(through, session_end))
+    prints, regime = _prints(day, prior, closes_today, open_ref, chains, min(through, session_end),
+                             gap_s=book.print_gap_s)
     by_min = {}
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)
@@ -361,7 +396,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             sec, spot = path[i]
             now_ = t + timedelta(seconds=sec)
             fresh = False
-            if pending and sec >= PRINT_LAG_S:
+            if pending and sec >= pending[-1]["sec"]:
                 snap, pending, fresh = pending[-1], [], True
             book_state()
             if pos:
@@ -429,6 +464,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         "net_rs": round(sum(x["net_rs"] for x in closed), 2),
         "book_gross_before": round(book_before, 2),
         "through_ts": through.isoformat(timespec="minutes"), "trades": trades,
+        "prints": [{"minute": p["t"].strftime("%H:%M"), "sec": p["sec"], "x5": p["x5"],
+                    "x5_conf": round(float(p["x5_conf"]), 4)} for p in prints],
     }
 
 
@@ -468,6 +505,11 @@ def _persist(conn: sqlite3.Connection, r: dict, book: Book = PX) -> None:
              t.get("expiry_code"), t["entry_ts"], t.get("exit_ts"), t.get("entry_spot"), t.get("exit_spot"),
              t.get("entry_price"), t.get("exit_price"), t.get("gross_rs"), t.get("charges_rs"),
              t.get("net_rs"), t.get("exit_rule")))
+    conn.execute(f"DELETE FROM {book.key}_prints WHERE trade_date=?", (r["trade_date"],))
+    conn.executemany(
+        f"INSERT INTO {book.key}_prints (trade_date,seq,minute,sec,x5,x5_conf) VALUES (?,?,?,?,?,?)",
+        [(r["trade_date"], seq, p["minute"], p["sec"], p["x5"], p["x5_conf"])
+         for seq, p in enumerate(r.get("prints") or [], start=1)])
     params = pe.params_for(book.strategy_version)
     conn.execute(
         f"INSERT INTO {book.key}_daily (trade_date,status,expiry_code,regime,gap_pct,n_trades,n_losses,"

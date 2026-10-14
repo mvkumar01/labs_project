@@ -104,6 +104,61 @@
         <p class="empty">No trades in this date range.</p>
       {% endif %}
 
+      {% set sh = proposer_v3_stats.shadow or {} %}
+      <h2 style="margin-top:24px">Shadows: Pramanaa's rules and Pramanaa's clock</h2>
+      <p class="note">Paper only; no live preset runs these. Pramanaa's predictor prints on its own clock: one loop that
+        works, sleeps 60 s and prints once 300 s have passed since the last print, so a print comes every
+        {{ "%.1f"|format(sh.gap_s or 310.5) }} s and its minute slides through the day; ours prints every 300 s.
+        Pramanaa's paper bot runs the base rules (no with-the-day filter, floor &minus;30%). The two shadows on
+        Pramanaa's rules differ only in the clock, so that pair shows what the clock alone does. Pramanaa's side comes
+        from its pages saved in a logged-in browser and imported
+        (<code>python -m labs.engine.pramanaa_capture import FILE</code>); it is shown only for the days they cover.</p>
+      {% if sh.get('error') %}
+        <p class="empty">Shadow comparison unavailable ({{ sh.error }}).</p>
+      {% elif not sh %}
+        <p class="empty">The shadows have no sessions yet.</p>
+      {% else %}
+      <table class="perf">
+        <thead><tr><th></th><th>Net, {{ sh.sessions }} sessions</th>
+          <th>Net on the {{ sh.pramanaa_days }} days Pramanaa's ledger covers</th>
+          <th>Prints on Pramanaa's minute</th><th>First entry on Pramanaa's side</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Pramanaa's paper bot</strong></td><td class="muted">&mdash;</td>
+            <td class="{{ 'green' if sh.pramanaa_net>0 else ('red' if sh.pramanaa_net<0 else '') }}">{{ ('&#8377;' ~ "{:,.0f}".format(sh.pramanaa_net))|safe if sh.pramanaa_days else '&mdash;' }}</td>
+            <td class="muted">{{ sh.pramanaa_print_count or 'none imported' }} prints</td>
+            <td class="muted">{{ sh.pramanaa_traded_days }} days traded</td></tr>
+        {% for b in sh.books %}
+          <tr><td>{{ b.label }}</td>
+            <td class="{{ 'green' if b.net>0 else ('red' if b.net<0 else '') }}">&#8377;{{ "{:,.0f}".format(b.net) }}</td>
+            <td class="{{ 'green' if b.net_on_pramanaa_days>0 else ('red' if b.net_on_pramanaa_days<0 else '') }}">{{ ('&#8377;' ~ "{:,.0f}".format(b.net_on_pramanaa_days))|safe if sh.pramanaa_days else '&mdash;' }}</td>
+            <td>{{ (b.minute_match_pct ~ '%') if b.minute_match_pct is not none else '&mdash;' }}</td>
+            <td>{{ b.same_as_pramanaa_side_days if sh.pramanaa_days else '&mdash;' }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <table class="perf" style="margin-top:12px">
+        <thead><tr><th>Date</th><th>Pramanaa &#8377;</th>
+          {% for b in sh.books %}<th>{{ b.label }} &#8377;</th>{% endfor %}
+          <th>Pramanaa entries</th><th>Pramanaa's rules: entries, our clock / Pramanaa's clock</th>
+          <th>Prints on Pramanaa's minute (our / Pramanaa's clock)</th></tr></thead>
+        <tbody>
+        {% for d in sh.days %}
+          {% set ours = d.books[sh.books[1].key] %}{% set theirs = d.books[sh.books[2].key] %}
+          <tr>
+            <td>{{ d.trade_date }}</td>
+            <td class="{{ 'green' if d.pramanaa_net and d.pramanaa_net>0 else ('red' if d.pramanaa_net and d.pramanaa_net<0 else 'muted') }}">{{ "{:,.0f}".format(d.pramanaa_net) if d.pramanaa_net is not none else '&mdash;' }}</td>
+            {% for b in sh.books %}{% set v = d.books[b.key].net %}
+            <td class="{{ 'green' if v>0 else ('red' if v<0 else 'muted') }}">{{ "{:,.0f}".format(v) }}</td>
+            {% endfor %}
+            <td class="muted">{{ d.pramanaa_entries|join(', ') }}</td>
+            <td class="muted">{{ ours.entries|join(', ') or '&mdash;' }} / {{ theirs.entries|join(', ') or '&mdash;' }}</td>
+            <td class="muted">{% if theirs.match %}{{ ours.match[0] }} / {{ theirs.match[0] }} of {{ theirs.match[1] }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
       <h2 style="margin-top:24px">Daily history</h2>
       <table class="perf">
         <thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Gap</th><th>Expiry</th><th>Trades</th>
