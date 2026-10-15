@@ -160,6 +160,9 @@
     {% elif active_live_tab == 'infy_tcs_pair' %}
     {% include '_infy_tcs_pair.html' %}
 
+    {% elif active_live_tab == 'nifty_tuesday_put' %}
+    {% include '_nifty_tuesday_put.html' %}
+
     {% elif active_live_tab == 'nifty_expiry_sale' %}
     {% include '_nifty_expiry_sale.html' %}
 
@@ -1078,6 +1081,50 @@
         status.textContent = 'Refresh failed: ' + error.message;
         button.disabled = false;
       }
+    });
+  })();
+</script>
+{% endif %}
+{% if active_live_tab == 'nifty_tuesday_put' %}
+<script>
+  (function () {
+    const status = document.getElementById('nifty-tuesday-put-backfill-status');
+    async function run(button, rebuild) {
+      button.disabled = true;
+      let replayed = 0, first = rebuild;
+      try {
+        while (true) {
+          status.textContent = 'Backfilling... ' + replayed + ' Tuesdays replayed';
+          const response = await fetch('/labs/api/nifty_tuesday_put/backfill?limit=10' + (first ? '&rebuild=1' : ''),
+                                       {method: 'POST'});
+          first = false;
+          const payload = await response.json();
+          if (!response.ok || payload.error) {
+            throw new Error(payload.error || ('HTTP ' + response.status));
+          }
+          replayed += payload.done.length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            status.textContent = 'Replayed ' + replayed + '; stopped at ' + errors[0] + ': ' + payload.errors[errors[0]];
+            button.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            status.textContent = 'Backfill complete: ' + replayed + ' Tuesdays replayed';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        status.textContent = 'Backfill failed: ' + error.message;
+        button.disabled = false;
+      }
+    }
+    const refresh = document.getElementById('nifty-tuesday-put-backfill');
+    const rebuild = document.getElementById('nifty-tuesday-put-rebuild');
+    if (refresh) refresh.addEventListener('click', () => run(refresh, false));
+    if (rebuild) rebuild.addEventListener('click', () => {
+      if (window.confirm('Clear this paper book and replay every Tuesday from 2 September 2025?')) run(rebuild, true);
     });
   })();
 </script>

@@ -1,0 +1,89 @@
+{# NIFTY Tuesday put tab (included from live_strategy.html) #}
+    {% set st = nifty_tuesday_put_stats %}
+    <h1>NIFTY Tuesday put (paper)</h1>
+    <p class="sub">On every Tuesday that is a trading day, one lot ({{ st.qty or 65 }} units) of the NIFTY put of the
+      nearest expiry is bought at 09:20 and sold at 15:25 &mdash; since 2 September 2025 that is the contract expiring
+      that day. Strike = round((NIFTY 09:20 minute open + 89) / 50) &times; 50, about 89 points in the money. No stop,
+      no target. A holiday Tuesday is skipped, never moved to another day.</p>
+
+    <div class="formula">
+      Evidence status: a <strong>weak, recent lead</strong>, not a tested edge. An edge-birth scan in the Strategy
+      Tester found the index falling from 09:20 to 15:25 on Tuesdays (&minus;22.5 bps in 2024, &minus;13.2 in 2025,
+      &minus;13.1 in 2026; flat to positive in 2020&ndash;22); priced on option quotes, the put made about
+      +&#8377;1,478 a lot a day on 42 Tuesdays (t +1.4). Tuesdays up to {{ st.sample_end or '2026-09-01' }} are the
+      <strong>research sample</strong>; later ones are the <strong>forward</strong> test. The rules are fixed and are
+      not tuned from what this book shows. <strong>Retirement, stated in advance:</strong> if the first 26 forward
+      Tuesdays net to zero or less after charges, the book is marked &ldquo;retire&rdquo;.
+      Headline fills: bought at the ask, sold at the bid, then the standard option charges; a side with no quote uses
+      the research price worsened by 0.2 points. Tuesdays before the shared store (to 21 April 2026) have only
+      five-minute last traded prices, so their headline is that price &plusmn; 0.2. The <em>research version</em> is
+      the research's own figure: the middle of bid and ask when quoted and tight, else the last traded price, minus a
+      flat &#8377;95.
+    </div>
+
+    {% if st.get('error') %}
+      <p class="empty">Tuesday put book unavailable ({{ st.error }}).</p>
+    {% elif not nifty_tuesday_put_rows %}
+      <p class="empty">No Tuesdays recorded in this date range.</p>
+      <button type="button" id="nifty-tuesday-put-backfill" class="btn-secondary">Backfill from 2 September 2025</button>
+      <span id="nifty-tuesday-put-backfill-status" class="muted"></span>
+    {% else %}
+      {% set ret = st.retirement %}
+      <div class="cards">
+        {% for s in nifty_tuesday_put_summaries %}
+        <div class="card"><div class="k">{{ s.sample|capitalize }}</div>
+          <div class="v {{ 'green' if s.headline.net_rs>0 else ('red' if s.headline.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(s.headline.net_rs) }}</div>
+          <div class="sub-k">{{ s.headline.days }} Tuesdays, {{ s.headline.wins }} won{% if s.headline.win_pct is not none %} ({{ s.headline.win_pct }}%){% endif %}{% if s.headline.avg_rs is not none %}; &#8377;{{ "{:+,.0f}".format(s.headline.avg_rs) }} a day{% endif %}{% if s.headline.t is not none %} (t {{ "%+.1f"|format(s.headline.t) }}){% endif %}</div>
+          <div class="sub-k">worst &#8377;{{ "{:,.0f}".format(s.headline.worst_rs or 0) }}; research version &#8377;{{ "{:,.0f}".format(s.research.net_rs) }}{% if s.skipped %}; {{ s.skipped }} skipped{% endif %}</div>
+        </div>
+        {% endfor %}
+        <div class="card"><div class="k">Retirement rule</div>
+          <div class="v {{ 'red' if ret.verdict == 'retire' else ('green' if ret.verdict == 'keep' else '') }}">{{ ret.verdict|capitalize }}</div>
+          <div class="sub-k">forward Tuesdays {{ ret.n }} / {{ ret.of }}, net &#8377;{{ "{:,.0f}".format(ret.net_rs) }}</div>
+          {% if st.open %}<div class="sub-k"><span class="amber">open</span>: long {{ st.open.strike }} put since {{ st.open.entry_ts[11:16] }}, marked &#8377;{{ "{:,.0f}".format(st.open.net_rs or 0) }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="nifty-tuesday-put-backfill" class="btn-secondary">Refresh backfill</button>
+        <button type="button" id="nifty-tuesday-put-rebuild" class="btn-secondary">Rebuild from 2 September 2025</button>
+        <span id="nifty-tuesday-put-backfill-status" class="muted"></span>
+        <span class="muted">{{ nifty_tuesday_put_rows|length }} Tuesdays, {{ st.first_date }} to {{ st.last_date }}</span>
+      </div>
+      {% if st.reserved_read %}
+      <p class="muted">Tuesdays read inside the Strategy Tester's reserved window ({{ st.reserved_window[0] }} to {{ st.reserved_window[1] }}): {{ st.reserved_read|join(', ') }}.</p>
+      {% endif %}
+      {% if st.no_data %}
+      <p class="muted">Tuesdays with no NIFTY data stored (a holiday, or a day the collector missed): {{ st.no_data|join(', ') }}.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">Trades</h2>
+      <table class="perf">
+        <thead><tr><th>Date</th><th>Sample</th><th>Strike</th><th>Spot 09:20</th><th>Bought &rarr; sold</th>
+          <th>Research price in / out</th><th>Fills</th><th>Gross &#8377;</th><th>Charges</th><th>Net &#8377;</th>
+          <th>Research version &#8377;</th><th>Quotes</th></tr></thead>
+        <tbody>
+        {% for t in nifty_tuesday_put_rows %}
+          {% if t.status == 'skipped' %}
+          <tr><td>{{ t.trade_date }}</td><td class="muted">{{ t.sample }}</td>
+            <td colspan="10" class="amber">skipped: {{ t.error }}</td></tr>
+          {% else %}
+          <tr>
+            <td>{{ t.trade_date }}</td>
+            <td class="muted">{{ t.sample }}{% if t.source == 'backfill' %} &middot; backfilled{% endif %}</td>
+            <td>{{ t.strike }} PE <span class="muted">{{ t.expiry_code }}</span></td>
+            <td class="muted">{{ "%.2f"|format(t.spot_0920 or 0) }}</td>
+            <td>{{ t.entry_ts[11:16] }} &#8377;{{ "%.2f"|format(t.bought) }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else '' }}{% if t.status == 'open' %} <span class="amber">open</span>{% endif %} &#8377;{{ "%.2f"|format(t.sold) }}</td>
+            <td class="muted">{{ "%.2f"|format(t.entry_research) }} / {{ "%.2f"|format(t.exit_research) }}</td>
+            <td class="muted">{{ t.fills }}</td>
+            <td>&#8377;{{ "{:,.0f}".format(t.gross_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(t.charges_rs or 0) }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td>
+            <td class="muted">&#8377;{{ "{:,.0f}".format(t.research_net_rs or 0) }}</td>
+            <td class="muted">{{ t.quote_source }}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}

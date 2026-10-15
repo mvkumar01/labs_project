@@ -26,6 +26,7 @@ MORE_BOOKS = {
                             "size": "1 lot per leg", "tab": "nifty_expiry_sale"},
     "nifty_expiry_sale_B50": {"label": "Expiry straddle sale B50 (pair stop)", "instrument": "NIFTY options, expiry days",
                               "size": "1 lot per leg", "tab": "nifty_expiry_sale"},
+    "nifty_tuesday_put": {"label": "NIFTY Tuesday put", "instrument": "NIFTY options, Tuesdays", "size": "1 lot"},
     "crudem_combo": {"label": "CRUDEOILM Combo (6 rules)", "instrument": "CRUDEOILM futures", "size": "1 lot · 10 barrels"},
     "gold_cci": {"label": "GOLD CCI short", "instrument": "GOLD futures", "size": "1 lot"},
     "infy_tcs_pair": {"label": "INFY / TCS pair", "instrument": "INFY and TCS shares", "size": "Rs 10 lakh a leg"},
@@ -88,6 +89,22 @@ def _expiry_sale(conn, book: str, today: str) -> dict:
                  position=f"Short {held[-1]['strike']} straddle" if held else "Flat",
                  open_net=sum(_f(r["net_rs"]) for r in held), trades=len(daily),
                  note=f"{sum(1 for r in rows if r['status'] == 'skipped')} expiry days skipped for lack of quotes")
+
+
+def _tuesday_put(conn, today: str) -> dict:
+    from labs.engine.nifty_tuesday_put_tracker import QTY, retirement
+    rows = _rows(conn, "SELECT trade_date, status, sample, strike, bought, net_rs FROM nifty_tuesday_put_trades")
+    closed = [r for r in rows if r["status"] == "closed"]
+    held = [r for r in rows if r["status"] == "open"]
+    ret = retirement(rows)
+    sample = sum(_f(r["net_rs"]) for r in closed if r["sample"] == "research sample")
+    return _card("nifty_tuesday_put", MORE_BOOKS["nifty_tuesday_put"],
+                 [{"trade_date": r["trade_date"], "net": _f(r["net_rs"])} for r in closed], today,
+                 capital=max((_f(r["bought"]) * QTY for r in rows), default=0.0),
+                 position=f"Long {held[-1]['strike']} put" if held else "Flat",
+                 open_net=sum(_f(r["net_rs"]) for r in held), trades=len(closed),
+                 note=(f"Forward Tuesdays {ret['n']} / {ret['of']}, net Rs {ret['net_rs']:,.0f}"
+                       f"{' - retire' if ret['verdict'] == 'retire' else ''}; research sample Rs {sample:,.0f}"))
 
 
 def _mcx(conn, key: str, today: str) -> dict:
@@ -181,6 +198,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "nifty_expiry_sale_A": lambda: _expiry_sale(conn, "A", today),
         "nifty_expiry_sale_B": lambda: _expiry_sale(conn, "B", today),
         "nifty_expiry_sale_B50": lambda: _expiry_sale(conn, "B50", today),
+        "nifty_tuesday_put": lambda: _tuesday_put(conn, today),
         "crudem_combo": lambda: _mcx(conn, "crudem_combo", today),
         "gold_cci": lambda: _mcx(conn, "gold_cci", today),
         "infy_tcs_pair": lambda: _pair(conn, today),

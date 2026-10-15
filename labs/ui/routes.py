@@ -375,6 +375,7 @@ LIVE_TABS = {
     "proposer_v3": "Sensex Proposer v3",
     "proposer_v3_dt35": "Sensex V3 3.5%",
     "nifty_expiry_sale": "NIFTY Expiry Straddle Sale",
+    "nifty_tuesday_put": "NIFTY Tuesday Put",
     "infy_tcs_pair": "INFY / TCS pair",
     "crypto_xs": "Crypto taker imbalance",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
@@ -408,6 +409,7 @@ def live_strategy():
     proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
     proposer_v3_dt35_rows, proposer_v3_dt35_trades, proposer_v3_dt35_stats = [], [], {}
     nifty_expiry_sale_rows, nifty_expiry_sale_books, nifty_expiry_sale_stats = [], [], {}
+    nifty_tuesday_put_rows, nifty_tuesday_put_summaries, nifty_tuesday_put_stats = [], [], {}
     infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
     crypto_xs_rows, crypto_xs_book, crypto_xs_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
@@ -908,6 +910,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     infy_tcs_stats = {"error": str(exc)}
 
+        # NIFTY Tuesday put (paper): its own ledger and tab.
+        if active_live_tab == "nifty_tuesday_put":
+            try:
+                from labs.engine.nifty_tuesday_put_tracker import tab_data as nifty_tuesday_put_tab_data
+                nifty_tuesday_put_rows, nifty_tuesday_put_summaries, nifty_tuesday_put_stats = nifty_tuesday_put_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    nifty_tuesday_put_stats = {"error": str(exc)}
+
         # NIFTY expiry-day straddle sale (paper): its own ledger and tab.
         if active_live_tab == "nifty_expiry_sale":
             try:
@@ -1150,6 +1162,9 @@ def live_strategy():
         nifty_expiry_sale_rows=nifty_expiry_sale_rows,
         nifty_expiry_sale_books=nifty_expiry_sale_books,
         nifty_expiry_sale_stats=nifty_expiry_sale_stats,
+        nifty_tuesday_put_rows=nifty_tuesday_put_rows,
+        nifty_tuesday_put_summaries=nifty_tuesday_put_summaries,
+        nifty_tuesday_put_stats=nifty_tuesday_put_stats,
         infy_tcs_rows=infy_tcs_rows,
         infy_tcs_trades=infy_tcs_trades,
         infy_tcs_stats=infy_tcs_stats,
@@ -1170,6 +1185,25 @@ def infy_tcs_pair_refresh():
     from labs.engine.infy_tcs_pair_tracker import run_day
     try:
         return jsonify(run_day(force=True))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/nifty_tuesday_put/backfill", methods=["POST"])
+def nifty_tuesday_put_backfill():
+    """Replay bounded batches of Tuesdays for the paper-only NIFTY Tuesday put."""
+    from labs.engine.nifty_tuesday_put_tracker import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 10)), 1), 40)
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
