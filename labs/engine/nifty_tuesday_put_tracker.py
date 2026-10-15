@@ -24,11 +24,12 @@ charge model; a side with no quote takes the research price worsened by 0.2 poin
 the shared store (2025-09-02 to 2026-04-21) have five-minute snapshots with the last traded price
 only, so their headline is that price worsened by 0.2 points.
 
-Data. NIFTY quotes come from the shared store (from 2026-04-27). The older Tuesdays exist only on the
-research PC as alphaIMB five-minute snapshot files, so they come from a frozen seed
-(data/nifty_tuesday_put_quote_seed.csv, built by scripts/build_nifty_tuesday_put_seed.py); the 09:20
-spot of the research-sample Tuesdays comes from the seed too (the research's own minute bars), later
-Tuesdays read the labs NIFTY 1-minute spot file.
+Data. The research-sample Tuesdays come from a frozen seed built on the research PC
+(data/nifty_tuesday_put_{spot,quote}_seed.csv, scripts/build_nifty_tuesday_put_seed.py): the 09:20
+spot from the research's own minute bars, and the put quotes from the files the research read -
+alphaIMB five-minute snapshots before the shared store, the shared store's 1-minute quotes after
+(PythonAnywhere has no five-minute files and empty shared-store folders for 2026-04-28 to 05-26).
+Forward Tuesdays read the shared store and the labs NIFTY 1-minute spot file.
 
 Tags. Tuesdays up to SAMPLE_END are the "research sample"; later ones are "forward". Retirement,
 stated in advance: if the first 26 forward Tuesdays net to zero or less after charges, the book is
@@ -75,6 +76,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 SPOT_SEED = BASE_DIR / "data" / "nifty_tuesday_put_spot_seed.csv"
 QUOTE_SEED = BASE_DIR / "data" / "nifty_tuesday_put_quote_seed.csv"
 SEED_SOURCE = "alphaIMB 5-minute snapshots (seed)"
+SEED_1MIN_SOURCE = "shared store, 1-minute quotes (seed)"
 STORE_SOURCE = "shared store, 1-minute quotes"
 
 
@@ -203,10 +205,12 @@ def nearest_puts(trade_date: str) -> tuple[pd.DataFrame, str, str]:
         q = _seed(QUOTE_SEED)
         f = q[q["trade_date"] == trade_date].copy()
         f["minute"] = pd.to_datetime(f["timestamp"]).dt.floor("min")
-        f["bid"] = f["ask"] = np.nan
-        f["ltp"] = pd.to_numeric(f["ltp"], errors="coerce")
-        f["price"] = f["ltp"].where(f["ltp"] > 0)
-        return f[["minute", "strike", "price", "bid", "ask"]], str(f["expiry"].iloc[0]), SEED_SOURCE
+        for c in ("ltp", "bid", "ask"):
+            f[c] = pd.to_numeric(f[c], errors="coerce") if c in f else np.nan
+        f = f.assign(price=_research_price(f), bid=f["bid"].where(f["bid"] > 0), ask=f["ask"].where(f["ask"] > 0))
+        kind = str(f["kind"].iloc[0]) if "kind" in f else "5min"
+        return (f[["minute", "strike", "price", "bid", "ask"]], str(f["expiry"].iloc[0]),
+                SEED_1MIN_SOURCE if kind == "1min" else SEED_SOURCE)
     try:
         frame = load_options_frame(SYMBOL, trade_date, live_root=SHARED_LIVE_DIR, archive_root=SHARED_ARCHIVE_DIR)
     except FileNotFoundError as exc:
