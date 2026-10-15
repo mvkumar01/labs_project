@@ -53,6 +53,7 @@ OPEN_BAR = dtime(9, 15)        # the gap regime reads this candle's close
 OPEN_READY = dtime(9, 16, 10)  # ten seconds after it closes, so the broker serves it whole
 OPEN_VERIFY_UNTIL = dtime(9, 20)   # ask the broker for it until then, afterwards the collector's bar
 OPEN_RETRY_S = 15
+SLOW_CYCLE_S = 5.0             # a cycle this long is logged with the time each step took
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -556,12 +557,33 @@ def publish_heartbeat(user_id: str, conn_id: str, task_id: str) -> bool:
     return True
 
 
+class StepClock:
+    """Seconds each step of one cycle took, so a late order names the step that held it."""
+
+    def __init__(self):
+        self.started = self.last = time.monotonic()
+        self.steps: list[tuple[str, float]] = []
+
+    def mark(self, name: str) -> None:
+        now = time.monotonic()
+        self.steps.append((name, now - self.last))
+        self.last = now
+
+    def total(self) -> float:
+        return time.monotonic() - self.started
+
+    def text(self) -> str:
+        return " ".join(f"{name}={took:.1f}s" for name, took in self.steps)
+
+
 def _adapter(user_id, conn_id, adapters, adapter_factory):
     a = lr._ensure_connected_adapter(user_id, conn_id, adapters=adapters, adapter_factory=adapter_factory)
     if a is not None and getattr(a, "_proposer_segment", None) != SEGMENT:
         if hasattr(a, "use_segment"):
             a.use_segment(SEGMENT, UNDERLYING)
         a._proposer_segment = SEGMENT
+    if a is not None and hasattr(a, "warm_symbols"):
+        a.warm_symbols()        # the contract list is in memory before any order needs it
     return a
 
 
@@ -620,6 +642,7 @@ def _entry_price_fn(market: KiteMarket, symbol: str, cap: float, sent: dict):
 def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: PredictorFeed,
                        market: KiteMarket, now: datetime, adapter_factory=None) -> bool:
     """One cycle for one Proposer connection. Returns True while a position is open."""
+    clock = ctx.setdefault("clocks", {})[conn_id] = StepClock()
     if not publish_heartbeat(user_id, conn_id, ctx["task_id"]):
         return False
     mode = ex.get_mode(user_id, conn_id)
@@ -638,7 +661,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     if not lr.market_session_available(now.replace(tzinfo=None)):
         return False
     dry_run = mode == ex.Mode.DRY_RUN
+    clock.mark("state")
     adapter = _adapter(user_id, conn_id, ctx["adapters"], adapter_factory)
+    clock.mark("broker_session")
     if adapter is None:
         return is_open
     if not dry_run and is_open and int(st.get("virtual") or 0):
@@ -666,12 +691,14 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
     snap = feed.snapshot()
+    clock.mark("book")
 
     spot = market.spot()
     session_bars = ctx.setdefault("bars", SessionBars())
     session_bars.note(now, spot)
     quote = market.quote(st["symbol"]) if is_open and st.get("symbol") else None
     ltp = (quote or {}).get("ltp")
+    clock.mark("market")
     pos = pe.Position()
     if is_open:
         pos = pe.Position(side=("CE" if st.get("side") == "CALL" else "PE"),
@@ -723,10 +750,12 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             log.warning("no nearest-weekly %s%s in today's chain; entry skipped", strike, typ)
             return False
         broker_sym = adapter.broker_symbol(symbol) if hasattr(adapter, "broker_symbol") else symbol
+        clock.mark("contract")
         configured = svc.get_lots(user_id, conn_id)
         lots = ex.freeze_capped_lots(configured, LOT_SIZE, UNDERLYING)
         q = market.quote(symbol) or {}
         price = q.get("ask") or q.get("ltp")
+        clock.mark("quote")
         if not price:
             log.warning("entry skipped: no quote for %s", symbol)
             return False
@@ -752,6 +781,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             notify_telegram(f"⚠️ Proposer ENTER {sig.side} {broker_sym} {lots} lots rejected ({reason}) "
                             f"— retrying with {smaller} lots")
             lots = smaller
+        clock.mark("order")
+        log.info("entry timing | print %s %s | broker answered %.1fs into the cycle (%s) | %s", key_ts,
+                 broker_sym, clock.total(), clock.text(), result.status)
         qty = lots * LOT_SIZE
         got = None if dry_run else ex.filled_qty(result)
         partial = bool(got and got > 0 and str(result.status or "").upper() in lr._IOC_NO_FILL
@@ -820,7 +852,10 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
                 log.error("regime job error: %s", e)
             try:
                 if lr.market_session_available(now) and now.time() <= dtime(15, 21):
+                    feed_started = time.monotonic()
                     feed.step(now)
+                    if time.monotonic() - feed_started >= SLOW_CYCLE_S:
+                        log.info("predictor feed step took %.1fs", time.monotonic() - feed_started)
             except Exception as e:
                 log.error("predictor feed error: %s", e)
             try:
@@ -833,6 +868,9 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
                                                             adapter_factory=adapter_factory))
                     except Exception as e:
                         log.error("proposer conn %s cycle error: %s", conn_id, e)
+                    took = ctx.get("clocks", {}).get(conn_id)
+                    if took is not None and took.total() >= SLOW_CYCLE_S:
+                        log.info("cycle timing conn=%s took %.1fs (%s)", conn_id, took.total(), took.text())
             except Exception as e:
                 log.error("proposer loop error: %s", e)
             cycles += 1

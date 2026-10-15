@@ -17,15 +17,19 @@ Phase-0 dry-run + CI green).
 """
 import hashlib
 import json
+import logging
 import os
 import calendar
 import re
+import threading
 import time
 from datetime import datetime
 
 from .base import BrokerAdapter, OrderResult, Position
 from config.labs_config import STATE_DIR
 from live.brokers.order_transport import send_order
+
+log = logging.getLogger("live.brokers.angel")
 
 
 def _live_orders_enabled() -> bool:
@@ -66,6 +70,66 @@ INSTRUMENT_MASTER_URL = (
     "OpenAPIScripMaster.json"
 )
 INSTRUMENT_FILE = STATE_DIR / "angel_instruments.json"
+# The master is 35 MB and takes over a minute to fetch from PythonAnywhere. A file
+# this recent (a long weekend) answers a lookup at once while today's is fetched
+# on a side thread, so an order never waits for the download (2026-10-13).
+INSTRUMENT_MAX_AGE_DAYS = 4
+INSTRUMENT_REFRESH_RETRY_S = 300.0
+_REFRESH_LOCK = threading.Lock()
+_REFRESH_STATE = {"running": False, "tried_at": None}
+_ROWS_LOCK = threading.Lock()
+_UNDERLYING_ROWS: dict = {}      # (file stamp, exchange, underlying) -> that underlying's rows
+
+
+def _instrument_file_stamp():
+    try:
+        return INSTRUMENT_FILE.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _instrument_file_age_days():
+    """Whole days since the file was written (0 = today), None when there is no file."""
+    stamp = _instrument_file_stamp()
+    if stamp is None:
+        return None
+    return (datetime.now().date() - datetime.fromtimestamp(stamp).date()).days
+
+
+def _download_instrument_master() -> None:
+    """Fetch the master and swap it in whole, so a reader never sees half a file."""
+    import requests
+
+    INSTRUMENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    response = requests.get(INSTRUMENT_MASTER_URL, timeout=45)
+    response.raise_for_status()
+    tmp = INSTRUMENT_FILE.with_name(f"{INSTRUMENT_FILE.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(response.json()), encoding="utf-8")
+    os.replace(tmp, INSTRUMENT_FILE)
+
+
+def refresh_instrument_master_in_background() -> bool:
+    """Start one side-thread download unless one is running or was tried moments ago."""
+    with _REFRESH_LOCK:
+        tried = _REFRESH_STATE["tried_at"]
+        if _REFRESH_STATE["running"] or (
+                tried is not None and time.monotonic() - tried < INSTRUMENT_REFRESH_RETRY_S):
+            return False
+        _REFRESH_STATE.update(running=True, tried_at=time.monotonic())
+
+    def work():
+        started = time.monotonic()
+        try:
+            _download_instrument_master()
+            log.info("Angel instrument master refreshed in %.0fs", time.monotonic() - started)
+        except Exception as e:
+            log.warning("Angel instrument master refresh failed: %s", type(e).__name__)
+        finally:
+            with _REFRESH_LOCK:
+                _REFRESH_STATE["running"] = False
+
+    threading.Thread(target=work, daemon=True, name="angel-instruments").start()
+    return True
 
 # Short-TTL read cache (rate-limit defense, 2026-07-07). One ~2s poll cycle
 # reads position/LTP several times (reconcile + gate + verify + exit_all); each
@@ -117,6 +181,7 @@ class AngelAdapter(BrokerAdapter):
         self._token_cache = {}
         self._symbol_cache = {}
         self._read_cache = {}   # key -> (expiry_monotonic, value); see _cached
+        self._keeps_rows = True  # look symbols up in the underlying's kept rows first
 
     def use_segment(self, segment: str, underlying: str) -> None:
         """Trade another index's options on this connection (SENSEX on BFO).
@@ -282,18 +347,45 @@ class AngelAdapter(BrokerAdapter):
         return {}
 
     def _ensure_instrument_master(self) -> list:
-        refresh = True
-        if INSTRUMENT_FILE.exists():
-            modified = datetime.fromtimestamp(INSTRUMENT_FILE.stat().st_mtime).date()
-            refresh = modified != datetime.now().date()
-        if refresh:
-            import requests
-
-            INSTRUMENT_FILE.parent.mkdir(parents=True, exist_ok=True)
-            response = requests.get(INSTRUMENT_MASTER_URL, timeout=45)
-            response.raise_for_status()
-            INSTRUMENT_FILE.write_text(json.dumps(response.json()), encoding="utf-8")
+        age = _instrument_file_age_days()
+        if age is None or age < 0 or age > INSTRUMENT_MAX_AGE_DAYS:
+            _download_instrument_master()           # nothing usable on disk: wait for it
+        elif age > 0:
+            refresh_instrument_master_in_background()   # usable now; today's arrives off this path
         return json.loads(INSTRUMENT_FILE.read_text(encoding="utf-8"))
+
+    def _underlying_rows(self) -> list | None:
+        """This underlying's rows of the current file, parsed once per file and kept.
+
+        The whole file is 150,000 rows and costs most of a second to parse on every
+        new strike; SENSEX on BFO is about 3,000 of them. None when there is no file
+        to key on, so the caller reads the master the ordinary way."""
+        age = _instrument_file_age_days()
+        if age is None or age < 0 or age > INSTRUMENT_MAX_AGE_DAYS:
+            return None
+        if age > 0:
+            refresh_instrument_master_in_background()
+        stamp = _instrument_file_stamp()
+        if stamp is None:
+            return None
+        key = (stamp, self._EXCHANGE, self._underlying)
+        with _ROWS_LOCK:
+            rows = _UNDERLYING_ROWS.get(key)
+            if rows is None:
+                rows = [r for r in self._ensure_instrument_master()
+                        if r.get("exch_seg") == self._EXCHANGE
+                        and str(r.get("name") or "").upper() == self._underlying]
+                for old in [k for k in _UNDERLYING_ROWS if k[1:] == key[1:]]:
+                    del _UNDERLYING_ROWS[old]
+                _UNDERLYING_ROWS[key] = rows
+        return rows
+
+    def warm_symbols(self) -> None:
+        """Load this underlying's rows now, so the first order of the day looks up in memory."""
+        try:
+            self._underlying_rows()
+        except Exception as e:
+            log.warning("Angel instrument warm-up failed: %s", type(e).__name__)
 
     @staticmethod
     def _parse_zerodha_nifty_symbol(symbol: str) -> dict | None:
@@ -334,15 +426,16 @@ class AngelAdapter(BrokerAdapter):
         return None
 
     def _resolve_symbol_meta(self, symbol: str) -> dict:
+        if getattr(self, "_keeps_rows", False):
+            stamp = _instrument_file_stamp()
+            if stamp != getattr(self, "_symbols_from", stamp):
+                self._symbol_cache.clear()      # a new master: resolve against it afresh
+                self._token_cache.clear()
+            self._symbols_from = stamp
         cached = self._symbol_cache.get(symbol)
         if cached:
             return cached
         parsed = self._parse_zerodha_nifty_symbol(symbol)
-        try:
-            instruments = self._ensure_instrument_master()
-        except Exception:
-            instruments = []
-
         target_expiry = (
             self._angel_expiry_from_zerodha(parsed["expiry"])
             if parsed else None
@@ -351,17 +444,57 @@ class AngelAdapter(BrokerAdapter):
             # Matching "any expiry" would pick an arbitrary contract.
             raise RuntimeError(
                 f"cannot decode expiry {parsed['expiry']!r} of {symbol} -- entry refused")
+        # The underlying's own rows (in memory) answer almost every lookup; the whole
+        # file is read only when they do not hold the symbol.
+        meta = None
+        if getattr(self, "_keeps_rows", False):
+            try:
+                kept = self._underlying_rows()
+            except Exception:
+                kept = None
+            if kept:
+                meta = self._match_instrument(symbol, parsed, target_expiry, kept)
+        if meta is None:
+            try:
+                instruments = self._ensure_instrument_master()
+            except Exception:
+                instruments = []
+            meta = self._match_instrument(symbol, parsed, target_expiry, instruments)
+        if meta is not None:
+            self._symbol_cache[symbol] = meta
+            self._token_cache[symbol] = meta["token"]
+            return meta
+
+        # Fallback to broker search if the daily master is unavailable or the
+        # symbol format changes. This keeps DRY_RUN diagnosis possible.
+        resp = self._smart.searchScrip(self._EXCHANGE, symbol)
+        rows = (resp or {}).get("data") or []
+        match = None
+        for row in rows:
+            if str(row.get("tradingsymbol") or "").strip().upper() == symbol.upper():
+                match = row
+                break
+        # Never fall back to "the first search hit": a near-miss can be another
+        # underlying. No exact symbol -> no order.
+        token = str((match or {}).get("symboltoken") or "")
+        if not token:
+            raise RuntimeError(f"Angel symboltoken not found for {symbol}")
+        broker_symbol = str(match.get("tradingsymbol") or symbol).strip().upper()
+        meta = {"symbol": broker_symbol, "token": token, "lotsize": None}
+        self._symbol_cache[symbol] = meta
+        self._token_cache[symbol] = token
+        return meta
+
+    def _match_instrument(self, symbol: str, parsed, target_expiry, instruments) -> dict | None:
+        """The contract `symbol` names among `instruments`, or None."""
         candidates = []
         for ins in instruments:
             if ins.get("exch_seg") != self._EXCHANGE:
                 continue
             angel_symbol = str(ins.get("symbol") or ins.get("tradingsymbol") or "").upper()
             if angel_symbol == str(symbol).upper():
-                meta = {"symbol": angel_symbol, "token": str(ins.get("token")),
+                return {"symbol": angel_symbol, "token": str(ins.get("token")),
                         "lotsize": _lotsize(ins)}
-                self._symbol_cache[symbol] = meta
-                self._token_cache[symbol] = meta["token"]
-                return meta
             if not parsed:
                 continue
             # The underlying MUST be the NIFTY index option. On a monthly expiry
@@ -388,31 +521,9 @@ class AngelAdapter(BrokerAdapter):
                 })
         if candidates:
             candidates.sort(key=lambda x: x["expiry"])
-            meta = {"symbol": candidates[0]["symbol"], "token": candidates[0]["token"],
+            return {"symbol": candidates[0]["symbol"], "token": candidates[0]["token"],
                     "lotsize": candidates[0]["lotsize"]}
-            self._symbol_cache[symbol] = meta
-            self._token_cache[symbol] = meta["token"]
-            return meta
-
-        # Fallback to broker search if the daily master is unavailable or the
-        # symbol format changes. This keeps DRY_RUN diagnosis possible.
-        resp = self._smart.searchScrip(self._EXCHANGE, symbol)
-        rows = (resp or {}).get("data") or []
-        match = None
-        for row in rows:
-            if str(row.get("tradingsymbol") or "").strip().upper() == symbol.upper():
-                match = row
-                break
-        # Never fall back to "the first search hit": a near-miss can be another
-        # underlying. No exact symbol -> no order.
-        token = str((match or {}).get("symboltoken") or "")
-        if not token:
-            raise RuntimeError(f"Angel symboltoken not found for {symbol}")
-        broker_symbol = str(match.get("tradingsymbol") or symbol).strip().upper()
-        meta = {"symbol": broker_symbol, "token": token, "lotsize": None}
-        self._symbol_cache[symbol] = meta
-        self._token_cache[symbol] = token
-        return meta
+        return None
 
     def _resolve_symbol_token(self, symbol: str) -> str:
         return self._resolve_symbol_meta(symbol)["token"]
