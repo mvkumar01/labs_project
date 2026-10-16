@@ -51,6 +51,7 @@ from config.labs_config import ARCHIVE_DIR, DATA_DIR, SHARED_ARCHIVE_DIR, SHARED
 from labs.engine.charges import sensex_round_trip_charges
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
+from live.engine import proposer_strike as ps
 from market_data.expiry import select_expiry_code
 from market_data.shared_store import load_options_frame
 from storage.db import get_conn
@@ -216,6 +217,27 @@ def _session_frame(day: str) -> pd.DataFrame:
     for column in ("spot", "strike", "bid", "ask", "ltp", "oi"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame.dropna(subset=["timestamp", "spot", "strike"])
+
+
+# The live runner takes Sentinel's |delta| >= 0.60 strike from 2026-10-16 (live/engine/proposer_strike.py);
+# the simulated books follow from the next session, so the sessions already booked keep ATM -/+200.
+DELTA_STRIKE_FROM = "2026-10-19"
+# Only the books that mirror a live preset; the shadows copy Pramanaa's simulated bot (ATM -/+200).
+DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35"})
+
+
+def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
+                  book_key: str = "proposer_v3") -> tuple[int, str]:
+    """The strike an entry at `t` buys: before DELTA_STRIKE_FROM ATM -/+200; from it, the live
+    runner's rule on the latest snapshot of the chain at or before `t`."""
+    if day < DELTA_STRIKE_FROM or book_key not in DELTA_STRIKE_BOOKS:
+        return pe.itm_strike(spot, side)
+    seen = near[near["timestamp"] <= t]
+    if seen.empty:
+        return pe.itm_strike(spot, side)
+    snap = seen[seen["timestamp"] == seen["timestamp"].max()]
+    _, strike, typ, _ = ps.delta_itm_symbol(snap, side, spot, date.fromisoformat(day))
+    return strike, typ
 
 
 class _Contract:
@@ -424,7 +446,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             elif fresh and snap:
                 sig = eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot, day_move=move)
                 if sig.action == "ENTER" and now_.time() < ENTRY_CUTOFF:
-                    strike, typ = pe.itm_strike(spot, sig.side)
+                    strike, typ = _entry_strike(day, near, now_, spot, sig.side, book.key)
                     quotes = quote_book.get((typ, strike))
                     c = _Contract(quotes, snap_spot) if quotes is not None else None
                     q = c.quote(t) if c else None

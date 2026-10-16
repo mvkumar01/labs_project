@@ -218,7 +218,7 @@ def test_v3_dt35_live_preset_label_and_decision_contract(monkeypatch):
         lambda _user, _conn, key: {"decision_engine": "proposer", "strategy_version": "proposer_dt35_v3"}[key],
     )
     assert live_routes._current_strategy_preset(USER, CONN) == "proposer_dt35_v3"
-    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v6"
+    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v7"
 
 
 class FakeAdapter:
@@ -283,7 +283,7 @@ class FakeFeed:
 
 
 CHAIN = pd.DataFrame([{"timestamp": "x", "tradingsymbol": "SENSEX26O0874000CE", "strike": 74000,
-                       "option_type": "CE", "expiry": "26O08", "oi": 1, "spot": 74226}])
+                       "option_type": "CE", "expiry": "26O08", "ltp": 400.0, "oi": 1, "spot": 74226}])
 
 
 def _cycle(feed, market, now, adapters_box, ctx):

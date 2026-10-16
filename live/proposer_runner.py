@@ -37,6 +37,7 @@ from live import live_runner as lr
 from live import live_service as svc
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
+from live.engine import proposer_strike as ps
 from live.notify import notify_telegram
 from market_data.expiry import expiry_code_from_symbol, select_expiry_code
 
@@ -53,6 +54,7 @@ OPEN_BAR = dtime(9, 15)        # the gap regime reads this candle's close
 OPEN_READY = dtime(9, 16, 10)  # ten seconds after it closes, so the broker serves it whole
 OPEN_VERIFY_UNTIL = dtime(9, 20)   # ask the broker for it until then, afterwards the collector's bar
 OPEN_RETRY_S = 15
+# Strike choice: live/engine/proposer_strike.py (Sentinel's |delta| >= 0.60 rule, from 2026-10-16).
 SLOW_CYCLE_S = 5.0             # a cycle this long is logged with the time each step took
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -291,7 +293,7 @@ def option_chain(day: date) -> pd.DataFrame:
     if not path.is_file():
         return pd.DataFrame()
     f = pd.read_csv(path, usecols=["timestamp", "tradingsymbol", "strike", "option_type",
-                                   "expiry", "oi", "spot"])
+                                   "expiry", "ltp", "oi", "spot"])
     if f.empty:
         return f
     f = f[f["timestamp"] == f["timestamp"].max()].copy()
@@ -745,10 +747,13 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     if (sig.action == "ENTER" and not is_open and not blocked and spot
             and now.time() < ENTRY_CUTOFF and lr.check_daily_loss(user_id, conn_id)):
         chain = option_chain(now.date())
-        symbol, strike, typ = itm_symbol(chain, sig.side, spot)
+        symbol, strike, typ, picked = ps.delta_itm_symbol(chain, sig.side, spot, now.date())
         if not symbol:
-            log.warning("no nearest-weekly %s%s in today's chain; entry skipped", strike, typ)
+            log.warning("no %s strike by delta (%s, spot %.0f); entry skipped", typ, picked.get("reason"), spot)
             return False
+        log.info("strike (|delta|>=%.2f): %s -> %s%s |delta|=%s ltp=%s depth=%s (spot %.0f, atm %s; seen %s)",
+                 ps.MIN_ENTRY_DELTA, sig.side, strike, typ, picked.get("delta"), picked.get("ltp"),
+                 picked.get("depth"), spot, picked.get("atm"), picked.get("candidates"))
         broker_sym = adapter.broker_symbol(symbol) if hasattr(adapter, "broker_symbol") else symbol
         clock.mark("contract")
         configured = svc.get_lots(user_id, conn_id)

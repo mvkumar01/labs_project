@@ -151,7 +151,7 @@ class Feed:
 
 
 CHAIN = pd.DataFrame([{"timestamp": "x", "tradingsymbol": "SENSEX26O0874000CE", "strike": 74000,
-                       "option_type": "CE", "expiry": "26O08", "oi": 1, "spot": 74226}])
+                       "option_type": "CE", "expiry": "26O08", "ltp": 400.0, "oi": 1, "spot": 74226}])
 
 
 def test_dry_run_exits_on_the_renko_brick_and_takes_no_second_trade(db, monkeypatch):

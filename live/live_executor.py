@@ -61,7 +61,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v4 (2026-10-08): the runner also trades proposer_dt25_v3 (entries only with the day).
 # v5 (2026-10-10): proposer_dt25_v3's premium floor is -20%.
 # v6 (2026-10-14): the runner also trades proposer_dt35_v3 (v3 with a 3.5% day target).
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v6"
+# v7 (2026-10-16): every Proposer entry takes Sentinel's strike - the shallowest ITM strike with
+# |delta| >= 0.60 (ATM -/+200..500) - instead of a fixed ATM -/+200.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v7"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
