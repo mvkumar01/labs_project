@@ -132,3 +132,14 @@ def test_simulated_books_switch_from_the_next_session(deltas):
     assert tr._entry_strike("2026-10-19", near.iloc[0:0], t, 74138.0, "PUT") == (74300, "PE")
     assert tr._entry_strike("2026-10-19", near, t, 74138.0, "PUT", "proposer_dt25_clock") == (74300, "PE")  # shadows
     assert tr._entry_strike("2026-10-19", near, t, 74138.0, "PUT", "proposer_px") == (74500, "PE")
+
+
+def test_dt35_on_pramanaas_timing_is_a_paper_book_of_the_live_preset():
+    from labs.engine import proposer_px_tracker as tr
+    from labs.engine import proposer_v3_dt35_clock_book as clock_book
+    from live.engine import proposer_engine as pe
+    book = clock_book.BOOK
+    assert book.key == "proposer_v3_dt35_clock" and book.strategy_version == pe.STRATEGY_VERSION_V3_DT35
+    assert book.print_gap_s == tr.PRAMANAA_PRINT_GAP_S == pytest.approx(310.5)
+    assert tr.V3_DT35.print_gap_s == 300.0                      # the book that mirrors the live bot keeps five minutes
+    assert book.key in tr.DELTA_STRIKE_BOOKS

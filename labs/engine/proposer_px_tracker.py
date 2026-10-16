@@ -104,6 +104,9 @@ V3_DT35 = Book("proposer_v3_dt35", pe.STRATEGY_VERSION_V3_DT35)
 V3_CLOCK = Book("proposer_v3_clock", pe.STRATEGY_VERSION_V3, PRAMANAA_PRINT_GAP_S)
 DT25 = Book("proposer_dt25_shadow", pe.STRATEGY_VERSION)
 DT25_CLOCK = Book("proposer_dt25_clock", pe.STRATEGY_VERSION, PRAMANAA_PRINT_GAP_S)
+# The live preset proposer_dt35_v3 on Pramanaa's print timing - a paper trial of the copied clock
+# before it goes live (Vipin, 2026-10-16).
+V3_DT35_CLOCK = Book("proposer_v3_dt35_clock", pe.STRATEGY_VERSION_V3_DT35, PRAMANAA_PRINT_GAP_S)
 
 
 # ------------------------------------------------------------------ schema ---
@@ -222,8 +225,9 @@ def _session_frame(day: str) -> pd.DataFrame:
 # The live runner takes Sentinel's |delta| >= 0.60 strike from 2026-10-16 (live/engine/proposer_strike.py);
 # the simulated books follow from the next session, so the sessions already booked keep ATM -/+200.
 DELTA_STRIKE_FROM = "2026-10-19"
-# Only the books that mirror a live preset; the shadows copy Pramanaa's simulated bot (ATM -/+200).
-DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35"})
+# The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
+# Pramanaa's simulated bot (ATM -/+200).
+DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
