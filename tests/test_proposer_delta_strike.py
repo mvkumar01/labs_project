@@ -158,3 +158,20 @@ def test_live_presets_wait_270_s_after_an_exit_and_the_books_follow_from_19_oct(
     for shadow in (tr.DT25, tr.DT25_CLOCK, tr.V3_CLOCK):                # copies of Pramanaa's bot
         assert tr.params_on("2026-10-19", shadow).reentry_cooldown_secs == 300.0
     assert tr.params_on("2026-10-16", tr.V3).daily_target_pct == pe.params_for(pe.STRATEGY_VERSION_V3).daily_target_pct
+
+
+def test_v4_takes_the_live_settings_from_its_first_session(deltas):
+    from datetime import datetime
+    from labs.engine import proposer_px_tracker as tr
+    from labs.engine import proposer_v4_book as v4
+    from live.engine import proposer_engine as pe
+    assert v4.BOOK is tr.V4 and v4.BOOK.strategy_version == pe.STRATEGY_VERSION_V3_DT35
+    assert v4.BOOK.print_gap_s == 300.0 and v4.DEFAULT_START == "2026-07-01"
+    assert tr.params_on("2026-07-01", tr.V4).reentry_cooldown_secs == 270.0
+    assert tr.params_on("2026-07-01", tr.V4) == pe.params_for(pe.STRATEGY_VERSION_V3_DT35)
+    assert tr.params_on("2026-07-01", tr.V3_DT35).reentry_cooldown_secs == 300.0      # the mirror keeps its history
+    deltas.update({74300: -0.55, 74400: -0.57, 74500: -0.61, 74600: -0.66})
+    near = chain([74300, 74400, 74500, 74600]).assign(timestamp=pd.Timestamp("2026-07-01 09:22"))
+    t = datetime(2026, 7, 1, 9, 22, 25)
+    assert tr._entry_strike("2026-07-01", near, t, 74138.0, "PUT", "proposer_v4") == (74500, "PE")
+    assert tr._entry_strike("2026-07-01", near, t, 74138.0, "PUT", "proposer_v3_dt35") == (74300, "PE")

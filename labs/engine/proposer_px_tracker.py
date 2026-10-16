@@ -108,6 +108,9 @@ DT25_CLOCK = Book("proposer_dt25_clock", pe.STRATEGY_VERSION, PRAMANAA_PRINT_GAP
 # The live preset proposer_dt35_v3 on Pramanaa's print timing - a paper trial of the copied clock
 # before it goes live (Vipin, 2026-10-16).
 V3_DT35_CLOCK = Book("proposer_v3_dt35_clock", pe.STRATEGY_VERSION_V3_DT35, PRAMANAA_PRINT_GAP_S)
+# Sensex V4: the live preset proposer_dt35_v3 with the live settings of 16 Oct 2026 (Sentinel strike,
+# 270 s cooldown) from its first session, so its history shows how they would have traded (Vipin).
+V4 = Book("proposer_v4", pe.STRATEGY_VERSION_V3_DT35)
 
 
 # ------------------------------------------------------------------ schema ---
@@ -229,25 +232,30 @@ DELTA_STRIKE_FROM = "2026-10-19"
 # The live presets wait 270 s after an exit from 2026-10-16; the books that mirror them follow from the
 # next session. The shadows copy Pramanaa's simulated bot, which waits 300 s.
 COOLDOWN_270_FROM = "2026-10-19"
+# Books that take both from an earlier session instead.
+SETTINGS_FROM = {"proposer_v4": "2026-07-01"}
 
 
 def params_on(day: str, book) -> "pe.ProposerParams":
     """The parameters a book trades with on `day`: the live preset's, except that sessions before
-    COOLDOWN_270_FROM, and the shadow books, keep the 300 s re-entry cooldown."""
+    COOLDOWN_270_FROM (or the book's SETTINGS_FROM), and the shadow books, keep the 300 s re-entry
+    cooldown."""
     params = pe.params_for(book.strategy_version)
-    if (day < COOLDOWN_270_FROM or book.key not in DELTA_STRIKE_BOOKS) and params.reentry_cooldown_secs != 300.0:
+    if ((day < SETTINGS_FROM.get(book.key, COOLDOWN_270_FROM) or book.key not in DELTA_STRIKE_BOOKS)
+            and params.reentry_cooldown_secs != 300.0):
         params = dataclasses.replace(params, reentry_cooldown_secs=300.0)
     return params
 # The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
 # Pramanaa's simulated bot (ATM -/+200).
-DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock"})
+DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
+                                "proposer_v4"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
                   book_key: str = "proposer_v3") -> tuple[int, str]:
     """The strike an entry at `t` buys: before DELTA_STRIKE_FROM ATM -/+200; from it, the live
     runner's rule on the latest snapshot of the chain at or before `t`."""
-    if day < DELTA_STRIKE_FROM or book_key not in DELTA_STRIKE_BOOKS:
+    if day < SETTINGS_FROM.get(book_key, DELTA_STRIKE_FROM) or book_key not in DELTA_STRIKE_BOOKS:
         return pe.itm_strike(spot, side)
     seen = near[near["timestamp"] <= t]
     if seen.empty:
