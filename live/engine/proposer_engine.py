@@ -52,6 +52,14 @@ V3_LOSS_FLOOR_PCT = -0.20
 # v3 with the only changed parameter being the per-trade day target (3.5% vs 2.5%).
 STRATEGY_VERSION_V3_DT35 = "proposer_dt35_v3"
 V3_DT35_DAY_TARGET_PCT = 0.035
+# Every live preset waits 270 s after an exit, not Pramanaa's 300 s (2026-10-16; tested on v3 and
+# v3 3.5%, applied to all at the operator's request): prints come every 300 s and a
+# spot-target exit lands a few seconds after one, so the next print is due ~4m50s after the exit -
+# inside a 300 s cooldown, and thrown away (16 Oct 09:32:25 vs a cooldown to 09:32:37). 270 s still
+# burns the print that arrived while the trade was open. Labs tracker, fresh book from 1 Jul, v3 3.5%
+# with the Sentinel strike: +10.64L vs +9.53L, worst day -2.56L vs -3.27L; v3 2.5%: +9.44L vs
+# +7.57L (alphaIMB REBUILD.md sec. 29).
+REENTRY_COOLDOWN_S = 270.0
 
 
 @dataclass(frozen=True)
@@ -82,16 +90,18 @@ class ProposerParams:
 def params_for(strategy_version: Optional[str]) -> ProposerParams:
     """The parameter set a strategy version trades with."""
     if str(strategy_version or "") == STRATEGY_VERSION_PX:
-        return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1)
+        return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1, reentry_cooldown_secs=REENTRY_COOLDOWN_S)
     if str(strategy_version or "") == STRATEGY_VERSION_V3:
-        return ProposerParams(with_day_pts=V3_WITH_DAY_PTS, loss_floor_pct=V3_LOSS_FLOOR_PCT)
+        return ProposerParams(with_day_pts=V3_WITH_DAY_PTS, loss_floor_pct=V3_LOSS_FLOOR_PCT,
+                              reentry_cooldown_secs=REENTRY_COOLDOWN_S)
     if str(strategy_version or "") == STRATEGY_VERSION_V3_DT35:
         return ProposerParams(
             with_day_pts=V3_WITH_DAY_PTS,
             loss_floor_pct=V3_LOSS_FLOOR_PCT,
             daily_target_pct=V3_DT35_DAY_TARGET_PCT,
+            reentry_cooldown_secs=REENTRY_COOLDOWN_S,
         )
-    return ProposerParams()
+    return ProposerParams(reentry_cooldown_secs=REENTRY_COOLDOWN_S)
 
 
 @dataclass(frozen=True)

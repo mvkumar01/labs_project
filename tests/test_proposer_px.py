@@ -59,7 +59,7 @@ def test_consecutive_adverse_closes():
 
 # ══════════════════════════════════════════════════════════════════ engine ══
 def test_variant_parameters_and_the_default_is_unchanged():
-    assert pe.params_for("proposer_dt25") == pe.ProposerParams()
+    assert pe.params_for("proposer_dt25") == pe.ProposerParams(reentry_cooldown_secs=270.0)
     assert pe.ProposerParams().bar_exit == "" and pe.ProposerParams().max_losses_per_day == 0
     px = pe.params_for(pe.STRATEGY_VERSION_PX)
     assert px.bar_exit == "renko-50" and px.max_losses_per_day == 1
@@ -235,7 +235,7 @@ def test_switching_the_preset_rebuilds_the_engine(db, monkeypatch):
     assert ctx["conns"][CONN].engine.params.max_losses_per_day == 1
     svc.set_config(USER, CONN, "strategy_version", "proposer_dt25")
     pr.process_connection(USER, CONN, **args)
-    assert ctx["conns"][CONN].engine.params == pe.ProposerParams()
+    assert ctx["conns"][CONN].engine.params == pe.ProposerParams(reentry_cooldown_secs=270.0)
 
 
 # ══════════════════════════════════════════════════════════════ paper book ══
@@ -374,7 +374,8 @@ def test_paper_book_reads_the_gap_at_the_close_of_the_0915_bar(paper, monkeypatc
 
 # ══════════════════════════════════════════════════ v3: only with the day ══
 def test_v3_parameters_and_the_with_the_day_entry_filter():
-    assert pe.params_for(pe.STRATEGY_VERSION_V3) == pe.ProposerParams(with_day_pts=75.0, loss_floor_pct=-0.20)
+    assert pe.params_for(pe.STRATEGY_VERSION_V3) == pe.ProposerParams(with_day_pts=75.0, loss_floor_pct=-0.20,
+                                                                       reentry_cooldown_secs=270.0)
     held = pe.Position("CE", 400.0, 74000.0, 20)                              # 21% under water
     for version, action in ((pe.STRATEGY_VERSION_V3, "EXIT"), (pe.STRATEGY_VERSION, "HOLD")):
         e = pe.ProposerEngine(pe.params_for(version))
@@ -408,7 +409,8 @@ def test_v3_parameters_and_the_with_the_day_entry_filter():
 def test_v3_dt35_changes_only_the_day_target():
     from labs.engine import proposer_px_tracker as tr
 
-    expected = pe.ProposerParams(with_day_pts=75.0, loss_floor_pct=-0.20, daily_target_pct=0.035)
+    expected = pe.ProposerParams(with_day_pts=75.0, loss_floor_pct=-0.20, daily_target_pct=0.035,
+                                 reentry_cooldown_secs=270.0)
     assert pe.params_for(pe.STRATEGY_VERSION_V3_DT35) == expected
     assert pe.STRATEGY_VERSION_V3_DT35 == "proposer_dt35_v3"
     assert pe.V3_DT35_DAY_TARGET_PCT == 0.035

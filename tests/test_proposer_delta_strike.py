@@ -143,3 +143,18 @@ def test_dt35_on_pramanaas_timing_is_a_paper_book_of_the_live_preset():
     assert book.print_gap_s == tr.PRAMANAA_PRINT_GAP_S == pytest.approx(310.5)
     assert tr.V3_DT35.print_gap_s == 300.0                      # the book that mirrors the live bot keeps five minutes
     assert book.key in tr.DELTA_STRIKE_BOOKS
+
+
+def test_live_presets_wait_270_s_after_an_exit_and_the_books_follow_from_19_oct():
+    from labs.engine import proposer_px_tracker as tr
+    from live.engine import proposer_engine as pe
+    for v in (pe.STRATEGY_VERSION, pe.STRATEGY_VERSION_PX, pe.STRATEGY_VERSION_V3, pe.STRATEGY_VERSION_V3_DT35):
+        assert pe.params_for(v).reentry_cooldown_secs == 270.0
+    assert pe.ProposerParams().reentry_cooldown_secs == 300.0          # Pramanaa's engine default
+    assert tr.params_on("2026-10-16", tr.V3_DT35).reentry_cooldown_secs == 300.0
+    assert tr.params_on("2026-10-19", tr.V3_DT35).reentry_cooldown_secs == 270.0
+    assert tr.params_on("2026-10-19", tr.V3_DT35_CLOCK).reentry_cooldown_secs == 270.0
+    assert tr.params_on("2026-10-19", tr.PX).reentry_cooldown_secs == 270.0
+    for shadow in (tr.DT25, tr.DT25_CLOCK, tr.V3_CLOCK):                # copies of Pramanaa's bot
+        assert tr.params_on("2026-10-19", shadow).reentry_cooldown_secs == 300.0
+    assert tr.params_on("2026-10-16", tr.V3).daily_target_pct == pe.params_for(pe.STRATEGY_VERSION_V3).daily_target_pct

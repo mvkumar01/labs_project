@@ -38,6 +38,7 @@ always built in date order.
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 import math
 import sqlite3
@@ -225,6 +226,18 @@ def _session_frame(day: str) -> pd.DataFrame:
 # The live runner takes Sentinel's |delta| >= 0.60 strike from 2026-10-16 (live/engine/proposer_strike.py);
 # the simulated books follow from the next session, so the sessions already booked keep ATM -/+200.
 DELTA_STRIKE_FROM = "2026-10-19"
+# The live presets wait 270 s after an exit from 2026-10-16; the books that mirror them follow from the
+# next session. The shadows copy Pramanaa's simulated bot, which waits 300 s.
+COOLDOWN_270_FROM = "2026-10-19"
+
+
+def params_on(day: str, book) -> "pe.ProposerParams":
+    """The parameters a book trades with on `day`: the live preset's, except that sessions before
+    COOLDOWN_270_FROM, and the shadow books, keep the 300 s re-entry cooldown."""
+    params = pe.params_for(book.strategy_version)
+    if (day < COOLDOWN_270_FROM or book.key not in DELTA_STRIKE_BOOKS) and params.reentry_cooldown_secs != 300.0:
+        params = dataclasses.replace(params, reentry_cooldown_secs=300.0)
+    return params
 # The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock"})
@@ -382,7 +395,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)
 
-    eng = pe.ProposerEngine(pe.params_for(book.strategy_version))
+    eng = pe.ProposerEngine(params_on(day, book))
     pos, trades, realized, snap, hist = None, [], 0.0, {}, []
 
     def book_state():
