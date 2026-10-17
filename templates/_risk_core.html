@@ -1,0 +1,79 @@
+{# Risk core (trend x vol) tab (included from live_strategy.html) #}
+    <h1>Risk core &middot; trend &times; vol (paper)</h1>
+    <p class="sub">Daily. &#8377;10,00,000 notional in five equal sleeves of &#8377;2,00,000 &mdash; NIFTY 50, BANK NIFTY, BTC,
+      ETH and MCX crude &mdash; set back to equal on the first day of each month. In each sleeve, at every close, the share
+      held long for the next day is <strong>trend &times; min(1, 15% / volatility)</strong>: trend is the average of nine
+      0/1 rules (close above its 20 / 50 / 100 / 200-day average; Donchian 20 and 55 breakouts; close above its level 30 /
+      90 / 180 days ago), volatility the RiskMetrics estimate (&lambda; 0.94), annualised. The share changes only when the
+      target moves by 0.10 or more, or falls to zero. Idle money earns nothing. Costs a side: index 0.14%, crypto 0.07% plus
+      Binance funding, crude 0.05% plus 0.1% a month roll; crypto in rupees at the daily USD/INR rate.</p>
+
+    <div class="formula">
+      A <strong>protection layer, not a profit engine</strong> (V2 Strategy Tester). In research it cut the worst fall of
+      holding the five markets from &minus;37% to &minus;5%, but over the last two years it earned below cash. The research
+      figures (CAGR +11.6%, Sharpe 0.89 above 6% cash, worst fall &minus;5.3%) also credited 6% interest on idle index money
+      and crude collateral and index dividends; with idle money earning nothing, as here, the same years give about +9%,
+      Sharpe 0.47, worst fall &minus;6.3%. Research period to <strong>15 October 2026</strong>, forward from
+      <strong>16 October</strong>. Stated rule: the protection is <strong>broken</strong> if the forward worst fall goes beyond
+      &minus;15%, about three times the research worst fall.
+    </div>
+
+    {% if risk_core_stats.get('error') %}
+      <p class="empty">Risk core book unavailable ({{ risk_core_stats.error }}).</p>
+    {% elif not risk_core_months %}
+      <p class="empty">Not built yet.</p>
+      <button type="button" id="risk-core-refresh" class="btn-secondary">Build from 1 July 2020</button>
+      <span id="risk-core-refresh-status" class="muted"></span>
+    {% else %}
+      {% set s = risk_core_stats %}
+      <div class="cards">
+        <div class="card"><div class="k">Book value</div>
+          <div class="v {{ 'green' if s.net_total>0 else ('red' if s.net_total<0 else '') }}">&#8377;{{ "{:,.0f}".format(s.book_value) }}</div>
+          <div class="sub-k">net &#8377;{{ "{:,.0f}".format(s.net_total) }} on &#8377;{{ "{:,.0f}".format(s.capital) }}, through {{ s.through }}</div></div>
+        <div class="card"><div class="k">Research, {{ s.research.from }} &rarr; {{ s.research.to }}</div>
+          <div class="v">{{ "%+.1f"|format(100 * s.research.cagr) }}% a year</div>
+          <div class="sub-k">net &#8377;{{ "{:,.0f}".format(s.research.net_rs) }} &middot; Sharpe {{ "%.2f"|format(s.research.sharpe) }} &middot; worst fall {{ "%.1f"|format(100 * s.research.worst_fall) }}% &middot; {{ s.research.years_up }}/{{ s.research.years }} years up</div></div>
+        <div class="card"><div class="k">Forward, from {{ s.forward.from }}</div>
+          <div class="v {{ 'green' if s.forward.net_rs>0 else ('red' if s.forward.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(s.forward.net_rs) }}</div>
+          <div class="sub-k">{{ s.forward.days }} days &middot; worst fall {{ "%.1f"|format(100 * s.forward.worst_fall) }}%</div></div>
+        <div class="card"><div class="k">Protection</div>
+          <div class="v {{ 'red' if s.broken else 'green' }}">{{ 'BROKEN' if s.broken else 'holding' }}</div>
+          <div class="sub-k">broken if the forward worst fall goes beyond {{ "%.0f"|format(100 * s.broken_at) }}%</div></div>
+        <div class="card"><div class="k">Rolling 2-year Sharpe</div>
+          <div class="v {{ 'red' if s.rolling_2y_sharpe < 0 else '' }}">{{ "%.2f"|format(s.rolling_2y_sharpe) }}</div>
+          <div class="sub-k">last 730 days, above 6% cash</div></div>
+      </div>
+
+      <h2 style="margin-top:24px">Sleeves today</h2>
+      <table class="perf"><thead><tr><th>Sleeve</th><th>Held</th><th>Trend</th><th>Volatility</th><th>Target</th><th>Last close</th><th>Sleeve value</th></tr></thead><tbody>
+      {% for x in s.sleeves %}<tr><td>{{ x.label }}</td><td><strong>{{ "%.2f"|format(x.held or 0) }}</strong></td>
+        <td>{{ "%.2f"|format(x.trend) if x.trend is not none else '&mdash;' }}</td><td>{{ "%.0f"|format(100 * (x.vol or 0)) }}%</td>
+        <td>{{ "%.2f"|format(x.target or 0) }}</td><td>{{ x.as_of }}</td><td>&#8377;{{ "{:,.0f}".format(x.value) }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="note">Data through: {% for k, v in (s.inputs.through or {}).items() %}{{ k }} {{ v }}{{ ', ' if not loop.last }}{% endfor %};
+        USD/INR {{ s.inputs.fx_through }}. Funding days estimated from the premium index until Binance publishes the month:
+        {% for k, v in (s.inputs.estimated_funding_days or {}).items() %}{{ k }} {{ v }}{{ ', ' if not loop.last }}{% endfor %}.
+        The book runs through the last day every sleeve has a close (the Binance archive is about two days late).
+        Last fetch {{ s.fetched_at or 'never' }}.</p>
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="risk-core-refresh" class="btn-secondary">Fetch and rebuild</button>
+        <span id="risk-core-refresh-status" class="muted"></span>
+      </div>
+
+      <h2 style="margin-top:24px">By year</h2>
+      <table class="perf"><thead><tr><th>Year</th><th>Return</th><th>Net &#8377;</th></tr></thead><tbody>
+      {% for y in risk_core_years %}<tr><td>{{ y.year }}</td><td class="{{ 'green' if y.ret>0 else ('red' if y.ret<0 else '') }}">{{ "%+.2f"|format(100 * y.ret) }}%</td>
+        <td>&#8377;{{ "{:,.0f}".format(y.net_rs) }}</td></tr>{% endfor %}
+      </tbody></table>
+
+      <h2 style="margin-top:24px">By month</h2>
+      <table class="perf"><thead><tr><th>Month</th><th>Period</th><th>Return</th><th>Net &#8377;</th><th>Worst fall in month</th><th>Book value</th></tr></thead><tbody>
+      {% for m in risk_core_months %}<tr><td>{{ m.month }}</td><td class="muted">{{ m.period }}</td>
+        <td class="{{ 'green' if m.ret>0 else ('red' if m.ret<0 else '') }}">{{ "%+.2f"|format(100 * m.ret) }}%</td>
+        <td>&#8377;{{ "{:,.0f}".format(m.net_rs) }}</td><td class="muted">{{ "%.2f"|format(100 * m.worst_fall) }}%</td>
+        <td>&#8377;{{ "{:,.0f}".format(m.value) }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="note">Paper-only strategy <code>risk_core_trend_vol_v1</code>. Research inputs to each seed's end are the
+        V2 Strategy Tester's own (data/risk_core_seed_*.csv); later days come from Kite daily candles, the Binance public
+        archive and the ECB USD/INR rate.</p>
+    {% endif %}

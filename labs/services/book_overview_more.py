@@ -34,6 +34,8 @@ MORE_BOOKS = {
     "crudem_combo": {"label": "CRUDEOILM Combo (6 rules)", "instrument": "CRUDEOILM futures", "size": "1 lot · 10 barrels"},
     "gold_cci": {"label": "GOLD CCI short", "instrument": "GOLD futures", "size": "1 lot"},
     "infy_tcs_pair": {"label": "INFY / TCS pair", "instrument": "INFY and TCS shares", "size": "Rs 10 lakh a leg"},
+    "risk_core": {"label": "Risk core · trend × vol", "instrument": "NIFTY, BANK NIFTY, BTC, ETH, crude",
+                  "size": "Rs 10 lakh, five sleeves"},
     "crypto_xs": {"label": "Crypto taker imbalance", "instrument": "Binance USDT perpetuals", "size": "$100,000 simulated equity"},
 }
 
@@ -134,6 +136,22 @@ def _pair(conn, today: str) -> dict:
                  open_net=_f(days[-1]["mtm_rs"]) if held and days else 0.0, trades=len(closed))
 
 
+def _risk_core(conn, today: str) -> dict:
+    from labs.engine.risk_core_tracker import CAPITAL, summary
+    s = summary(conn)
+    if not s:
+        raise sqlite3.OperationalError("risk_core not built yet")
+    rows = _rows(conn, "SELECT trade_date, net_rs FROM risk_core_days ORDER BY trade_date")
+    held = " · ".join(f"{x['label']} {x.get('held') or 0:.2f}" for x in s["sleeves"])
+    r, f = s["research"], s["forward"]
+    note = (f"Research to {r['to']}: Rs {r['net_rs']:,.0f}, worst fall {100 * r['worst_fall']:.1f}%. "
+            f"Forward from {f['from']}: Rs {f['net_rs']:,.0f}, worst fall {100 * f['worst_fall']:.1f}%. "
+            f"Rolling 2-year Sharpe {s['rolling_2y_sharpe']:.2f}. Protection {s['status']} "
+            f"(broken beyond {100 * s['broken_at']:.0f}%). Through {s['through']}.")
+    return _card("risk_core", MORE_BOOKS["risk_core"], [{"trade_date": x["trade_date"], "net": _f(x["net_rs"])} for x in rows],
+                 today, capital=CAPITAL, position=f"Held {held}", note=note)
+
+
 def _crypto(conn, today: str) -> dict:
     rows = _rows(conn, "SELECT decision_date, net, equity FROM crypto_xs_daily WHERE complete=1 ORDER BY decision_date")
     daily, prev = [], None
@@ -209,6 +227,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "crudem_combo": lambda: _mcx(conn, "crudem_combo", today),
         "gold_cci": lambda: _mcx(conn, "gold_cci", today),
         "infy_tcs_pair": lambda: _pair(conn, today),
+        "risk_core": lambda: _risk_core(conn, today),
         "crypto_xs": lambda: _crypto(conn, today),
     }
     cards = []

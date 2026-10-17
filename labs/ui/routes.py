@@ -380,6 +380,7 @@ LIVE_TABS = {
     "nifty_expiry_sale": "NIFTY Expiry Straddle Sale",
     "nifty_tuesday_put": "NIFTY Tuesday Put",
     "infy_tcs_pair": "INFY / TCS pair",
+    "risk_core": "Risk core · trend × vol",
     "crypto_xs": "Crypto taker imbalance",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
     "gold_cci": "GOLD CCI short",
@@ -417,6 +418,7 @@ def live_strategy():
     nifty_expiry_sale_rows, nifty_expiry_sale_books, nifty_expiry_sale_stats = [], [], {}
     nifty_tuesday_put_rows, nifty_tuesday_put_summaries, nifty_tuesday_put_stats = [], [], {}
     infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
+    risk_core_months, risk_core_years, risk_core_stats = [], [], {}
     crypto_xs_rows, crypto_xs_book, crypto_xs_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
@@ -906,6 +908,15 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crypto_xs_stats = {"error": str(exc)}
 
+        # Risk core, trend x vol (paper, daily, five markets): its own ledger and tab.
+        if active_live_tab == "risk_core":
+            try:
+                from labs.engine.risk_core_tracker import tab_data as risk_core_tab_data
+                risk_core_months, risk_core_years, risk_core_stats = risk_core_tab_data(conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    risk_core_stats = {"error": str(exc)}
+
         # Infosys / TCS divergence pair (paper, daily bars): its own ledger and tab.
         if active_live_tab == "infy_tcs_pair":
             try:
@@ -1213,6 +1224,9 @@ def live_strategy():
         infy_tcs_rows=infy_tcs_rows,
         infy_tcs_trades=infy_tcs_trades,
         infy_tcs_stats=infy_tcs_stats,
+        risk_core_months=risk_core_months,
+        risk_core_years=risk_core_years,
+        risk_core_stats=risk_core_stats,
         crypto_xs_rows=crypto_xs_rows,
         crypto_xs_book=crypto_xs_book,
         crypto_xs_stats=crypto_xs_stats,
@@ -1222,6 +1236,16 @@ def live_strategy():
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@labs_bp.route("/api/risk_core/refresh", methods=["POST"])
+def risk_core_refresh():
+    """Fetch the latest daily inputs and rebuild the paper-only Risk core (trend x vol) book."""
+    from labs.engine.risk_core_tracker import run_day
+    try:
+        return jsonify(run_day(force=True))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @labs_bp.route("/api/infy_tcs_pair/refresh", methods=["POST"])

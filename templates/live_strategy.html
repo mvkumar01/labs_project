@@ -157,6 +157,8 @@
     {% elif active_live_tab == 'crypto_xs' %}
     {% include '_crypto_xs.html' %}
 
+    {% elif active_live_tab == 'risk_core' %}
+    {% include '_risk_core.html' %}
     {% elif active_live_tab == 'infy_tcs_pair' %}
     {% include '_infy_tcs_pair.html' %}
 
@@ -1065,6 +1067,30 @@
       }
     });
   }
+</script>
+{% endif %}
+{% if active_live_tab == 'risk_core' %}
+<script>
+  (function () {
+    const button = document.getElementById('risk-core-refresh');
+    const status = document.getElementById('risk-core-refresh-status');
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      status.textContent = 'Fetching daily inputs and rebuilding...';
+      try {
+        const response = await fetch('/labs/api/risk_core/refresh', {method: 'POST'});
+        const payload = await response.json();
+        if (!response.ok || payload.error) {
+          throw new Error(payload.error || ('HTTP ' + response.status));
+        }
+        window.location.reload();
+      } catch (error) {
+        status.textContent = 'Refresh failed: ' + error.message;
+        button.disabled = false;
+      }
+    });
+  })();
 </script>
 {% endif %}
 {% if active_live_tab == 'infy_tcs_pair' %}

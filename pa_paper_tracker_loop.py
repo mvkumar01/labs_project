@@ -54,6 +54,7 @@ def main() -> None:
     from labs.engine.nifty_expiry_sale_tracker import run_day as run_nifty_expiry_sale_day
     from labs.engine.nifty_tuesday_put_tracker import run_day as run_nifty_tuesday_put_day
     from labs.engine.infy_tcs_pair_tracker import run_day as run_infy_tcs_pair_day
+    from labs.engine.risk_core_tracker import run_day as run_risk_core_day
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
     from labs.engine.crudem_combo_tracker import run_live as run_crudem_combo_live
     from labs.engine.gold_cci_tracker import run_live as run_gold_cci_live
@@ -83,6 +84,7 @@ def main() -> None:
         "nifty_expiry_sale": None,
         "nifty_tuesday_put": None,
         "infy_tcs_pair": None,
+        "risk_core": None,
         "crude_macd_st": None,
         "crudem_combo": None,
         "gold_cci": None,
@@ -114,6 +116,7 @@ def main() -> None:
                 ("nifty_expiry_sale", run_nifty_expiry_sale_day),
                 ("nifty_tuesday_put", run_nifty_tuesday_put_day),
                 ("infy_tcs_pair", run_infy_tcs_pair_day),
+                ("risk_core", run_risk_core_day),
             ):
                 try:
                     res = runner(now.date().isoformat())
