@@ -49,6 +49,7 @@ def main() -> None:
     from labs.engine.proposer_v3_book import run_day as run_proposer_v3_day
     from labs.engine.proposer_v3_dt35_book import run_day as run_proposer_v3_dt35_day
     from labs.engine.proposer_v4_book import run_day as run_proposer_v4_day
+    from labs.engine.proposer_v5_book import run_day as run_proposer_v5_day
     from labs.engine.proposer_v3_dt35_clock_book import run_day as run_proposer_v3_dt35_clock_day
     from labs.engine.nifty_expiry_sale_tracker import run_day as run_nifty_expiry_sale_day
     from labs.engine.nifty_tuesday_put_tracker import run_day as run_nifty_tuesday_put_day
@@ -77,6 +78,7 @@ def main() -> None:
         "proposer_v3": None,
         "proposer_v3_dt35": None,
         "proposer_v4": None,
+        "proposer_v5": None,
         "proposer_v3_dt35_clock": None,
         "nifty_expiry_sale": None,
         "nifty_tuesday_put": None,
@@ -107,6 +109,7 @@ def main() -> None:
                 ("proposer_v3", run_proposer_v3_day),
                 ("proposer_v3_dt35", run_proposer_v3_dt35_day),
                 ("proposer_v4", run_proposer_v4_day),
+                ("proposer_v5", run_proposer_v5_day),
                 ("proposer_v3_dt35_clock", run_proposer_v3_dt35_clock_day),
                 ("nifty_expiry_sale", run_nifty_expiry_sale_day),
                 ("nifty_tuesday_put", run_nifty_tuesday_put_day),
