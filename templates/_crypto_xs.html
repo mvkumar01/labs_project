@@ -1,10 +1,20 @@
 {# Crypto cross-sectional taker-imbalance tab (included from live_strategy.html) #}
+    <section id="crypto-xs-view">
+    <style>
+      #crypto-xs-view { min-width:0; max-width:100%; }
+      #crypto-xs-view .crypto-table { width:100%; max-width:100%; overflow-x:auto; margin:12px 0; }
+      #crypto-xs-view .perf { width:max-content; min-width:100%; }
+      #crypto-xs-view .perf td, #crypto-xs-view .perf th { white-space:nowrap; }
+      #crypto-xs-view details { white-space:normal; width:22rem; max-width:60vw; overflow-wrap:anywhere; }
+      #crypto-xs-view summary { cursor:pointer; white-space:nowrap; }
+      #crypto-xs-view .cards > * { min-width:0; overflow-wrap:anywhere; }
+    </style>
     {% set st = crypto_xs_stats %}
     <h1>Crypto taker imbalance (paper)</h1>
-    <p class="sub">Binance USDT perpetual futures. Each day at 00:00 UTC, take the {{ st.top or 50 }} most liquid
+    <p class="sub">Binance USDT perpetual futures, including stock and commodity contracts in the original universe. Each day at 00:00 UTC, take the {{ st.top or 50 }} most liquid
       contracts and rank them by who was the aggressor over the last 24 hours: (taker buys &minus; taker sells) / volume.
-      Go long the most bought and short the most sold, in equal dollars (rank-weighted, market-neutral, gross exposure =
-      equity). The book held is the average of the last {{ st.hold_days or 7 }} daily targets, traded at the 01:00 UTC
+      The target is long the most bought and short the most sold in equal dollars (rank-weighted, market-neutral, gross exposure =
+      equity); the filled account can differ when quotes are unavailable. The book held is the average of the last {{ st.hold_days or 7 }} daily targets, traded at the 01:00 UTC
       price. Result = price moves &minus; funding paid &minus; {{ "%.0f"|format(st.cost_bps or 7) }} bps of everything
       traded. Paper equity starts at ${{ "{:,.0f}".format(st.equity_start or 100000) }} on {{ st.paper_start or '2026-06-01' }}.</p>
 
@@ -12,16 +22,28 @@
       Evidence status: <strong>a candidate being watched, not a proven edge</strong>. The rule comes from the crypto
       research project and is fixed. Two periods are kept apart and must not be pooled:
       <strong>1 June &ndash; 31 August 2026</strong> is covered by the research backtest (where it lost 6.6% to 30 August, its last complete day), and
-      this book has to reproduce it; <strong>from {{ st.first_unseen or '2026-09-01' }}</strong> the research had not seen
-      the data, and no parameter may be tuned on it. Limits of this ledger: the server cannot reach Binance's live
-      API, so it reads Binance's public archive &mdash; the book runs about two days behind; funding for the
-      current month is <em>estimated</em> from the premium index until Binance publishes the month's rates, then
-      replaced; and whether a contract could be traded at the rebalance is judged from its own bar (a price and
+      the reference model is reconciled against it; <strong>from {{ st.first_unseen or '2026-09-01' }}</strong> the research had not seen
+      the data, and no parameter may be tuned on it. Binance public archives supply the history; a public API repair
+      can add completed hourly bars and actual settled funding. Funding without confirmed API coverage or a published
+      monthly archive remains <em>estimated / incomplete</em>. Tradability at rebalance is judged from its own bar (a price and
       volume in the hour to 01:00), not from the exchange's status. Fills are assumed at the hourly close with a flat
       cost; order-book depth in the smaller contracts is not modelled.
     </div>
 
-    {% if st.get('error') %}
+    {% if st.account %}
+      <p class="note">Quantity-based paper account: unavailable contracts retain their quantity with no fill. Exchange-confirmed delistings close at settlement time using a labelled price estimate when no actual settlement price is published; closing notional carries the same assumed fee.
+        Funding uses the hourly valuation price at settlement. This account begins flat on {{ st.paper_start }} and pays
+        its opening costs; the reference model carries its warm-up book. Results can differ without a reconciliation error.
+        {% if st.equity_provisional %}<strong class="amber">Equity is provisional: a historical valuation or settlement price is unverified ({{ st.provisional_days }} affected days).</strong>{% endif %}</p>
+      <p class="note">Reference weight model in the selected dates:
+        research {{ "%+.2f"|format(st.reference_research.net_pct) if st.reference_research.days else '—' }}%;
+        September onward {{ "%+.2f"|format(st.reference_unseen.net_pct) if st.reference_unseen.days else '—' }}%.
+        Its global check compares rounded monthly returns through {{ st.reconcile.through }}, not every day.</p>
+    {% endif %}
+    {% if st.filtered %}<p class="note">Returns, flags and holdings below use the selected dates. Equity is the historical account balance at that date; the monthly reference check remains global.</p>{% endif %}
+    {% if st.empty_range %}
+      <p class="empty">No portfolio days in the selected date range.</p>
+    {% elif st.get('error') %}
       <p class="empty">Crypto book unavailable ({{ st.error }}).</p>
     {% elif not st %}
       <p class="empty">No days recorded yet. The paper loop builds the book from Binance's archive on its next cycle
@@ -34,25 +56,25 @@
           <div class="sub-k">from ${{ "{:,.0f}".format(st.equity_start) }}; last completed day {{ st.last_done.decision_date if st.last_done else '—' }}</div></div>
         <div class="card"><div class="k">June &ndash; August (research period)</div>
           <div class="v {{ 'green' if r.days and r.net_pct>0 else ('red' if r.days and r.net_pct<0 else '') }}">{{ "%+.2f"|format(r.net_pct) if r.days else '—' }}%</div>
-          <div class="sub-k">{{ r.days }} days; {{ 'matches the research backtest day for day' if rc.ok else 'does NOT match the research backtest' }}</div></div>
+          <div class="sub-k">{{ r.days }} days; {{ 'reference monthly check passed' if rc.ok else 'reference monthly check incomplete or different' }}</div></div>
         <div class="card"><div class="k">Since {{ st.first_unseen }} (not seen)</div>
           <div class="v {{ 'green' if u.days and u.net_pct>0 else ('red' if u.days and u.net_pct<0 else '') }}">{{ "%+.2f"|format(u.net_pct) if u.days else '—' }}%</div>
           <div class="sub-k">{{ u.days }} days{% if u.days %}; {{ u.estimated_days }} with estimated funding{% endif %}</div></div>
         <div class="card"><div class="k">Data</div>
           <div class="v">{{ st.state.data_through or '—' }}</div>
-          <div class="sub-k">bars through this UTC day; actual funding through {{ st.state.funding_through or '—' }}{% if st.state.error %}; <span class="red">last check failed: {{ st.state.error }}</span>{% endif %}</div></div>
+          <div class="sub-k">bars through this UTC day; monthly actual funding through {{ st.state.funding_through or '—' }}; API repair {{ st.state.api_checked_at or 'not run' }}{% if st.state.error %}; <span class="red">last check failed: {{ st.state.error }}</span>{% endif %}</div></div>
       </div>
 
       {% if not rc.ok %}
-        <p class="note"><span class="red">Reconciliation failed.</span> June &ndash; August should compound to
+        <p class="note"><span class="red">Reference monthly reconciliation incomplete or different.</span> June &ndash; August should compound to
           {% for m, v in rc.want.items() %}{{ m }} {{ "%+.2f"|format(v) }}%{{ ', ' if not loop.last }}{% endfor %}
           (August to the 30th); this ledger has
           {% for m, v in rc.got.items() %}{{ m }} {{ "%+.2f"|format(v) }}%{{ ', ' if not loop.last }}{% endfor %}.
-          Treat everything after August as untrusted until this is resolved.</p>
+          This check applies to the reference weight model; compare the endpoint and any data repairs before interpreting a difference.</p>
       {% endif %}
 
       <h2 style="margin-top:24px">The two periods</h2>
-      <table class="perf">
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable crypto results"><table class="perf">
         <thead><tr><th></th><th>Days</th><th>Net (compounded)</th><th>Price moves</th><th>Funding</th><th>Costs</th>
           <th>Up days</th><th>Worst day</th><th>Best day</th><th>Deepest fall</th><th>Traded a day</th><th>Flagged days</th></tr></thead>
         <tbody>
@@ -74,12 +96,12 @@
           </tr>
         {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       <p class="note">Price moves, funding and costs are sums of daily figures, in % of equity; net is compounded, so the
         three do not add up to it exactly.</p>
 
       <h2 style="margin-top:24px">Month by month</h2>
-      <table class="perf">
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable crypto results"><table class="perf">
         <thead><tr><th>Month</th><th>Days</th><th>Net (compounded)</th><th>Price moves</th><th>Funding</th><th>Costs</th><th>Funding source</th></tr></thead>
         <tbody>
         {% for p in [r, u] %}{% for m in p.months or [] %}
@@ -93,30 +115,30 @@
           </tr>
         {% endfor %}{% endfor %}
         </tbody>
-      </table>
+      </table></div>
 
       <h2 style="margin-top:24px">Flags</h2>
       {% if st.flagged %}
-      <table class="perf">
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable crypto results"><table class="perf">
         <thead><tr><th>Day</th><th>Net</th><th>What</th></tr></thead>
         <tbody>
         {% for f in st.flagged %}
           <tr><td>{{ f.decision_date }}</td>
-            <td>{{ "%+.2f"|format(100 * f.net) if f.net is not none else '—' }}%</td><td>{{ f.flags }}</td></tr>
+            <td>{{ "%+.2f"|format(100 * f.net) if f.net is not none else '—' }}%</td><td><details><summary>View flags</summary>{{ f.flags }}</details></td></tr>
         {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       {% else %}
         <p class="empty">None: no contract has moved the book by more than 3% of equity in a day, and every contract held
           had a price and volume at its rebalance.</p>
       {% endif %}
 
-      <h2 style="margin-top:24px">The book now ({{ st.latest.decision_date }}{{ '' if st.latest.complete else ', hold in progress' }})</h2>
-      <p class="note">{{ st.latest.n_held }} contracts held: today's universe is {{ st.latest.n_eligible }}, the rest are
+      <h2 style="margin-top:24px">Latest book in selected dates ({{ st.latest.decision_date }}{{ '' if st.latest.complete else ', awaiting next boundary quote' }})</h2>
+      <p class="note">{{ st.latest.n_held }} contracts held: the daily universe is {{ st.latest.n_eligible }}, the rest are
         carried from the last {{ st.hold_days }} days' rankings;
         long {{ "%.0f"|format(100 * (st.latest.long_exposure or 0)) }}% / short {{ "%.0f"|format(100 * ((st.latest.exposure or 0) - (st.latest.long_exposure or 0))) }}% of equity;
         {{ "%.0f"|format(100 * (st.latest.turnover or 0)) }}% of equity traded at this rebalance.</p>
-      <table class="perf">
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable crypto results"><table class="perf">
         <thead><tr><th>Longs</th><th>Weight</th><th>24h imbalance</th><th></th><th>Shorts</th><th>Weight</th><th>24h imbalance</th></tr></thead>
         <tbody>
         {% set longs = crypto_xs_book|selectattr('weight', 'gt', 0)|list %}
@@ -133,12 +155,12 @@
           {% endif %}
         {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       <p class="note">The twelve largest on each side. A weight is a share of equity; the imbalance is the latest
         24-hour reading, while the weight averages the last {{ st.hold_days }} days' rankings.</p>
 
       <h2 style="margin-top:24px">Day by day</h2>
-      <table class="perf">
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable crypto results"><table class="perf">
         <thead><tr><th>Decision (00:00 UTC)</th><th>Universe</th><th>Held</th><th>Gross exposure</th><th>Traded</th><th>Price moves</th>
           <th>Funding</th><th>Costs</th><th>Net</th><th>Equity</th><th>Largest contract</th><th>Flags</th></tr></thead>
         <tbody>
@@ -150,7 +172,7 @@
             <td class="muted">{{ "%.0f"|format(100 * (d.turnover or 0)) }}%</td>
             {% if d.complete %}
             <td>{{ "%+.2f"|format(100 * d.gross) }}%</td>
-            <td>{{ "%+.2f"|format(100 * d.funding) }}%{% if d.funding_source != 'actual' %} <span class="amber">est</span>{% endif %}</td>
+            <td>{{ "%+.2f"|format(100 * d.funding) }}%{% if not d.funding_source.startswith('actual') %} <span class="amber">est</span>{% endif %}</td>
             <td>{{ "%+.3f"|format(-100 * d.cost) }}%</td>
             <td class="{{ 'green' if d.net>0 else ('red' if d.net<0 else '') }}">{{ "%+.2f"|format(100 * d.net) }}%</td>
             <td>${{ "{:,.0f}".format(d.equity) }}</td>
@@ -158,13 +180,15 @@
             {% else %}
             <td colspan="6" class="muted">held until the next 01:00 UTC price is published; costs {{ "%.3f"|format(100 * (d.cost or 0)) }}%</td>
             {% endif %}
-            <td>{{ d.flags or '' }}</td>
+            <td>{% if d.flags %}<details><summary>View flags</summary>{{ d.flags }}</details>{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>
-      </table>
+      </table></div>
       <p class="note">&bull; = after the research data ended. <span class="amber">est</span> = funding estimated from the
-        premium index, replaced when Binance publishes the month's rates. A day is stamped by its 00:00 UTC decision and
+        premium index or incomplete; replaced when actual funding is available. A day is stamped by its 00:00 UTC decision and
         covers 01:00 UTC to 01:00 UTC the next day. Last checked {{ st.state.checked_at or '—' }} (the paper loop
         checks the archive every half hour). Paper only; this book has no exchange credentials and places no orders.</p>
     {% endif %}
+
+    </section>

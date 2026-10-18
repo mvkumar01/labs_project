@@ -252,7 +252,7 @@ def test_ledger_days_equity_funding_source_and_the_open_hold(small_universe, tmp
     out = tracker.refresh(datetime(2026, 5, 12, 6, 0, tzinfo=UTC), store=tmp_path, get=archive, connection=book, log=lambda *_: None)
     assert out["through"] == "2026-05-09" and out["open"] == "2026-05-10" and out["data_through"] == "2026-05-10"
     assert out["funding_through"] == "2026-04-30" and out["reconciles"] is False
-    rows, held, stats = tracker.tab_data(book)
+    rows, held, stats = tracker.tab_data(book, reference=True)
     assert rows[0]["decision_date"] == "2026-05-10" and not rows[0]["complete"] and rows[0]["net"] is None and rows[0]["cost"] > 0
     assert rows[-1]["decision_date"] == "2026-04-20" and len(rows) == 21
     done = [r for r in reversed(rows) if r["complete"]]
@@ -284,7 +284,7 @@ def test_ledger_days_equity_funding_source_and_the_open_hold(small_universe, tmp
     before = {r["decision_date"]: r["funding"] for r in done}
     out = tracker.refresh(datetime(2026, 6, 3, 6, 0, tzinfo=UTC), store=tmp_path, get=archive, connection=book, log=lambda *_: None)
     assert out["funding_months"] == ["2026-05"] and out["funding_through"] == "2026-05-31" and out["through"] == "2026-05-31"
-    rows, _, stats = tracker.tab_data(book)
+    rows, _, stats = tracker.tab_data(book, reference=True)
     after = {r["decision_date"]: r for r in rows}
     assert after["2026-05-05"]["funding_source"] == "actual" and after["2026-05-05"]["funding"] != pytest.approx(before["2026-05-05"])
     assert after["2026-04-25"]["funding"] == pytest.approx(before["2026-04-25"])
@@ -297,7 +297,7 @@ def test_flags_a_dominant_contract_and_one_that_stops_trading(small_universe, tm
         archive.bars[symbol].loc[jump:, "close"] *= 3.0 if symbol in ("C00USDT", "C13USDT") else 1.0
     archive.bars["C06USDT"] = archive.bars["C06USDT"].loc[:"2026-05-06 11:00"]   # delisted mid-hold
     tracker.refresh(datetime(2026, 5, 12, 6, 0, tzinfo=UTC), store=tmp_path, get=archive, connection=book, log=lambda *_: None)
-    rows, _, stats = tracker.tab_data(book)
+    rows, _, stats = tracker.tab_data(book, reference=True)
     by_day = {r["decision_date"]: r for r in rows}
     hit = by_day["2026-05-04"]
     assert "one contract over 3% of equity" in hit["flags"] and hit["top_symbol"] in ("C00USDT", "C13USDT")

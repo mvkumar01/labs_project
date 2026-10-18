@@ -155,7 +155,9 @@ def load_panel(name: str, store: Path = STORE) -> pd.DataFrame | None:
 def save_panel(name: str, frame: pd.DataFrame, store: Path = STORE) -> None:
     store.mkdir(parents=True, exist_ok=True)
     partial = _path(name, store).with_suffix(".part")
-    frame.to_parquet(partial)
+    # Explicit index metadata is portable between pyarrow (local research) and
+    # fastparquet (PythonAnywhere). An unnamed pyarrow index can fail there.
+    frame.rename_axis("index").to_parquet(partial)
     partial.replace(_path(name, store))
 
 
@@ -299,7 +301,7 @@ def update(store: Path = STORE, today: date | None = None, get=fetch, log=print)
     retried = 0
     for tag in sorted(manifest["late"]):
         if (today - date.fromisoformat(tag)).days > LATE_RETRY_DAYS:
-            del manifest["late"][tag]
+            manifest.setdefault("unresolved_late", {})[tag] = manifest["late"].pop(tag)
             continue
         got = fetch_many({(s, tag): kline_url("klines", s, tag, False) for s in manifest["late"][tag]}, get)
         if not any(v is not None for v in got.values()):

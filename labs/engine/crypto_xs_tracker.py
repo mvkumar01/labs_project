@@ -38,9 +38,11 @@ import pandas as pd
 
 from labs.engine import crypto_xs_data as data
 from labs.engine import crypto_xs_engine as engine
+from labs.engine import crypto_xs_account as account
 from storage.db import get_conn
 
-STRATEGY_VERSION = "crypto_xs_taker24_top50_h7_v1"
+STRATEGY_VERSION = "crypto_xs_taker24_top50_h7_v2_account"
+REFERENCE_VERSION = "crypto_xs_taker24_top50_h7_v1"
 PAPER_START = "2026-06-01"
 FIRST_UNSEEN = "2026-09-01"           # the research panels end 31 Aug 2026
 EQUITY_START = 100_000.0              # paper dollars; gross exposure = equity
@@ -97,6 +99,7 @@ def compute(store: Path = data.STORE, get=data.fetch, offline: bool = False) -> 
     actual = panels["funding"] if panels["funding"] is not None else pd.DataFrame(index=close.index, columns=symbols, dtype="float64")
     actual = actual.reindex(columns=symbols)
     quote_volume, taker_buy = panels["quote_volume"][symbols], panels["taker_buy"][symbols]
+    funding = actual
     out = engine.run(close, actual, quote_volume, taker_buy)
 
     known = manifest.get("funding_through")
@@ -112,11 +115,18 @@ def compute(store: Path = data.STORE, get=data.fetch, offline: bool = False) -> 
         if premium is not None and len(premium):
             premium = premium.reindex(columns=[s for s in estimated_symbols if s in premium.columns])
             guess = data.estimate_funding(premium, manifest.get("intervals", {}), estimate_from)
+            # A covered interval contains the complete settlement history. Its
+            # empty hours mean no settlement, not a slot for another estimate.
+            # This matters when the actual funding interval changed mid-month.
+            for symbol, coverage in manifest.get("api_funding_coverage", {}).items():
+                if symbol in guess:
+                    covered = (guess.index >= pd.Timestamp(coverage["first"])) & (guess.index <= pd.Timestamp(coverage["through"]))
+                    guess.loc[covered, symbol] = np.nan
             index = actual.index.union(guess.index)
             funding = actual.reindex(index)
             funding[guess.columns] = funding[guess.columns].combine_first(guess.reindex(index))
             out = engine.run(close, funding, quote_volume, taker_buy)
-    out.update(close=close, quote_volume=quote_volume, estimate_from=estimate_from, manifest=manifest,
+    out.update(close=close, quote_volume=quote_volume, funding_panel=funding, estimate_from=estimate_from, manifest=manifest,
                estimated_symbols=estimated_symbols)
     return out
 
@@ -164,7 +174,7 @@ def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, 
                       float(row["cost"]), float(row["net"]) if complete else None, round(equity, 2) if complete else None,
                       source, symbols[top] if top is not None else None,
                       float(contribution[i, top]) if top is not None else None, "; ".join(flags) or None,
-                      STRATEGY_VERSION, stamp))
+                      REFERENCE_VERSION, stamp))
         for j in held:
             lines.append((day, symbols[j], float(weights[i, j]), float(out["targets"][i, j]), _f(out["signal"][i, j]),
                           _f(market.entry_price[i, j]), _f(exit_price[i, j]) if complete else None,
@@ -173,6 +183,8 @@ def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, 
                           float(out["price_pnl"][i, j]) if complete else None,
                           float(out["funding_pnl"][i, j]) if complete else None, float(out["traded"][i, j]),
                           int(tradable[j]), int(ended[j])))
+    source_lines = [dict(decision_date=r[0], symbol=r[1], weight=r[2]) for r in lines]
+    daily = [d[:12] + (funding_source(out, d[0], source_lines).replace("estimated / incomplete", "estimated"),) + d[13:] for d in daily]
     conn.execute("DELETE FROM crypto_xs_daily")
     conn.execute("DELETE FROM crypto_xs_weights")
     conn.executemany("INSERT INTO crypto_xs_daily (decision_date,complete,n_eligible,n_held,exposure,long_exposure,turnover,"
@@ -180,15 +192,47 @@ def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, 
                      "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", daily)
     conn.executemany("INSERT INTO crypto_xs_weights (decision_date,symbol,weight,target,signal,entry_price,exit_price,"
                      "price_return,funding_rate,price_pnl,funding_pnl,traded,tradable,ended) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", lines)
+    account_days, account_lines = account.run(out, out["funding_panel"], PAPER_START, EQUITY_START)
+    for day in account_days:
+        day["funding_source"] = funding_source(out, day["decision_date"], account_lines)
+        day["strategy_version"] = STRATEGY_VERSION
+    _write_account(conn, account_days, account_lines)
     conn.commit()
     manifest = out["manifest"]
     _set_state(conn, built_at=stamp, data_through=manifest.get("through"), funding_through=manifest.get("funding_through"),
                version=STRATEGY_VERSION, late=sum(len(v) for v in manifest.get("late", {}).values()),
-               estimated_contracts=len(out["estimated_symbols"]))
+               estimated_contracts=len(out["estimated_symbols"]), api_checked_at=manifest.get("api_checked_at"),
+               api_funding_contracts=len(manifest.get("api_funding_coverage", {})))
     done = [d for d in daily if d[1]]
+    account_done = [d for d in account_days if d["complete"]]
     return {"days": len(done), "through": done[-1][0] if done else None, "open": daily[-1][0] if daily and not daily[-1][1] else None,
-            "equity": done[-1][11] if done else EQUITY_START, "data_through": manifest.get("through"),
+            "equity": account_done[-1]["equity"] if account_done else EQUITY_START,
+            "reference_equity": done[-1][11] if done else EQUITY_START, "data_through": manifest.get("through"),
             "funding_through": manifest.get("funding_through"), "reconciles": reconcile(conn)["ok"]}
+
+
+def funding_source(out, day, lines):
+    end = pd.Timestamp(day, tz="UTC") + pd.Timedelta(hours=25)
+    if end < out["estimate_from"]:
+        return "actual"
+    held = [r["symbol"] for r in lines if r["decision_date"] == day and abs(r.get("weight", 0)) > 1e-12]
+    coverage = out["manifest"].get("api_funding_coverage", {})
+    start = max(pd.Timestamp(day, tz="UTC") + pd.Timedelta(hours=1), out["estimate_from"])
+    if held and all(s in coverage and pd.Timestamp(coverage[s]["first"]) <= start
+                    and pd.Timestamp(coverage[s]["through"]) >= end for s in held):
+        return "actual (public API)"
+    return "estimated / incomplete"
+
+
+def _write_account(conn, days, lines):
+    """Separate tables preserve the exact research model and its reconciliation."""
+    for name, rows in (("crypto_xs_account_daily", days), ("crypto_xs_account_weights", lines)):
+        conn.execute(f"CREATE TABLE IF NOT EXISTS {name} (decision_date TEXT NOT NULL, payload TEXT NOT NULL)")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {name}_date ON {name}(decision_date)")
+        conn.execute(f"DELETE FROM {name}")
+        import json
+        conn.executemany(f"INSERT INTO {name} VALUES (?, ?)",
+                         [(r["decision_date"], json.dumps(r, allow_nan=False)) for r in rows])
 
 
 def _f(v):
@@ -295,34 +339,49 @@ def _period(rows: list[dict]) -> dict:
         "max_drawdown_pct": round(100 * float((curve / peak - 1.0).min()), 2),
         "turnover": round(float(np.mean([r["turnover"] for r in rows])), 3),
         "flagged": sum(1 for r in rows if r["flags"]),
-        "estimated_days": sum(1 for r in rows if r["funding_source"] != "actual"),
+        "estimated_days": sum(1 for r in rows if not r["funding_source"].startswith("actual")),
         "months": [{"month": m, "days": len(v), "net_pct": round(100 * _compound([r["net"] for r in v]), 2),
                     "gross_pct": round(100 * sum(r["gross"] for r in v), 2),
                     "funding_pct": round(100 * sum(r["funding"] for r in v), 2),
                     "cost_pct": round(100 * sum(r["cost"] for r in v), 2),
-                    "estimated_days": sum(1 for r in v if r["funding_source"] != "actual")} for m, v in sorted(months.items())],
+                    "estimated_days": sum(1 for r in v if not r["funding_source"].startswith("actual"))} for m, v in sorted(months.items())],
     }
 
 
-def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) -> tuple:
+def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), *, reference=False) -> tuple:
     """(day rows newest first, the latest book's lines, stats) for the /labs/live tab."""
     clause = date_clause.replace("trade_date", "decision_date")
     cur = conn.execute(f"SELECT * FROM crypto_xs_daily WHERE 1=1 {clause} ORDER BY decision_date DESC LIMIT 600", tuple(date_params))
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    cur = conn.execute("SELECT * FROM crypto_xs_daily ORDER BY decision_date")
+    cur = conn.execute(f"SELECT * FROM crypto_xs_daily WHERE 1=1 {clause} ORDER BY decision_date", tuple(date_params))
     every = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+    reference_rows = list(every)
+    has_account = conn.execute("SELECT 1 FROM sqlite_master WHERE name='crypto_xs_account_daily'").fetchone()
+    if has_account and not reference:
+        import json
+        cur = conn.execute(f"SELECT payload FROM crypto_xs_account_daily WHERE 1=1 {clause} ORDER BY decision_date", tuple(date_params))
+        every = [json.loads(r[0]) for r in cur.fetchall()]
+        rows = list(reversed(every))[:600]
     if not every:
-        return rows, [], {}
+        return rows, [], {"empty_range": True, "filtered": True} if clause else {}
     done = [r for r in every if r["complete"]]
     latest = every[-1]
     cur = conn.execute("SELECT * FROM crypto_xs_weights WHERE decision_date=? AND ABS(weight)>1e-12 ORDER BY weight DESC",
                        (latest["decision_date"],))
     book = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+    if has_account and not reference:
+        book = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM crypto_xs_account_weights WHERE decision_date=?", (latest["decision_date"],))]
+        book = sorted([r for r in book if abs(r["weight"]) > 1e-12], key=lambda r: -r["weight"])
     state = dict(conn.execute("SELECT k, v FROM crypto_xs_state").fetchall())
     stats = {
         "research": _period([r for r in done if r["decision_date"] < FIRST_UNSEEN]),
         "unseen": _period([r for r in done if r["decision_date"] >= FIRST_UNSEEN]),
+        "reference_research": _period([r for r in reference_rows if r["complete"] and r["decision_date"] < FIRST_UNSEEN]),
+        "reference_unseen": _period([r for r in reference_rows if r["complete"] and r["decision_date"] >= FIRST_UNSEEN]),
+        "account": bool(has_account and not reference), "filtered": bool(clause),
+        "provisional_days": sum(r.get("provisional", 0) for r in done),
+        "equity_provisional": bool(latest.get("equity_provisional")),
         "reconcile": reconcile(conn), "latest": latest, "last_done": done[-1] if done else None,
         "equity": done[-1]["equity"] if done else EQUITY_START, "equity_start": EQUITY_START,
         "paper_start": PAPER_START, "first_unseen": FIRST_UNSEEN, "state": state,

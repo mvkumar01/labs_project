@@ -71,7 +71,7 @@
     {% else %}
     <div style="margin-top:14px">
       <div class="ov-row"><span class="l">Today</span>
-        <span class="r {{ 'ov-pos' if c.today_net > 0 else ('ov-neg' if c.today_net < 0 else '') }}">{{ money(c.today_net, true, cur) }}</span></div>
+        <span class="r {{ 'ov-pos' if c.today_net > 0 else ('ov-neg' if c.today_net < 0 else '') }}">{% if c.today_unavailable is defined and c.today_unavailable %}&mdash;{% else %}{{ money(c.today_net, true, cur) }}{% endif %}</span></div>
       <div class="ov-row"><span class="l">Position</span>
         <span class="ov-pill pos {{ 'open' if c.position != 'Flat' else '' }}">{{ c.position }}{% if c.open_net %} &middot; {{ money(c.open_net, true, cur) }}{% endif %}</span></div>
       <div class="ov-row"><span class="l">Win days</span>

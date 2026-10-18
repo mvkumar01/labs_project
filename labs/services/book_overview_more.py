@@ -161,7 +161,24 @@ def _crypto(conn, today: str) -> dict:
         daily.append({"trade_date": r["decision_date"], "net": equity - start})
         prev = equity
     first = (_f(rows[0]["equity"]) / (1 + _f(rows[0]["net"]))) if rows and (1 + _f(rows[0]["net"])) else None
-    return _card("crypto_xs", MORE_BOOKS["crypto_xs"], daily, today, capital=first, position="Rebalanced daily", usd=True)
+    account = conn.execute("SELECT 1 FROM sqlite_master WHERE name='crypto_xs_account_daily'").fetchone()
+    provisional = False
+    if account:
+        import json
+        rows = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM crypto_xs_account_daily ORDER BY decision_date")]
+        provisional = any(r.get("equity_provisional") for r in rows)
+        daily, prev, first = [], 100_000.0, 100_000.0
+        for row in rows:
+            if row["complete"]:
+                daily.append({"trade_date": row["decision_date"], "net": row["equity"] - prev})
+                prev = row["equity"]
+    last = daily[-1]["trade_date"] if daily else None
+    note = (f"Latest completed UTC decision: {last or 'none'}; hold runs 01:00 UTC to next-day 01:00 UTC. "
+            "Today is unavailable until that hold is complete; archive publication can lag.")
+    if provisional:
+        note += " Equity is provisional because a historical quote or settlement is unresolved."
+    return _card("crypto_xs", MORE_BOOKS["crypto_xs"], daily, today, capital=first,
+                 position="Daily archive replay", usd=True, status="Pending data", today_unavailable=True, note=note)
 
 
 def _dry_runner(key: str, label: str, instrument: str, table: str, tab: str, today: str) -> dict:
