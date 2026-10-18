@@ -38,19 +38,19 @@
       <div class="cards">
         <div class="card"><div class="k">Paper equity</div>
           <div class="v {{ 'green' if st.equity > st.equity_start else ('red' if st.equity < st.equity_start else '') }}">${{ "{:,.0f}".format(st.equity) }}</div>
-          <div class="sub-k">from ${{ "{:,.0f}".format(st.equity_start) }}; last completed day {{ st.last_done.decision_date if st.last_done else '&mdash;' }}{% if st.equity_provisional %}; <span class="amber">provisional</span>{% endif %}</div></div>
+          <div class="sub-k">from ${{ "{:,.0f}".format(st.equity_start) }}; last completed day {{ st.last_done.decision_date if st.last_done else '—' }}{% if st.equity_provisional %}; <span class="amber">provisional</span>{% endif %}</div></div>
         <div class="card"><div class="k">June &ndash; August (research period)</div>
-          <div class="v {{ 'green' if (r.net_pct or 0) > 0 else ('red' if (r.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(r.net_pct) if r.days else '&mdash;' }}%</div>
+          <div class="v {{ 'green' if (r.net_pct or 0) > 0 else ('red' if (r.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(r.net_pct) if r.days else '—' }}%</div>
           <div class="sub-k">{{ r.days }} days{% if r.days %}; deepest fall {{ "%.1f"|format(r.max_drawdown_pct) }}%{% endif %}</div></div>
         <div class="card"><div class="k">1 Sep &ndash; 18 Oct (seen while defining)</div>
-          <div class="v {{ 'green' if (s.net_pct or 0) > 0 else ('red' if (s.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(s.net_pct) if s.days else '&mdash;' }}%</div>
+          <div class="v {{ 'green' if (s.net_pct or 0) > 0 else ('red' if (s.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(s.net_pct) if s.days else '—' }}%</div>
           <div class="sub-k">{{ s.days }} days{% if s.days %}; deepest fall {{ "%.1f"|format(s.max_drawdown_pct) }}%{% endif %}</div></div>
         <div class="card"><div class="k">From {{ st.forward_from }} (its test)</div>
-          <div class="v {{ 'green' if (f.net_pct or 0) > 0 else ('red' if (f.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(f.net_pct) if f.days else '&mdash;' }}{{ '%' if f.days }}</div>
+          <div class="v {{ 'green' if (f.net_pct or 0) > 0 else ('red' if (f.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(f.net_pct) if f.days else '—' }}{{ '%' if f.days }}</div>
           <div class="sub-k">{{ f.days }} completed days{% if f.days %}; {{ f.estimated_days }} with estimated funding{% endif %}</div></div>
         <div class="card"><div class="k">Data</div>
-          <div class="v">{{ st.state.data_through or '&mdash;' }}</div>
-          <div class="sub-k">bars through this UTC day; monthly actual funding through {{ st.state.funding_through or '&mdash;' }}</div></div>
+          <div class="v">{{ st.state.data_through or '—' }}</div>
+          <div class="sub-k">bars through this UTC day; monthly actual funding through {{ st.state.funding_through or '—' }}</div></div>
       </div>
 
       <h2 style="margin-top:24px">Month by month</h2>
@@ -65,7 +65,7 @@
       <h2 style="margin-top:24px">Book on {{ st.latest.decision_date }}</h2>
       <div class="crypto-table"><table class="perf"><thead><tr><th>Contract</th><th>Weight</th><th>Signal</th></tr></thead><tbody>
       {% for b in crypto_xs_c_book %}<tr><td>{{ b.symbol }}</td><td class="{{ 'green' if b.weight > 0 else 'red' }}">{{ "%+.2f"|format(100 * b.weight) }}%</td>
-        <td>{{ "%+.3f"|format(b.signal) if b.signal is not none else '&mdash;' }}</td></tr>{% endfor %}
+        <td>{{ "%+.3f"|format(b.signal) if b.signal is not none else '—' }}</td></tr>{% endfor %}
       </tbody></table></div>
 
       <h2 style="margin-top:24px">Daily history</h2>
