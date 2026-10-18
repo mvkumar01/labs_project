@@ -52,7 +52,10 @@ class Market:
     complete: np.ndarray            # per decision: is the hold over (next entry price row exists)
 
 
-def build_market(close: pd.DataFrame, funding: pd.DataFrame, quote_volume: pd.DataFrame) -> Market:
+def build_market(close: pd.DataFrame, funding: pd.DataFrame, quote_volume: pd.DataFrame,
+                 allowed: pd.DataFrame | None = None) -> Market:
+    """``allowed`` (decisions x contracts, bool; None = every contract) narrows the universe BEFORE the
+    volume ranking, so the top 50 are drawn from the allowed contracts only."""
     index = close.index
     decisions = index[index.hour == 0]
     entries = decisions + pd.Timedelta(hours=LAG_HOURS)
@@ -69,6 +72,8 @@ def build_market(close: pd.DataFrame, funding: pd.DataFrame, quote_volume: pd.Da
     daily_volume = quote_volume.rolling(24, min_periods=1).sum()
     at_midnight = daily_volume[daily_volume.index.hour == 0]
     trailing = at_midnight.rolling(VOLUME_DAYS, min_periods=VOLUME_DAYS).mean().reindex(index, method="ffill").reindex(decisions)
+    if allowed is not None:
+        trailing = trailing.where(allowed.reindex(index=decisions, columns=close.columns).fillna(False).astype(bool))
     rank = trailing.rank(axis=1, ascending=False).to_numpy()
     age = close.notna().cumsum().reindex(decisions).to_numpy() / 24.0
     with np.errstate(invalid="ignore"):
@@ -103,12 +108,13 @@ def book_weights(targets: np.ndarray) -> np.ndarray:
     return np.where(gross > 0, combined / np.where(gross > 0, gross, 1.0), 0.0)
 
 
-def run(close: pd.DataFrame, funding: pd.DataFrame, quote_volume: pd.DataFrame, taker_buy: pd.DataFrame) -> dict:
+def run(close: pd.DataFrame, funding: pd.DataFrame, quote_volume: pd.DataFrame, taker_buy: pd.DataFrame,
+        allowed: pd.DataFrame | None = None) -> dict:
     """The whole paper book over the panels. Returns the market, signal, targets, weights and the
     per-day frame (gross, funding, cost, turnover, net, exposure, n_eligible, complete) plus the
     per-contract pieces (price return, funding paid, traded notional). The last day's hold is
     still open: its weights and cost are known, its returns are not (complete = False)."""
-    market = build_market(close, funding, quote_volume)
+    market = build_market(close, funding, quote_volume, allowed)
     signal = taker_imbalance(quote_volume, taker_buy, market.decisions)
     targets = rank_weights(signal, market.eligible)
     weights = book_weights(targets)

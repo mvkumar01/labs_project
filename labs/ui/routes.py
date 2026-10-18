@@ -382,6 +382,7 @@ LIVE_TABS = {
     "infy_tcs_pair": "INFY / TCS pair",
     "risk_core": "Risk core · trend × vol",
     "crypto_xs": "Crypto taker imbalance",
+    "crypto_xs_c": "Crypto taker · crypto only",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
     "gold_cci": "GOLD CCI short",
 }
@@ -420,6 +421,7 @@ def live_strategy():
     infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
     risk_core_months, risk_core_years, risk_core_stats = [], [], {}
     crypto_xs_rows, crypto_xs_book, crypto_xs_stats = [], [], {}
+    crypto_xs_c_rows, crypto_xs_c_book, crypto_xs_c_stats = [], [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -898,6 +900,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # Crypto taker imbalance, crypto-only twin (paper): same panels, its own ledger and tab.
+        if active_live_tab == "crypto_xs_c":
+            try:
+                from labs.engine.crypto_xs_tracker import CRYPTO_ONLY, tab_data as crypto_xs_tab_data
+                crypto_xs_c_rows, crypto_xs_c_book, crypto_xs_c_stats = crypto_xs_tab_data(
+                    conn, date_clause, date_params, book=CRYPTO_ONLY)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    crypto_xs_c_stats = {"error": str(exc)}
+
         # Crypto cross-sectional taker imbalance (paper, Binance archive): its own ledger and tab.
         if active_live_tab == "crypto_xs":
             try:
@@ -1230,6 +1242,9 @@ def live_strategy():
         crypto_xs_rows=crypto_xs_rows,
         crypto_xs_book=crypto_xs_book,
         crypto_xs_stats=crypto_xs_stats,
+        crypto_xs_c_rows=crypto_xs_c_rows,
+        crypto_xs_c_book=crypto_xs_c_book,
+        crypto_xs_c_stats=crypto_xs_c_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -39,6 +40,7 @@ import pandas as pd
 from labs.engine import crypto_xs_data as data
 from labs.engine import crypto_xs_engine as engine
 from labs.engine import crypto_xs_account as account
+from labs.engine import crypto_xs_universe as universe
 from storage.db import get_conn
 
 STRATEGY_VERSION = "crypto_xs_taker24_top50_h7_v2_account"
@@ -53,8 +55,28 @@ REFERENCE_LAST_DAY = "2026-08-30"     # its last complete hold (the panels stop 
 RECONCILE_TOLERANCE = 0.05            # percentage points a month
 
 
+@dataclass(frozen=True)
+class Book:
+    """One ledger over the shared panels: its table prefix, versions, universe and, for a variant defined
+    after the data it is shown on, the first decision that counts as its forward test."""
+    prefix: str
+    version: str
+    reference_version: str
+    crypto_only: bool = False
+    forward_from: str | None = None
+
+
+MAIN = Book("crypto_xs", STRATEGY_VERSION, REFERENCE_VERSION)
+# The same rule on crypto contracts only (labs/engine/crypto_xs_universe.py): Binance TradFi perpetuals - stocks,
+# ETFs, commodities, FX - left out of a universe they were never part of in the research data. Defined on
+# 2026-10-18 after seeing the book to mid-October (Vipin: "add a crypto-only twin"), so only decisions from
+# 19 Oct are its test.
+CRYPTO_ONLY = Book("crypto_xs_c", "crypto_xs_c_taker24_top50_h7_v1_account", "crypto_xs_c_taker24_top50_h7_v1",
+                   crypto_only=True, forward_from="2026-10-19")
+
+
 # ------------------------------------------------------------------ schema ---
-def _ensure_tables(conn: sqlite3.Connection) -> None:
+def _ensure_tables(conn: sqlite3.Connection, book: Book = MAIN) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS crypto_xs_daily (
@@ -70,24 +92,24 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (decision_date, symbol)
         );
         CREATE TABLE IF NOT EXISTS crypto_xs_state (k TEXT PRIMARY KEY, v TEXT);
-        """
+        """.replace("crypto_xs_", f"{book.prefix}_")
     )
     conn.commit()
 
 
-def _state(conn: sqlite3.Connection, key: str) -> str | None:
-    row = conn.execute("SELECT v FROM crypto_xs_state WHERE k=?", (key,)).fetchone()
+def _state(conn: sqlite3.Connection, key: str, book: Book = MAIN) -> str | None:
+    row = conn.execute(f"SELECT v FROM {book.prefix}_state WHERE k=?", (key,)).fetchone()
     return row[0] if row else None
 
 
-def _set_state(conn: sqlite3.Connection, **values) -> None:
-    conn.executemany("INSERT OR REPLACE INTO crypto_xs_state (k, v) VALUES (?, ?)",
+def _set_state(conn: sqlite3.Connection, book: Book = MAIN, **values) -> None:
+    conn.executemany(f"INSERT OR REPLACE INTO {book.prefix}_state (k, v) VALUES (?, ?)",
                      [(k, None if v is None else str(v)) for k, v in values.items()])
     conn.commit()
 
 
 # ----------------------------------------------------------------- compute ---
-def compute(store: Path = data.STORE, get=data.fetch, offline: bool = False) -> dict | None:
+def compute(store: Path = data.STORE, get=data.fetch, offline: bool = False, book: Book = MAIN) -> dict | None:
     """Run the rule over the stored panels. Funding after the last published month is estimated
     from the premium index of the contracts the book holds (fetched here unless ``offline``)."""
     panels = data.load(store)
@@ -100,7 +122,8 @@ def compute(store: Path = data.STORE, get=data.fetch, offline: bool = False) -> 
     actual = actual.reindex(columns=symbols)
     quote_volume, taker_buy = panels["quote_volume"][symbols], panels["taker_buy"][symbols]
     funding = actual
-    out = engine.run(close, actual, quote_volume, taker_buy)
+    allowed = universe.crypto_allowed(close, quote_volume) if book.crypto_only else None
+    out = engine.run(close, actual, quote_volume, taker_buy, allowed)
 
     known = manifest.get("funding_through")
     estimate_from = (pd.Timestamp(known, tz="UTC") + pd.Timedelta(days=1)) if known else close.index[0]
@@ -125,16 +148,17 @@ def compute(store: Path = data.STORE, get=data.fetch, offline: bool = False) -> 
             index = actual.index.union(guess.index)
             funding = actual.reindex(index)
             funding[guess.columns] = funding[guess.columns].combine_first(guess.reindex(index))
-            out = engine.run(close, funding, quote_volume, taker_buy)
+            out = engine.run(close, funding, quote_volume, taker_buy, allowed)
     out.update(close=close, quote_volume=quote_volume, funding_panel=funding, estimate_from=estimate_from, manifest=manifest,
                estimated_symbols=estimated_symbols)
     return out
 
 
-def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, offline: bool = False) -> dict:
+def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, offline: bool = False,
+            book: Book = MAIN) -> dict:
     """Recompute the ledger from the stored panels and write it."""
-    _ensure_tables(conn)
-    out = compute(store, get, offline)
+    _ensure_tables(conn, book)
+    out = compute(store, get, offline, book)
     if out is None:
         return {"error": "no panels stored yet"}
     market, frame, weights = out["market"], out["frame"], out["weights"]
@@ -174,7 +198,7 @@ def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, 
                       float(row["cost"]), float(row["net"]) if complete else None, round(equity, 2) if complete else None,
                       source, symbols[top] if top is not None else None,
                       float(contribution[i, top]) if top is not None else None, "; ".join(flags) or None,
-                      REFERENCE_VERSION, stamp))
+                      book.reference_version, stamp))
         for j in held:
             lines.append((day, symbols[j], float(weights[i, j]), float(out["targets"][i, j]), _f(out["signal"][i, j]),
                           _f(market.entry_price[i, j]), _f(exit_price[i, j]) if complete else None,
@@ -185,22 +209,22 @@ def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, 
                           int(tradable[j]), int(ended[j])))
     source_lines = [dict(decision_date=r[0], symbol=r[1], weight=r[2]) for r in lines]
     daily = [d[:12] + (funding_source(out, d[0], source_lines).replace("estimated / incomplete", "estimated"),) + d[13:] for d in daily]
-    conn.execute("DELETE FROM crypto_xs_daily")
-    conn.execute("DELETE FROM crypto_xs_weights")
-    conn.executemany("INSERT INTO crypto_xs_daily (decision_date,complete,n_eligible,n_held,exposure,long_exposure,turnover,"
+    conn.execute(f"DELETE FROM {book.prefix}_daily")
+    conn.execute(f"DELETE FROM {book.prefix}_weights")
+    conn.executemany(f"INSERT INTO {book.prefix}_daily (decision_date,complete,n_eligible,n_held,exposure,long_exposure,turnover,"
                      "gross,funding,cost,net,equity,funding_source,top_symbol,top_contribution,flags,strategy_version,"
                      "updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", daily)
-    conn.executemany("INSERT INTO crypto_xs_weights (decision_date,symbol,weight,target,signal,entry_price,exit_price,"
+    conn.executemany(f"INSERT INTO {book.prefix}_weights (decision_date,symbol,weight,target,signal,entry_price,exit_price,"
                      "price_return,funding_rate,price_pnl,funding_pnl,traded,tradable,ended) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", lines)
     account_days, account_lines = account.run(out, out["funding_panel"], PAPER_START, EQUITY_START)
     for day in account_days:
         day["funding_source"] = funding_source(out, day["decision_date"], account_lines)
-        day["strategy_version"] = STRATEGY_VERSION
-    _write_account(conn, account_days, account_lines)
+        day["strategy_version"] = book.version
+    _write_account(conn, account_days, account_lines, book)
     conn.commit()
     manifest = out["manifest"]
-    _set_state(conn, built_at=stamp, data_through=manifest.get("through"), funding_through=manifest.get("funding_through"),
-               version=STRATEGY_VERSION, late=sum(len(v) for v in manifest.get("late", {}).values()),
+    _set_state(conn, book, built_at=stamp, data_through=manifest.get("through"), funding_through=manifest.get("funding_through"),
+               version=book.version, late=sum(len(v) for v in manifest.get("late", {}).values()),
                estimated_contracts=len(out["estimated_symbols"]), api_checked_at=manifest.get("api_checked_at"),
                api_funding_contracts=len(manifest.get("api_funding_coverage", {})))
     done = [d for d in daily if d[1]]
@@ -208,7 +232,7 @@ def rebuild(conn: sqlite3.Connection, store: Path = data.STORE, get=data.fetch, 
     return {"days": len(done), "through": done[-1][0] if done else None, "open": daily[-1][0] if daily and not daily[-1][1] else None,
             "equity": account_done[-1]["equity"] if account_done else EQUITY_START,
             "reference_equity": done[-1][11] if done else EQUITY_START, "data_through": manifest.get("through"),
-            "funding_through": manifest.get("funding_through"), "reconciles": reconcile(conn)["ok"]}
+            "funding_through": manifest.get("funding_through"), "reconciles": reconcile(conn, book)["ok"]}
 
 
 def funding_source(out, day, lines):
@@ -224,9 +248,9 @@ def funding_source(out, day, lines):
     return "estimated / incomplete"
 
 
-def _write_account(conn, days, lines):
+def _write_account(conn, days, lines, book: Book = MAIN):
     """Separate tables preserve the exact research model and its reconciliation."""
-    for name, rows in (("crypto_xs_account_daily", days), ("crypto_xs_account_weights", lines)):
+    for name, rows in ((f"{book.prefix}_account_daily", days), (f"{book.prefix}_account_weights", lines)):
         conn.execute(f"CREATE TABLE IF NOT EXISTS {name} (decision_date TEXT NOT NULL, payload TEXT NOT NULL)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS {name}_date ON {name}(decision_date)")
         conn.execute(f"DELETE FROM {name}")
@@ -243,8 +267,10 @@ def _compound(values) -> float:
     return float(np.prod([1.0 + v for v in values]) - 1.0)
 
 
-def reconcile(conn: sqlite3.Connection) -> dict:
+def reconcile(conn: sqlite3.Connection, book: Book = MAIN) -> dict:
     """June - August against the research backtest's months (compounded %)."""
+    if book is not MAIN:                                   # a variant has no research run to reconcile with
+        return {"ok": None, "got": {}, "want": {}, "through": None, "na": True}
     rows = conn.execute("SELECT decision_date, net FROM crypto_xs_daily WHERE complete=1 AND decision_date<=? ORDER BY 1",
                         (REFERENCE_LAST_DAY,)).fetchall()
     months = {}
@@ -270,6 +296,11 @@ def refresh(now: datetime | None = None, *, store: Path = data.STORE, get=data.f
         fetched = data.update(store, today=now.astimezone(timezone.utc).date(), get=get, log=log)
         stale = _state(conn, "version") != STRATEGY_VERSION or _state(conn, "data_through") != fetched["through"]
         result = rebuild(conn, store, get) if (force or fetched["changed"] or stale) else {"unchanged": True}
+        _ensure_tables(conn, CRYPTO_ONLY)
+        twin_stale = (_state(conn, "version", CRYPTO_ONLY) != CRYPTO_ONLY.version
+                      or _state(conn, "data_through", CRYPTO_ONLY) != fetched["through"])
+        if force or fetched["changed"] or twin_stale:
+            result = {**result, "crypto_only": rebuild(conn, store, get, book=CRYPTO_ONLY)}
         _set_state(conn, error=None)
         return {**result, "added_days": fetched["added_days"], "funding_months": fetched["funding_months"]}
     except Exception as exc:
@@ -348,32 +379,35 @@ def _period(rows: list[dict]) -> dict:
     }
 
 
-def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), *, reference=False) -> tuple:
+def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), *, reference=False,
+             book: Book = MAIN) -> tuple:
     """(day rows newest first, the latest book's lines, stats) for the /labs/live tab."""
     clause = date_clause.replace("trade_date", "decision_date")
-    cur = conn.execute(f"SELECT * FROM crypto_xs_daily WHERE 1=1 {clause} ORDER BY decision_date DESC LIMIT 600", tuple(date_params))
+    p = book.prefix
+    cur = conn.execute(f"SELECT * FROM {p}_daily WHERE 1=1 {clause} ORDER BY decision_date DESC LIMIT 600", tuple(date_params))
     cols = [c[0] for c in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    cur = conn.execute(f"SELECT * FROM crypto_xs_daily WHERE 1=1 {clause} ORDER BY decision_date", tuple(date_params))
+    cur = conn.execute(f"SELECT * FROM {p}_daily WHERE 1=1 {clause} ORDER BY decision_date", tuple(date_params))
     every = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
     reference_rows = list(every)
-    has_account = conn.execute("SELECT 1 FROM sqlite_master WHERE name='crypto_xs_account_daily'").fetchone()
+    has_account = conn.execute(f"SELECT 1 FROM sqlite_master WHERE name='{p}_account_daily'").fetchone()
     if has_account and not reference:
         import json
-        cur = conn.execute(f"SELECT payload FROM crypto_xs_account_daily WHERE 1=1 {clause} ORDER BY decision_date", tuple(date_params))
+        cur = conn.execute(f"SELECT payload FROM {p}_account_daily WHERE 1=1 {clause} ORDER BY decision_date", tuple(date_params))
         every = [json.loads(r[0]) for r in cur.fetchall()]
         rows = list(reversed(every))[:600]
     if not every:
         return rows, [], {"empty_range": True, "filtered": True} if clause else {}
     done = [r for r in every if r["complete"]]
     latest = every[-1]
-    cur = conn.execute("SELECT * FROM crypto_xs_weights WHERE decision_date=? AND ABS(weight)>1e-12 ORDER BY weight DESC",
+    cur = conn.execute(f"SELECT * FROM {p}_weights WHERE decision_date=? AND ABS(weight)>1e-12 ORDER BY weight DESC",
                        (latest["decision_date"],))
-    book = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
+    lines = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
     if has_account and not reference:
-        book = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM crypto_xs_account_weights WHERE decision_date=?", (latest["decision_date"],))]
-        book = sorted([r for r in book if abs(r["weight"]) > 1e-12], key=lambda r: -r["weight"])
-    state = dict(conn.execute("SELECT k, v FROM crypto_xs_state").fetchall())
+        held = [json.loads(r[0]) for r in conn.execute(f"SELECT payload FROM {p}_account_weights WHERE decision_date=?", (latest["decision_date"],))]
+        lines = sorted([r for r in held if abs(r["weight"]) > 1e-12], key=lambda r: -r["weight"])
+    state = dict(conn.execute(f"SELECT k, v FROM {p}_state").fetchall())
+    fwd = book.forward_from
     stats = {
         "research": _period([r for r in done if r["decision_date"] < FIRST_UNSEEN]),
         "unseen": _period([r for r in done if r["decision_date"] >= FIRST_UNSEEN]),
@@ -382,13 +416,16 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), *,
         "account": bool(has_account and not reference), "filtered": bool(clause),
         "provisional_days": sum(r.get("provisional", 0) for r in done),
         "equity_provisional": bool(latest.get("equity_provisional")),
-        "reconcile": reconcile(conn), "latest": latest, "last_done": done[-1] if done else None,
+        "reconcile": reconcile(conn, book), "latest": latest,
+        "crypto_only": book.crypto_only, "forward_from": fwd,
+        "seen": _period([r for r in done if r["decision_date"] >= FIRST_UNSEEN and (not fwd or r["decision_date"] < fwd)]),
+        "forward": _period([r for r in done if fwd and r["decision_date"] >= fwd]), "last_done": done[-1] if done else None,
         "equity": done[-1]["equity"] if done else EQUITY_START, "equity_start": EQUITY_START,
         "paper_start": PAPER_START, "first_unseen": FIRST_UNSEEN, "state": state,
         "flagged": [r for r in reversed(every) if r["flags"]][:40],
         "top": engine.TOP, "hold_days": engine.HOLD_DAYS, "cost_bps": engine.COST_BPS,
     }
-    return rows, book, stats
+    return rows, lines, stats
 
 
 if __name__ == "__main__":

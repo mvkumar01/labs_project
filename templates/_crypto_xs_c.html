@@ -1,0 +1,86 @@
+{# Crypto taker imbalance, crypto-only twin (included from live_strategy.html) #}
+    <section id="crypto-xs-c-view">
+    <style>
+      #crypto-xs-c-view { min-width:0; max-width:100%; }
+      #crypto-xs-c-view .crypto-table { width:100%; max-width:100%; overflow-x:auto; margin:12px 0; }
+      #crypto-xs-c-view .perf { width:max-content; min-width:100%; }
+      #crypto-xs-c-view .perf td, #crypto-xs-c-view .perf th { white-space:nowrap; }
+      #crypto-xs-c-view details { white-space:normal; width:22rem; max-width:60vw; overflow-wrap:anywhere; }
+      #crypto-xs-c-view .cards > * { min-width:0; overflow-wrap:anywhere; }
+    </style>
+    {% set st = crypto_xs_c_stats %}
+    <h1>Crypto taker imbalance &middot; crypto only (paper)</h1>
+    <p class="sub">The same rule as <a href="?tab=crypto_xs">Crypto taker imbalance</a> &mdash; each day at 00:00 UTC the {{ st.top or 50 }}
+      most liquid contracts, ranked by (taker buys &minus; taker sells) / volume over the last 24 hours, long the most bought and short
+      the most sold, the average of the last {{ st.hold_days or 7 }} daily targets, traded at 01:00 UTC, {{ "%.0f"|format(st.cost_bps or 7) }} bps,
+      funding &mdash; with one change: <strong>only crypto contracts</strong>. Binance's TradFi perpetuals (US, Hong Kong, Korean and
+      Chinese stocks, ETFs including 3&times; leveraged ones, gold, silver, oil, FX) are left out before the volume ranking, so the
+      top {{ st.top or 50 }} are the most liquid crypto contracts. Same quantity-based paper account, from
+      ${{ "{:,.0f}".format(st.equity_start or 100000) }} on {{ st.paper_start or '2026-06-01' }}.</p>
+
+    <div class="formula">
+      Why: by mid-2026 10 to 20 of the top 50 were TradFi contracts, which did not exist in the research's 2021&ndash;2024
+      discovery data; in the original book they lost about 10% of equity from June to mid-October. Which contracts count as
+      crypto: Binance's own label (exchangeInfo <code>underlyingType</code> COIN), from a snapshot taken on a machine the Binance
+      API answers (this server gets HTTP 451); a contract missing from the snapshot is crypto if it trades at least 35% as much on
+      weekend days as on weekdays over the previous 28 days (stock and commodity contracts go quiet while their markets are shut).
+      <strong>This twin was defined on 18 October 2026 after seeing the book to mid-October</strong>, so its June&ndash;October
+      history is shown for context only; <strong>only decisions from {{ st.forward_from or '2026-10-19' }} are its test</strong>.
+      A candidate being watched, not a proven edge.
+    </div>
+
+    {% if st.get('error') %}
+      <p class="empty">Crypto-only book unavailable ({{ st.error }}).</p>
+    {% elif not crypto_xs_c_rows %}
+      <p class="empty">Not built yet &mdash; it is rebuilt with the main crypto book the next time the archive has new data.</p>
+    {% else %}
+      {% set r = st.research %}{% set s = st.seen %}{% set f = st.forward %}
+      <div class="cards">
+        <div class="card"><div class="k">Paper equity</div>
+          <div class="v {{ 'green' if st.equity > st.equity_start else ('red' if st.equity < st.equity_start else '') }}">${{ "{:,.0f}".format(st.equity) }}</div>
+          <div class="sub-k">from ${{ "{:,.0f}".format(st.equity_start) }}; last completed day {{ st.last_done.decision_date if st.last_done else '&mdash;' }}{% if st.equity_provisional %}; <span class="amber">provisional</span>{% endif %}</div></div>
+        <div class="card"><div class="k">June &ndash; August (research period)</div>
+          <div class="v {{ 'green' if (r.net_pct or 0) > 0 else ('red' if (r.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(r.net_pct) if r.days else '&mdash;' }}%</div>
+          <div class="sub-k">{{ r.days }} days{% if r.days %}; deepest fall {{ "%.1f"|format(r.max_drawdown_pct) }}%{% endif %}</div></div>
+        <div class="card"><div class="k">1 Sep &ndash; 18 Oct (seen while defining)</div>
+          <div class="v {{ 'green' if (s.net_pct or 0) > 0 else ('red' if (s.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(s.net_pct) if s.days else '&mdash;' }}%</div>
+          <div class="sub-k">{{ s.days }} days{% if s.days %}; deepest fall {{ "%.1f"|format(s.max_drawdown_pct) }}%{% endif %}</div></div>
+        <div class="card"><div class="k">From {{ st.forward_from }} (its test)</div>
+          <div class="v {{ 'green' if (f.net_pct or 0) > 0 else ('red' if (f.net_pct or 0) < 0 else '') }}">{{ "%+.2f"|format(f.net_pct) if f.days else '&mdash;' }}{{ '%' if f.days }}</div>
+          <div class="sub-k">{{ f.days }} completed days{% if f.days %}; {{ f.estimated_days }} with estimated funding{% endif %}</div></div>
+        <div class="card"><div class="k">Data</div>
+          <div class="v">{{ st.state.data_through or '&mdash;' }}</div>
+          <div class="sub-k">bars through this UTC day; monthly actual funding through {{ st.state.funding_through or '&mdash;' }}</div></div>
+      </div>
+
+      <h2 style="margin-top:24px">Month by month</h2>
+      <div class="crypto-table"><table class="perf"><thead><tr><th>Month</th><th>Days</th><th>Net (compounded)</th><th>Price moves</th><th>Funding</th><th>Costs</th><th>Funding source</th></tr></thead><tbody>
+      {% for p in [r, st.unseen] %}{% for m in p.months or [] %}<tr>
+        <td>{{ m.month }}</td><td>{{ m.days }}</td>
+        <td class="{{ 'green' if m.net_pct > 0 else ('red' if m.net_pct < 0 else '') }}">{{ "%+.2f"|format(m.net_pct) }}%</td>
+        <td>{{ "%+.2f"|format(m.gross_pct) }}%</td><td>{{ "%+.2f"|format(m.funding_pct) }}%</td><td>{{ "%+.2f"|format(-m.cost_pct) }}%</td>
+        <td>{% if m.estimated_days %}<span class="amber">estimated on {{ m.estimated_days }} of {{ m.days }} days</span>{% else %}actual{% endif %}</td></tr>{% endfor %}{% endfor %}
+      </tbody></table></div>
+
+      <h2 style="margin-top:24px">Book on {{ st.latest.decision_date }}</h2>
+      <div class="crypto-table"><table class="perf"><thead><tr><th>Contract</th><th>Weight</th><th>Signal</th></tr></thead><tbody>
+      {% for b in crypto_xs_c_book %}<tr><td>{{ b.symbol }}</td><td class="{{ 'green' if b.weight > 0 else 'red' }}">{{ "%+.2f"|format(100 * b.weight) }}%</td>
+        <td>{{ "%+.3f"|format(b.signal) if b.signal is not none else '&mdash;' }}</td></tr>{% endfor %}
+      </tbody></table></div>
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <div class="crypto-table"><table class="perf"><thead><tr><th>UTC decision</th><th>Net</th><th>Price</th><th>Funding</th><th>Costs</th><th>Equity</th><th>Flags</th></tr></thead><tbody>
+      {% for d in crypto_xs_c_rows %}<tr>
+        <td>{{ d.decision_date }}{% if st.forward_from and d.decision_date >= st.forward_from %} <span class="muted">&bull;</span>{% endif %}{% if not d.complete %} <span class="amber">open</span>{% endif %}</td>
+        {% if d.complete %}
+        <td class="{{ 'green' if d.net > 0 else ('red' if d.net < 0 else '') }}">{{ "%+.2f"|format(100 * d.net) }}%</td>
+        <td>{{ "%+.2f"|format(100 * d.gross) }}%</td>
+        <td>{{ "%+.2f"|format(100 * d.funding) }}%{% if not (d.funding_source or 'actual').startswith('actual') %} <span class="amber">est</span>{% endif %}</td>
+        <td>{{ "%+.2f"|format(-100 * d.cost) }}%</td><td>${{ "{:,.0f}".format(d.equity) }}</td>
+        {% else %}<td colspan="5" class="muted">hold still open</td>{% endif %}
+        <td>{% if d.flags %}<details><summary>View flags</summary>{{ d.flags }}</details>{% endif %}</td></tr>{% endfor %}
+      </tbody></table></div>
+      <p class="note">&bull; = the twin's forward test. Paper-only strategy <code>crypto_xs_c_taker24_top50_h7_v1_account</code>; it
+        never calls an exchange order API.</p>
+    {% endif %}
+    </section>

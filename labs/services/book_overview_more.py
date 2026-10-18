@@ -37,6 +37,8 @@ MORE_BOOKS = {
     "risk_core": {"label": "Risk core · trend × vol", "instrument": "NIFTY, BANK NIFTY, BTC, ETH, crude",
                   "size": "Rs 10 lakh, five sleeves"},
     "crypto_xs": {"label": "Crypto taker imbalance", "instrument": "Binance USDT perpetuals", "size": "$100,000 simulated equity"},
+    "crypto_xs_c": {"label": "Crypto taker imbalance · crypto only", "instrument": "Binance USDT perpetuals, crypto contracts",
+                    "size": "$100,000 simulated equity"},
 }
 
 
@@ -152,8 +154,8 @@ def _risk_core(conn, today: str) -> dict:
                  today, capital=CAPITAL, position=f"Held {held}", note=note)
 
 
-def _crypto(conn, today: str) -> dict:
-    rows = _rows(conn, "SELECT decision_date, net, equity FROM crypto_xs_daily WHERE complete=1 ORDER BY decision_date")
+def _crypto(conn, today: str, key: str = "crypto_xs") -> dict:
+    rows = _rows(conn, f"SELECT decision_date, net, equity FROM {key}_daily WHERE complete=1 ORDER BY decision_date")
     daily, prev = [], None
     for r in rows:
         equity = _f(r["equity"])
@@ -161,11 +163,11 @@ def _crypto(conn, today: str) -> dict:
         daily.append({"trade_date": r["decision_date"], "net": equity - start})
         prev = equity
     first = (_f(rows[0]["equity"]) / (1 + _f(rows[0]["net"]))) if rows and (1 + _f(rows[0]["net"])) else None
-    account = conn.execute("SELECT 1 FROM sqlite_master WHERE name='crypto_xs_account_daily'").fetchone()
+    account = conn.execute(f"SELECT 1 FROM sqlite_master WHERE name='{key}_account_daily'").fetchone()
     provisional = False
     if account:
         import json
-        rows = [json.loads(r[0]) for r in conn.execute("SELECT payload FROM crypto_xs_account_daily ORDER BY decision_date")]
+        rows = [json.loads(r[0]) for r in conn.execute(f"SELECT payload FROM {key}_account_daily ORDER BY decision_date")]
         provisional = any(r.get("equity_provisional") for r in rows)
         daily, prev, first = [], 100_000.0, 100_000.0
         for row in rows:
@@ -177,7 +179,10 @@ def _crypto(conn, today: str) -> dict:
             "Today is unavailable until that hold is complete; archive publication can lag.")
     if provisional:
         note += " Equity is provisional because a historical quote or settlement is unresolved."
-    return _card("crypto_xs", MORE_BOOKS["crypto_xs"], daily, today, capital=first,
+    if key == "crypto_xs_c":
+        note = ("Same rule, Binance TradFi perpetuals (stocks, ETFs, commodities) left out. Defined 18 Oct 2026 after "
+                "seeing the data; only decisions from 19 Oct are its test. " + note)
+    return _card(key, MORE_BOOKS[key], daily, today, capital=first,
                  position="Daily archive replay", usd=True, status="Pending data", today_unavailable=True, note=note)
 
 
@@ -246,6 +251,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "infy_tcs_pair": lambda: _pair(conn, today),
         "risk_core": lambda: _risk_core(conn, today),
         "crypto_xs": lambda: _crypto(conn, today),
+        "crypto_xs_c": lambda: _crypto(conn, today, "crypto_xs_c"),
     }
     cards = []
     for key, build in builders.items():
