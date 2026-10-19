@@ -34,7 +34,7 @@ EXIT (open), first match wins:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Iterable, Optional, Sequence
 
@@ -99,8 +99,37 @@ class ProposerParams:
     spot_floor_pts: float = 0.0
 
 
-def params_for(strategy_version: Optional[str]) -> ProposerParams:
-    """The parameter set a strategy version trades with."""
+# The live preset "Sensex V4 / V5" lets each connection set its own day target (Vipin, 2026-10-19): stored
+# per connection as a percent ("2.5"), applied to these versions only, within these bounds.
+DAY_TARGET_VERSIONS = frozenset({STRATEGY_VERSION_V3_DT35, STRATEGY_VERSION_V5})
+DAY_TARGET_MIN_PCT, DAY_TARGET_MAX_PCT = 0.5, 10.0
+
+
+def parse_day_target(value) -> Optional[float]:
+    """A day target typed as a percent ("2.5", "2.5%") -> 0.025; None when blank, not a number or out of
+    bounds."""
+    text = str(value or "").strip().rstrip("%").strip()
+    if not text:
+        return None
+    try:
+        pct = float(text)
+    except ValueError:
+        return None
+    if not (DAY_TARGET_MIN_PCT <= pct <= DAY_TARGET_MAX_PCT):
+        return None
+    return round(pct, 4) / 100.0
+
+
+def params_for(strategy_version: Optional[str], day_target_pct: Optional[float] = None) -> ProposerParams:
+    """The parameter set a strategy version trades with. `day_target_pct` (a fraction) replaces the day
+    target of the versions in DAY_TARGET_VERSIONS; other versions ignore it."""
+    params = _preset_params(strategy_version)
+    if day_target_pct and str(strategy_version or "") in DAY_TARGET_VERSIONS:
+        params = replace(params, daily_target_pct=float(day_target_pct))
+    return params
+
+
+def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
     if str(strategy_version or "") == STRATEGY_VERSION_PX:
         return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1, reentry_cooldown_secs=REENTRY_COOLDOWN_S)
     if str(strategy_version or "") == STRATEGY_VERSION_V3:

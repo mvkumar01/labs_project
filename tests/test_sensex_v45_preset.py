@@ -121,3 +121,51 @@ def test_floor_cannot_change_with_a_position_open_or_on_an_old_runner(client):  
     svc.save_trade_state(USER_ID, CONN_ID, state)
     page = _configure(client, "proposer_sensex_v45", "spot_150").get_data(as_text=True)
     assert "open position" in page and _strategy_pair() == ("proposer", "proposer_dt35_v3")
+
+
+def _configure_target(client, choice, typed=None, floor="spot_150"):
+    data = {"csrf_token": CSRF_TOKEN, "lots": "1", "daily_loss_cap": "3000", "strategy": "proposer_sensex_v45",
+            "loss_floor": floor, "day_target": choice}
+    if typed is not None:
+        data["day_target_custom"] = typed
+    return client.post("/live/configure", data=data)
+
+
+def test_day_target_choice_and_typed_value(client):                           # noqa: F811
+    _set_strategy("proposer", "proposer_dt35_v5")
+    page = client.get("/live/configure").get_data(as_text=True)
+    assert 'name="day_target"' in page and 'value="3.5" selected' in page and 'name="day_target_custom"' in page
+
+    assert _configure_target(client, "2.5").status_code == 302
+    assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "2.5"
+    assert 'value="2.5" selected' in client.get("/live/configure").get_data(as_text=True)
+    assert "day target 2.5%" in client.get("/live/").get_data(as_text=True)
+
+    assert _configure_target(client, "other", "3.2%").status_code == 302
+    assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "3.2"
+    page = client.get("/live/configure").get_data(as_text=True)
+    assert 'value="other" selected' in page and 'value="3.2"' in page
+
+    for bad in ("", "abc", "0.1", "25"):
+        page = _configure_target(client, "other", bad).get_data(as_text=True)
+        assert "is not a percent between" in page
+        assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "3.2"      # unchanged
+
+    # a POST without the field keeps the stored target; the floor still changes
+    assert _configure(client, "proposer_sensex_v45", "premium_20").status_code == 302
+    assert _strategy_pair() == ("proposer", "proposer_dt35_v3")
+    assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "3.2"
+
+
+def test_day_target_change_alone_needs_flat_and_a_current_runner(client):     # noqa: F811
+    _set_strategy("proposer", "proposer_dt35_v5")
+    svc.set_config(USER_ID, CONN_ID, "proposer_day_target_pct", "3.5")
+    svc.set_config(USER_ID, CONN_ID, "runner_decision_abi", "proposer-dt25-live-v9")
+    page = _configure_target(client, "2.5").get_data(as_text=True)
+    assert "restarted first" in page and svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "3.5"
+    svc.set_config(USER_ID, CONN_ID, "runner_decision_abi", ex.PROPOSER_DECISION_ABI)
+    state = svc.get_trade_state(USER_ID, CONN_ID)
+    state["position"] = "OPEN"
+    svc.save_trade_state(USER_ID, CONN_ID, state)
+    page = _configure_target(client, "2.5").get_data(as_text=True)
+    assert "open position" in page and svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "3.5"

@@ -66,7 +66,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v8 (2026-10-16): every Proposer preset waits 270 s after an exit instead of 300 s.
 # v9 (2026-10-19): the runner also trades proposer_dt35_v5 (Sensex V5: proposer_dt35_v3 with a 150-point
 # SENSEX loss floor instead of the -20% premium floor); a v8 runner would trade it as the base preset.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v9"
+# v10 (2026-10-19): Sensex V4 / V5 take the connection's day target (config proposer_day_target_pct);
+# a v9 runner would ignore it and trade 3.5%.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v10"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

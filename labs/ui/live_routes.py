@@ -36,6 +36,7 @@ from flask import (
 from live import live_service as svc
 from live import live_executor as ex
 from live import control_plane as cp
+from live.engine import proposer_engine as pe
 from live.auth_gate import (
     current_user_id, login_throttled, record_attempt, issue_csrf, csrf_protect,
     registration_open, verify_invite_code,
@@ -568,9 +569,21 @@ STRATEGY_LABELS = {
     "proposer_dt25": "SENSEX Proposer (2.5% day target)",
     "proposer_dt25_px": "SENSEX Proposer + Renko-50 exit, one loss per day",
     "proposer_dt25_v3": "SENSEX Proposer v3 (improved: trades only with the day's direction, stop at -20%)",
-    "proposer_sensex_v45": "Sensex V4 / V5 (v3 with the day, day target 3.5%, Sentinel strike, 270 s wait; "
-                           "loss floor chosen below)",
+    "proposer_sensex_v45": "Sensex V4 / V5 (v3 with the day, Sentinel strike, 270 s wait; "
+                           "loss floor and day target chosen below)",
 }
+
+
+# Day-target choices for Sensex V4 / V5 (percent; "other" = typed in). Stored per connection in
+# proposer_day_target_pct; blank = the preset's 3.5%.
+V45_DAY_TARGETS = {"3.5": "3.5% (preset)", "2.5": "2.5% (as Pramanaa's 2.5% accounts)"}
+V45_DEFAULT_DAY_TARGET = "3.5"
+
+
+def _v45_day_target(user_id: str, conn_id: str) -> str:
+    """The connection's day target as a percent string ("3.5" when unset or unreadable)."""
+    value = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
+    return f"{value * 100:g}" if value else V45_DEFAULT_DAY_TARGET
 
 
 def _v45_floor(version: str | None) -> str:
@@ -582,7 +595,7 @@ def _strategy_label(user_id: str, conn_id: str) -> str:
     if preset != SENSEX_V45:
         return STRATEGY_LABELS[preset]
     floor = SENSEX_V45_FLOORS[_v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))][1]
-    return f"Sensex V4 / V5 - loss floor: {floor}"
+    return f"Sensex V4 / V5 - loss floor: {floor}; day target {_v45_day_target(user_id, conn_id)}%"
 
 
 def _current_strategy_preset(user_id: str, conn_id: str) -> str:
@@ -651,6 +664,9 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         v45_preset=SENSEX_V45,
         v45_floors={k: label for k, (_, label) in SENSEX_V45_FLOORS.items()},
         v45_floor=_v45_floor(svc.get_config(user_id, conn_id, "strategy_version")),
+        v45_day_targets=V45_DAY_TARGETS,
+        v45_day_target=_v45_day_target(user_id, conn_id),
+        v45_day_target_bounds=(pe.DAY_TARGET_MIN_PCT, pe.DAY_TARGET_MAX_PCT),
         error=error,
     )
 
@@ -671,9 +687,25 @@ def configure():
             if floor not in SENSEX_V45_FLOORS:
                 floor = _v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))
             target = ("proposer", SENSEX_V45_FLOORS[floor][0])
+        day_target = None                                  # percent string to store, Sensex V4 / V5 only
+        if strat == SENSEX_V45:
+            choice = (request.form.get("day_target") or "").strip()
+            if choice == "other":
+                typed = request.form.get("day_target_custom")
+                parsed = pe.parse_day_target(typed)
+                if parsed is None:
+                    return _render_configure(user_id, conn_id, error=(
+                        f"Day target {str(typed or '').strip() or '(blank)'} is not a percent between "
+                        f"{pe.DAY_TARGET_MIN_PCT:g} and {pe.DAY_TARGET_MAX_PCT:g}. Nothing was changed."))
+                day_target = f"{parsed * 100:g}"
+            elif choice in V45_DAY_TARGETS:
+                day_target = choice
+            else:
+                day_target = _v45_day_target(user_id, conn_id)          # a form without the field keeps it
         strategy_changed = target is not None and (
             strat != _current_strategy_preset(user_id, conn_id)
             or target[1] != svc.get_config(user_id, conn_id, "strategy_version")
+            or (day_target is not None and day_target != _v45_day_target(user_id, conn_id))
         )
         if strategy_changed:
             state = svc.get_trade_state(user_id, conn_id)
@@ -709,6 +741,8 @@ def configure():
             decision_engine, strat_version = target
             svc.set_config(user_id, conn_id, "decision_engine", decision_engine)
             svc.set_config(user_id, conn_id, "strategy_version", strat_version)
+            if day_target is not None:
+                svc.set_config(user_id, conn_id, "proposer_day_target_pct", day_target)
             svc.clear_v212_latches(user_id, conn_id)
 
         return redirect(url_for("live.dashboard"))

@@ -513,9 +513,9 @@ class ProposerConnection:
     """Engine + restart-safe state for one (user, connection)."""
 
     def __init__(self, user_id: str, conn_id: str, params: pe.ProposerParams | None = None,
-                 strategy: str | None = None):
-        self.user_id, self.conn_id, self.strategy = user_id, conn_id, strategy
-        self.engine = pe.ProposerEngine(params or pe.params_for(strategy))
+                 strategy: str | None = None, day_target: float | None = None):
+        self.user_id, self.conn_id, self.strategy, self.day_target = user_id, conn_id, strategy, day_target
+        self.engine = pe.ProposerEngine(params or pe.params_for(strategy, day_target))
         self.day: str | None = None
         self.mode: str | None = None
 
@@ -683,14 +683,16 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
 
     trade_date = now.date().isoformat()
     strategy = svc.get_config(user_id, conn_id, "strategy_version")
+    day_target = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
     pc = ctx["conns"].get(conn_id)
-    if pc is None or pc.strategy != strategy:        # first cycle, or the operator switched variant
-        pc = ctx["conns"][conn_id] = ProposerConnection(user_id, conn_id, strategy=strategy)
+    if pc is None or pc.strategy != strategy or pc.day_target != day_target:
+        # first cycle, or the operator switched variant or day target
+        pc = ctx["conns"][conn_id] = ProposerConnection(user_id, conn_id, strategy=strategy, day_target=day_target)
         log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
-                 "loss_floor=%s spot_floor_pts=%s", conn_id,
+                 "loss_floor=%s spot_floor_pts=%s day_target=%s", conn_id,
                  strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
                  pc.engine.params.with_day_pts or "off", pc.engine.params.loss_floor_pct,
-                 pc.engine.params.spot_floor_pts or "off")
+                 pc.engine.params.spot_floor_pts or "off", pc.engine.params.daily_target_pct)
     pc.ensure_session(trade_date, dry_run, feed, now)
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
