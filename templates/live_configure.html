@@ -56,6 +56,23 @@
           <div class="hint">Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
         </div>
 
+        <div class="field" id="v45-floor-field" {{ '' if strategy == v45_preset else 'hidden' }}>
+          <label for="loss_floor">Sensex V4 / V5 loss floor</label>
+          <select id="loss_floor" name="loss_floor">
+            {% for key, label in v45_floors.items() %}
+            <option value="{{ key }}" {{ 'selected' if v45_floor == key else '' }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">Only for Sensex V4 / V5. Everything else is the same: entries only with the day, 3.5% day target, Sentinel's strike, 270 s wait after an exit. The 150-point floor exits once SENSEX is 150 points against the entry spot and has no premium floor; 150 was picked in-sample (paper books Sensex V4 and V5).</div>
+        </div>
+        <script>
+          (function () {
+            const s = document.getElementById('strategy'), f = document.getElementById('v45-floor-field');
+            if (!s || !f) return;
+            s.addEventListener('change', () => { f.hidden = s.value !== '{{ v45_preset }}'; });
+          })();
+        </script>
+
         <div class="field">
           <label for="daily_loss_cap">Daily loss cap (₹)</label>
           <input type="number" id="daily_loss_cap" name="daily_loss_cap" min="0" step="100"

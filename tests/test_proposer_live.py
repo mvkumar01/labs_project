@@ -208,17 +208,18 @@ def test_nifty_runner_never_claims_a_proposer_connection(db):
 
 
 def test_v3_dt35_live_preset_label_and_decision_contract(monkeypatch):
+    """proposer_dt35_v3 is now chosen through the Sensex V4 / V5 preset (its -20% premium floor)."""
     from labs.ui import live_routes
 
-    assert live_routes.STRATEGY_PRESETS["proposer_dt35_v3"] == ("proposer", "proposer_dt35_v3")
-    assert "day target 3.5%" in live_routes.STRATEGY_LABELS["proposer_dt35_v3"]
+    assert live_routes.STRATEGY_PRESETS["proposer_sensex_v45"] == ("proposer", "proposer_dt35_v3")
+    assert "day target 3.5%" in live_routes.STRATEGY_LABELS["proposer_sensex_v45"]
     monkeypatch.setattr(
         live_routes.svc,
         "get_config",
         lambda _user, _conn, key: {"decision_engine": "proposer", "strategy_version": "proposer_dt35_v3"}[key],
     )
-    assert live_routes._current_strategy_preset(USER, CONN) == "proposer_dt35_v3"
-    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v8"
+    assert live_routes._current_strategy_preset(USER, CONN) == "proposer_sensex_v45"
+    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v9"
 
 
 class FakeAdapter:

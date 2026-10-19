@@ -686,9 +686,11 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     pc = ctx["conns"].get(conn_id)
     if pc is None or pc.strategy != strategy:        # first cycle, or the operator switched variant
         pc = ctx["conns"][conn_id] = ProposerConnection(user_id, conn_id, strategy=strategy)
-        log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s", conn_id,
+        log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
+                 "loss_floor=%s spot_floor_pts=%s", conn_id,
                  strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
-                 pc.engine.params.with_day_pts or "off")
+                 pc.engine.params.with_day_pts or "off", pc.engine.params.loss_floor_pct,
+                 pc.engine.params.spot_floor_pts or "off")
     pc.ensure_session(trade_date, dry_run, feed, now)
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
@@ -724,6 +726,10 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                      pc.engine.params.with_day_pts)
     else:
         sig = pe.Signal("HOLD")
+    if sig.action == "ENTER" and strategy not in pe.KNOWN_VERSIONS:
+        # a version this release does not know would trade on the base preset's rules
+        log.warning("entry held: strategy %s is unknown to this runner (%s)", strategy, ex.PROPOSER_DECISION_ABI)
+        sig = pe.Signal("HOLD", reason="unknown_strategy")
 
     if sig.action == "EXIT" and is_open:
         if not ltp:

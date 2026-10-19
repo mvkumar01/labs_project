@@ -353,7 +353,7 @@ def dashboard():
         configured=bool(connection),
         lots=svc.get_lots(user_id, conn_id),
         daily_loss_cap=svc.get_daily_loss_cap(user_id, conn_id),
-        strategy_label=STRATEGY_LABELS[_current_strategy_preset(user_id, conn_id)],
+        strategy_label=_strategy_label(user_id, conn_id),
         trade_date=svc.today_ist_iso(),
     )
 
@@ -545,8 +545,15 @@ STRATEGY_PRESETS = {
     # The base Proposer taking only entries that go with the day (75 points beyond the 09:15 close),
     # premium floor at -20%.
     "proposer_dt25_v3": ("proposer", "proposer_dt25_v3"),
-    # v3 with only the day target raised from 2.5% to 3.5%.
-    "proposer_dt35_v3": ("proposer", "proposer_dt35_v3"),
+    # Sensex V4 / V5: v3 at a 3.5% day target with Sentinel's strike and the 270 s wait. One preset; its
+    # loss floor (SENSEX_V45_FLOORS) picks the version: -20% of the premium is proposer_dt35_v3 (Sensex V4),
+    # 150 SENSEX points against the entry is proposer_dt35_v5 (Sensex V5). The default is V4.
+    "proposer_sensex_v45": ("proposer", "proposer_dt35_v3"),
+}
+SENSEX_V45 = "proposer_sensex_v45"
+SENSEX_V45_FLOORS = {
+    "premium_20": ("proposer_dt35_v3", "Premium down 20% (Sensex V4)"),
+    "spot_150": ("proposer_dt35_v5", "SENSEX 150 points against the entry (Sensex V5, no premium floor)"),
 }
 STRATEGY_LABELS = {
     "legacy_v211":   "Alpha v2.11 (legacy)",
@@ -561,14 +568,29 @@ STRATEGY_LABELS = {
     "proposer_dt25": "SENSEX Proposer (2.5% day target)",
     "proposer_dt25_px": "SENSEX Proposer + Renko-50 exit, one loss per day",
     "proposer_dt25_v3": "SENSEX Proposer v3 (improved: trades only with the day's direction, stop at -20%)",
-    "proposer_dt35_v3": "SENSEX Proposer v3 at 3.5% (with the day, stop -20%, day target 3.5%)",
+    "proposer_sensex_v45": "Sensex V4 / V5 (v3 with the day, day target 3.5%, Sentinel strike, 270 s wait; "
+                           "loss floor chosen below)",
 }
+
+
+def _v45_floor(version: str | None) -> str:
+    return next((k for k, (v, _) in SENSEX_V45_FLOORS.items() if v == version), "premium_20")
+
+
+def _strategy_label(user_id: str, conn_id: str) -> str:
+    preset = _current_strategy_preset(user_id, conn_id)
+    if preset != SENSEX_V45:
+        return STRATEGY_LABELS[preset]
+    floor = SENSEX_V45_FLOORS[_v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))][1]
+    return f"Sensex V4 / V5 - loss floor: {floor}"
 
 
 def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     de = svc.get_config(user_id, conn_id, "decision_engine")
     sv = svc.get_config(user_id, conn_id, "strategy_version")
     if de == "proposer":
+        if sv in {v for v, _ in SENSEX_V45_FLOORS.values()}:
+            return SENSEX_V45
         return sv if sv in STRATEGY_PRESETS else "proposer_dt25"
     if de == "champion_replay" and sv == "v2.11b":
         return "champion_v211b"
@@ -592,11 +614,19 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURE — lots + decision strategy + daily-loss (this user's conn)
 # ══════════════════════════════════════════════════════════════════════════
-def _runner_not_ready_for(user_id: str, conn_id: str, preset: str) -> str | None:
+def _runner_not_ready_for(user_id: str, conn_id: str, preset: str, version: str | None = None) -> str | None:
     """A NIFTY strategy the running runner has not loaded must not be selected: a runner
     process from an earlier release trades a version it does not know as plain v2.11. The
-    runner publishes the decision contract it loaded with every heartbeat."""
-    decision_engine, version = STRATEGY_PRESETS[preset]
+    runner publishes the decision contract it loaded with every heartbeat. The same holds for
+    the Proposer runner (an unknown version would trade on the base preset's rules)."""
+    decision_engine, preset_version = STRATEGY_PRESETS[preset]
+    version = version or preset_version
+    if decision_engine == "proposer":
+        loaded = svc.get_config(user_id, conn_id, "runner_decision_abi") or ""
+        if loaded.startswith("proposer-") and loaded != ex.expected_decision_abi(version):
+            return ("The SENSEX runner is still running an earlier release and has not loaded this "
+                    "strategy. It has to be restarted first; the strategy was not changed.")
+        return None
     if decision_engine != "champion_replay":
         return None
     loaded = svc.get_config(user_id, conn_id, "runner_decision_abi") or ""
@@ -618,6 +648,9 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         kill_switch=svc.is_kill_switch_on(user_id, conn_id),
         strategy=_current_strategy_preset(user_id, conn_id),
         strategy_presets=STRATEGY_LABELS,
+        v45_preset=SENSEX_V45,
+        v45_floors={k: label for k, (_, label) in SENSEX_V45_FLOORS.items()},
+        v45_floor=_v45_floor(svc.get_config(user_id, conn_id, "strategy_version")),
         error=error,
     )
 
@@ -632,9 +665,15 @@ def configure():
 
     if request.method == "POST":
         strat = (request.form.get("strategy") or "").strip()
-        strategy_changed = (
-            strat in STRATEGY_PRESETS
-            and strat != _current_strategy_preset(user_id, conn_id)
+        target = STRATEGY_PRESETS.get(strat)
+        if strat == SENSEX_V45:
+            floor = (request.form.get("loss_floor") or "").strip()
+            if floor not in SENSEX_V45_FLOORS:
+                floor = _v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))
+            target = ("proposer", SENSEX_V45_FLOORS[floor][0])
+        strategy_changed = target is not None and (
+            strat != _current_strategy_preset(user_id, conn_id)
+            or target[1] != svc.get_config(user_id, conn_id, "strategy_version")
         )
         if strategy_changed:
             state = svc.get_trade_state(user_id, conn_id)
@@ -647,7 +686,7 @@ def configure():
                         "has an open position. Close it first, then save."
                     ),
                 )
-            not_ready = _runner_not_ready_for(user_id, conn_id, strat)
+            not_ready = _runner_not_ready_for(user_id, conn_id, strat, target[1])
             if not_ready:
                 return _render_configure(user_id, conn_id, error=not_ready)
 
@@ -667,7 +706,7 @@ def configure():
         # Strategy preset -> decision_engine + strategy_version. Only applied when
         # a known preset is submitted, so an unrelated POST never clobbers it.
         if strategy_changed:
-            decision_engine, strat_version = STRATEGY_PRESETS[strat]
+            decision_engine, strat_version = target
             svc.set_config(user_id, conn_id, "decision_engine", decision_engine)
             svc.set_config(user_id, conn_id, "strategy_version", strat_version)
             svc.clear_v212_latches(user_id, conn_id)

@@ -23,6 +23,9 @@ EXIT (open), first match wins:
   signal_flip - a gate-passing opposite print (exit, no cooldown so the reverse can follow)
   daily_target- day realized + this trade's unrealized >= the configured share of this trade's
                 entry capital (2.5% normally; 3.5% in proposer_dt35_v3)
+  spot_floor  - variants with spot_floor_pts only (proposer_dt35_v5): SENSEX that many points against
+                the entry spot. Checked after every other exit, as in the Sensex V5 paper book; those
+                variants switch the premium floor off.
   bar_exit    - variants with a bar_exit spec only: the completed 1-min SENSEX bars since the
                 entry turned against the position (proposer_bar_exit: Renko bricks or a run of
                 adverse closes). Not in Pramanaa's engine - added 2026-10-06 because the flip
@@ -60,6 +63,13 @@ V3_DT35_DAY_TARGET_PCT = 0.035
 # with the Sentinel strike: +10.64L vs +9.53L, worst day -2.56L vs -3.27L; v3 2.5%: +9.44L vs
 # +7.57L (alphaIMB REBUILD.md sec. 29).
 REENTRY_COOLDOWN_S = 270.0
+# Sensex V5: proposer_dt35_v3 (= the Sensex V4 paper book) with the -20% premium floor replaced by a loss
+# floor in SENSEX points - out once SENSEX is 150 points against the entry spot. Paper book proposer_v5,
+# 1 Jul - 16 Oct: +10.75L vs V4's +8.15L, 150 picked in-sample from four values (alphaIMB REBUILD.md
+# sec. 33, P150). The live preset "Sensex V4 / V5" picks between the two floors (Vipin, 2026-10-19).
+STRATEGY_VERSION_V5 = "proposer_dt35_v5"
+V5_SPOT_FLOOR_PTS = 150.0
+NO_PREMIUM_FLOOR_PCT = -0.999
 
 
 @dataclass(frozen=True)
@@ -85,6 +95,8 @@ class ProposerParams:
     max_losses_per_day: int = 0
     # Entry filter (0 = off): points SENSEX must be beyond the 09:15 close in the trade's direction.
     with_day_pts: float = 0.0
+    # Loss floor in SENSEX points against the entry spot (0 = off).
+    spot_floor_pts: float = 0.0
 
 
 def params_for(strategy_version: Optional[str]) -> ProposerParams:
@@ -101,7 +113,21 @@ def params_for(strategy_version: Optional[str]) -> ProposerParams:
             daily_target_pct=V3_DT35_DAY_TARGET_PCT,
             reentry_cooldown_secs=REENTRY_COOLDOWN_S,
         )
+    if str(strategy_version or "") == STRATEGY_VERSION_V5:
+        return ProposerParams(
+            with_day_pts=V3_WITH_DAY_PTS,
+            loss_floor_pct=NO_PREMIUM_FLOOR_PCT,
+            spot_floor_pts=V5_SPOT_FLOOR_PTS,
+            daily_target_pct=V3_DT35_DAY_TARGET_PCT,
+            reentry_cooldown_secs=REENTRY_COOLDOWN_S,
+        )
     return ProposerParams(reentry_cooldown_secs=REENTRY_COOLDOWN_S)
+
+
+# Every version params_for knows; a runner must not trade any other Proposer version (it would fall back
+# to the base preset's rules).
+KNOWN_VERSIONS = frozenset({STRATEGY_VERSION, STRATEGY_VERSION_PX, STRATEGY_VERSION_V3, STRATEGY_VERSION_V3_DT35,
+                            STRATEGY_VERSION_V5})
 
 
 @dataclass(frozen=True)
@@ -315,6 +341,11 @@ class ProposerEngine:
                 and bar_exit.fires(self.params.bar_exit, closes, entry_idx, pos.side)):
             self.skip_cd_arm = False
             return Signal("EXIT", cp, "bar_exit")
+        if self.params.spot_floor_pts > 0 and spot is not None and pos.entry_spot:
+            against = (pos.entry_spot - spot) if pos.side == "CE" else (spot - pos.entry_spot)
+            if against >= self.params.spot_floor_pts:
+                self.skip_cd_arm = False
+                return Signal("EXIT", cp, "spot_floor")
         return Signal("HOLD")
 
 
