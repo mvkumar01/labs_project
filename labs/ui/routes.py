@@ -378,6 +378,7 @@ LIVE_TABS = {
     "proposer_v5": "Sensex V5",
     "proposer_v3_dt35_clock": "Sensex V3 3.5% · Pramanaa timing",
     "nifty_expiry_sale": "NIFTY Expiry Straddle Sale",
+    "expiry_strangle": "Expiry strangle · NIFTY + SENSEX",
     "nifty_tuesday_put": "NIFTY Tuesday Put",
     "infy_tcs_pair": "INFY / TCS pair",
     "risk_core": "Risk core · trend × vol",
@@ -417,6 +418,7 @@ def live_strategy():
     proposer_v5_rows, proposer_v5_trades, proposer_v5_stats = [], [], {}
     proposer_v3_dt35_clock_rows, proposer_v3_dt35_clock_trades, proposer_v3_dt35_clock_stats = [], [], {}
     nifty_expiry_sale_rows, nifty_expiry_sale_books, nifty_expiry_sale_stats = [], [], {}
+    expiry_strangle_rows, expiry_strangle_all, expiry_strangle_stats = [], [], {}
     nifty_tuesday_put_rows, nifty_tuesday_put_summaries, nifty_tuesday_put_stats = [], [], {}
     infy_tcs_rows, infy_tcs_trades, infy_tcs_stats = [], [], {}
     risk_core_months, risk_core_years, risk_core_stats = [], [], {}
@@ -949,6 +951,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     nifty_tuesday_put_stats = {"error": str(exc)}
 
+        # Far-OTM expiry strangle, NIFTY + SENSEX (paper): its own ledger and tab.
+        if active_live_tab == "expiry_strangle":
+            try:
+                from labs.engine.expiry_strangle_tracker import tab_data as expiry_strangle_tab_data
+                expiry_strangle_rows, expiry_strangle_all, expiry_strangle_stats = expiry_strangle_tab_data(
+                    conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    expiry_strangle_stats = {"error": str(exc)}
+
         # NIFTY expiry-day straddle sale (paper): its own ledger and tab.
         if active_live_tab == "nifty_expiry_sale":
             try:
@@ -1230,6 +1242,9 @@ def live_strategy():
         nifty_expiry_sale_rows=nifty_expiry_sale_rows,
         nifty_expiry_sale_books=nifty_expiry_sale_books,
         nifty_expiry_sale_stats=nifty_expiry_sale_stats,
+        expiry_strangle_rows=expiry_strangle_rows,
+        expiry_strangle_all=expiry_strangle_all,
+        expiry_strangle_stats=expiry_strangle_stats,
         nifty_tuesday_put_rows=nifty_tuesday_put_rows,
         nifty_tuesday_put_summaries=nifty_tuesday_put_summaries,
         nifty_tuesday_put_stats=nifty_tuesday_put_stats,
@@ -1288,6 +1303,20 @@ def nifty_tuesday_put_backfill():
             limit=limit,
             rebuild=request.args.get("rebuild", "0") == "1",
         ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/expiry_strangle/backfill", methods=["POST"])
+def expiry_strangle_backfill():
+    """Replay bounded batches of expiries for the paper-only far-OTM expiry strangle."""
+    from labs.engine.expiry_strangle_tracker import run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 6)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 6
+    try:
+        return jsonify(run_backfill(limit=limit, rebuild=request.args.get("rebuild", "0") == "1"))
     except Exception as exc:
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 

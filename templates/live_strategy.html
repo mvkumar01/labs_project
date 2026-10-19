@@ -167,6 +167,8 @@
     {% elif active_live_tab == 'nifty_tuesday_put' %}
     {% include '_nifty_tuesday_put.html' %}
 
+    {% elif active_live_tab == 'expiry_strangle' %}
+    {% include '_expiry_strangle.html' %}
     {% elif active_live_tab == 'nifty_expiry_sale' %}
     {% include '_nifty_expiry_sale.html' %}
 
@@ -1159,6 +1161,34 @@
     if (refresh) refresh.addEventListener('click', () => run(refresh, false));
     if (rebuild) rebuild.addEventListener('click', () => {
       if (window.confirm('Clear this paper book and replay every Tuesday from 2 September 2025?')) run(rebuild, true);
+    });
+  })();
+</script>
+{% endif %}
+{% if active_live_tab == 'expiry_strangle' %}
+<script>
+  (function () {
+    const button = document.getElementById('expiry-strangle-backfill');
+    const status = document.getElementById('expiry-strangle-backfill-status');
+    if (!button) return;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      let done = 0;
+      try {
+        while (true) {
+          status.textContent = 'Replaying expiries... ' + done + ' done';
+          const response = await fetch('/labs/api/expiry_strangle/backfill?limit=6', {method: 'POST'});
+          const payload = await response.json();
+          if (!response.ok || payload.error) throw new Error(payload.error || ('HTTP ' + response.status));
+          done += payload.done.length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) { status.textContent = 'Stopped at ' + errors[0] + ': ' + payload.errors[errors[0]]; button.disabled = false; break; }
+          if (!payload.remaining) { window.location.reload(); break; }
+        }
+      } catch (error) {
+        status.textContent = 'Backfill failed: ' + error.message;
+        button.disabled = false;
+      }
     });
   })();
 </script>

@@ -31,6 +31,8 @@ MORE_BOOKS = {
     "nifty_expiry_sale_B50": {"label": "Expiry straddle sale B50 (pair stop)", "instrument": "NIFTY options, expiry days",
                               "size": "1 lot per leg", "tab": "nifty_expiry_sale"},
     "nifty_tuesday_put": {"label": "NIFTY Tuesday put", "instrument": "NIFTY options, Tuesdays", "size": "1 lot"},
+    "expiry_strangle": {"label": "Far-OTM expiry strangle", "instrument": "NIFTY + SENSEX options, expiries",
+                        "size": "1 lot a leg"},
     "crudem_combo": {"label": "CRUDEOILM Combo (6 rules)", "instrument": "CRUDEOILM futures", "size": "1 lot · 10 barrels"},
     "gold_cci": {"label": "GOLD CCI short", "instrument": "GOLD futures", "size": "1 lot"},
     "infy_tcs_pair": {"label": "INFY / TCS pair", "instrument": "INFY and TCS shares", "size": "Rs 10 lakh a leg"},
@@ -97,6 +99,29 @@ def _expiry_sale(conn, book: str, today: str) -> dict:
                  position=f"Short {held[-1]['strike']} straddle" if held else "Flat",
                  open_net=sum(_f(r["net_rs"]) for r in held), trades=len(daily),
                  note=f"{sum(1 for r in rows if r['status'] == 'skipped')} expiry days skipped for lack of quotes")
+
+
+def _expiry_strangle(conn, today: str) -> dict:
+    from labs.engine.expiry_strangle_tracker import PRIMARY, retirement
+    rows = _rows(conn, "SELECT und, expiry, variant, fill, status, period, net_rs, notional_rs, margin_rs, net_bps, entry_date "
+                       "FROM expiry_strangle_events")
+    if not rows:
+        raise sqlite3.OperationalError("expiry_strangle not built yet")
+    book = [r for r in rows if (r["variant"], r["fill"]) == PRIMARY and r["status"] == "closed"]
+    by_day: dict = {}
+    for r in book:
+        by_day[r["expiry"]] = by_day.get(r["expiry"], 0.0) + _f(r["net_rs"])
+    ret = retirement(rows)
+    research = [r for r in book if r["period"] == "research"]
+    forward = [r for r in book if r["period"] == "forward"]
+    worst = min(book, key=lambda r: _f(r["net_rs"])) if book else None
+    note = (f"Research {len(research)} events, Rs {sum(_f(r['net_rs']) for r in research):,.0f}; forward {len(forward)}, "
+            f"Rs {sum(_f(r['net_rs']) for r in forward):,.0f}. "
+            + (f"Worst {worst['und']} {worst['expiry']} Rs {_f(worst['net_rs']):,.0f} ({_f(worst['net_bps']):+.1f} bps). " if worst else "")
+            + f"Retirement: {ret['verdict']} ({ret['n']}/{ret['of']} forward events).")
+    margin = max((_f(r["margin_rs"]) for r in book), default=0.0)
+    return _card("expiry_strangle", MORE_BOOKS["expiry_strangle"], [{"trade_date": d, "net": n} for d, n in sorted(by_day.items())],
+                 today, capital=margin, position="Flat between expiries", trades=len(book), note=note)
 
 
 def _tuesday_put(conn, today: str) -> dict:
@@ -246,6 +271,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "nifty_expiry_sale_B": lambda: _expiry_sale(conn, "B", today),
         "nifty_expiry_sale_B50": lambda: _expiry_sale(conn, "B50", today),
         "nifty_tuesday_put": lambda: _tuesday_put(conn, today),
+        "expiry_strangle": lambda: _expiry_strangle(conn, today),
         "crudem_combo": lambda: _mcx(conn, "crudem_combo", today),
         "gold_cci": lambda: _mcx(conn, "gold_cci", today),
         "infy_tcs_pair": lambda: _pair(conn, today),

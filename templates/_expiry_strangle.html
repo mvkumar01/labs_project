@@ -1,0 +1,88 @@
+{# Far-OTM expiry strangle, NIFTY + SENSEX (included from live_strategy.html) #}
+    <section id="expiry-strangle-view">
+    <style>
+      #expiry-strangle-view .x-table { width:100%; max-width:100%; overflow-x:auto; margin:12px 0; }
+      #expiry-strangle-view .perf { width:max-content; min-width:100%; }
+      #expiry-strangle-view .perf td, #expiry-strangle-view .perf th { white-space:nowrap; }
+      #expiry-strangle-view .cards > * { min-width:0; overflow-wrap:anywhere; }
+    </style>
+    {% set st = expiry_strangle_stats %}
+    <h1>Far-OTM expiry strangle &middot; NIFTY + SENSEX (paper)</h1>
+    <p class="sub">Every NIFTY weekly expiry (Tuesday) and SENSEX weekly expiry (Thursday), on the day the contract really
+      expires. At 15:25 on the session before it, sell 1 lot of the call and 1 lot of the put of that contract: call
+      nearest spot &times; (1 + 2&sigma;), put nearest spot &times; (1 &minus; 2&sigma;), &sigma; = the standard deviation
+      of the index's last 20 daily close-to-close log returns. Sold at the bid, bought back at the ask at 15:25 on expiry day
+      (a leg with no ask settles at intrinsic on the official close). Tail rule: from 09:15 on expiry day, if the pair's ask
+      reaches 3&times; the entry credit, both legs are bought back at once; an overnight gap is not protected.
+      Lots {{ st.lots.NIFTY if st.lots else 65 }} (NIFTY) and {{ st.lots.SENSEX if st.lots else 20 }} (SENSEX); short-option
+      charges; margin about 10% of the index notional.</p>
+
+    <div class="formula">
+      The style of the most consistent sellers: sell far out-of-the-money options into every expiry. Research (V2 Strategy
+      Tester): NSE daily files 2019&ndash;2026, 806 expiries on four indices, +2.7 bps of notional an event, 96% up; on
+      bid/ask April&ndash;September 2026, NIFTY +3.3 bps an event, SENSEX about zero. <strong>The price is the tail</strong>:
+      one bad expiry cost 3&ndash;6% of notional in 2020. Shadow books: k = 3&sigma; with the tail rule, and k = 2&sigma; with
+      no tail rule; each also at mid prices. Research period: entries before <strong>{{ st.forward_from or '2026-10-19' }}</strong>;
+      forward after. Retirement, stated before the forward period: retire if one forward event loses more than 1.5% of the
+      strangle's underlying notional, or if the first 26 forward events net to zero or less after charges. Quotes with bid
+      and ask exist on this server from 1 June 2026, so the book starts with the expiries after it.
+    </div>
+
+    {% if st.get('error') %}
+      <p class="empty">Strangle book unavailable ({{ st.error }}).</p>
+    {% elif not expiry_strangle_rows %}
+      <p class="empty">No events recorded yet.</p>
+      <button type="button" id="expiry-strangle-backfill" class="btn-secondary">Backfill from 1 June 2026</button>
+      <span id="expiry-strangle-backfill-status" class="muted"></span>
+    {% else %}
+      {% set p = st.books.k2_bidask %}{% set rr = p.research_ALL %}{% set ff = p.forward_ALL %}{% set ret = st.retirement %}
+      <div class="cards">
+        <div class="card"><div class="k">Research period (2&sigma;, bid/ask)</div>
+          <div class="v {{ 'green' if (rr.net_rs or 0) > 0 else ('red' if (rr.net_rs or 0) < 0 else '') }}">&#8377;{{ "{:,.0f}".format(rr.net_rs or 0) }}</div>
+          <div class="sub-k">{{ rr.events }} events{% if rr.events %}, {{ rr.up }} up; {{ "%+.2f"|format(rr.mean_bps) }} bps of notional an event{% if rr.t is not none %} (t {{ "%.1f"|format(rr.t) }}){% endif %}{% endif %}</div></div>
+        <div class="card"><div class="k">Forward, from {{ st.forward_from }}</div>
+          <div class="v {{ 'green' if (ff.net_rs or 0) > 0 else ('red' if (ff.net_rs or 0) < 0 else '') }}">&#8377;{{ "{:,.0f}".format(ff.net_rs or 0) }}</div>
+          <div class="sub-k">{{ ff.events }} events{% if ff.events %}, {{ ff.up }} up; {{ "%+.2f"|format(ff.mean_bps) }} bps an event{% endif %}</div></div>
+        <div class="card"><div class="k">Retirement</div>
+          <div class="v {{ 'red' if ret.retire else 'green' }}">{{ 'RETIRE' if ret.retire else 'keep' }}</div>
+          <div class="sub-k">{{ ret.verdict }}; forward events {{ ret.n }} / {{ ret.of }}, net &#8377;{{ "{:,.0f}".format(ret.net_rs) }}</div></div>
+        <div class="card"><div class="k">Worst event (research)</div>
+          <div class="v red">{% if rr.events %}&#8377;{{ "{:,.0f}".format(rr.worst_rs) }}{% else %}—{% endif %}</div>
+          <div class="sub-k">{% if rr.events %}{{ rr.worst_event }}, {{ "%+.1f"|format(rr.worst_bps) }} bps; pair reached {{ "%.2f"|format(rr.worst_multiple) }}&times; credit at worst; {{ rr.tails }} tail exits{% endif %}</div></div>
+        <div class="card"><div class="k">Margin (approx.)</div>
+          <div class="v">&#8377;{{ "{:,.0f}".format(rr.margin_rs or 0) }}</div>
+          <div class="sub-k">10% of index notional, average a lot{% if rr.events and rr.margin_rs %}; research net {{ "%+.1f"|format(100 * rr.net_rs / rr.margin_rs / rr.events) }}% of margin an event{% endif %}</div></div>
+      </div>
+
+      <h2 style="margin-top:24px">All books</h2>
+      <div class="x-table"><table class="perf"><thead><tr><th>Book</th><th>Fills</th><th>Period</th><th>Index</th><th>Events</th><th>Up</th><th>Net &#8377;</th><th>bps an event</th><th>t</th><th>Worst &#8377;</th><th>Tail exits</th></tr></thead><tbody>
+      {% for key, b in st.books.items() %}{% for per in ['research', 'forward'] %}{% for u in ['ALL', 'NIFTY', 'SENSEX'] %}{% set s = b[per ~ '_' ~ u] %}{% if s.events %}
+        <tr><td>{{ b.variant }}</td><td>{{ b.fill }}</td><td>{{ per }}</td><td>{{ u }}</td><td>{{ s.events }}</td><td>{{ s.up }}</td>
+        <td class="{{ 'green' if s.net_rs > 0 else ('red' if s.net_rs < 0 else '') }}">&#8377;{{ "{:,.0f}".format(s.net_rs) }}</td>
+        <td>{{ "%+.2f"|format(s.mean_bps) }}</td><td>{{ "%.1f"|format(s.t) if s.t is not none else '—' }}</td>
+        <td>&#8377;{{ "{:,.0f}".format(s.worst_rs) }}</td><td>{{ s.tails }}</td></tr>{% endif %}{% endfor %}{% endfor %}{% endfor %}
+      </tbody></table></div>
+
+      <h2 style="margin-top:24px">Events (2&sigma;, bid/ask, tail rule)</h2>
+      <div class="x-table"><table class="perf"><thead><tr><th>Index</th><th>Entry</th><th>Expiry</th><th>Spot</th><th>&sigma;</th><th>Call / put</th><th>Credit</th><th>Bought back</th><th>Exit</th><th>Worst pair</th><th>Net &#8377;</th><th>bps</th><th>On margin</th></tr></thead><tbody>
+      {% for e in expiry_strangle_rows %}<tr>
+        <td>{{ e.und }}</td><td>{{ e.entry_date }}{% if e.period == 'forward' %} <span class="muted">&bull;</span>{% endif %}</td><td>{{ e.expiry }}{% if e.reserved %} <span class="muted">(reserved)</span>{% endif %}</td>
+        {% if e.status == 'closed' %}
+        <td>{{ "{:,.1f}".format(e.spot0) }}</td><td>{{ "%.2f"|format(100 * e.sigma) }}%</td><td>{{ "%.0f"|format(e.call_strike) }} / {{ "%.0f"|format(e.put_strike) }}</td>
+        <td>{{ "%.2f"|format(e.credit) }}</td><td>{{ "%.2f"|format(e.buyback) }}</td>
+        <td>{{ e.exit_reason }}{% if e.reason %} <span class="amber">({{ e.reason }})</span>{% endif %}</td>
+        <td>{{ "%.2f"|format(e.worst_pair) if e.worst_pair is not none else '—' }}{% if e.worst_multiple is not none %} ({{ "%.2f"|format(e.worst_multiple) }}&times;){% endif %}</td>
+        <td class="{{ 'green' if e.net_rs > 0 else ('red' if e.net_rs < 0 else '') }}">&#8377;{{ "{:,.0f}".format(e.net_rs) }}</td>
+        <td>{{ "%+.2f"|format(e.net_bps) }}</td><td>{{ "%+.2f"|format(100 * e.return_on_margin) }}%</td>
+        {% else %}<td colspan="10" class="amber">skipped: {{ e.reason }}</td>{% endif %}
+      </tr>{% endfor %}
+      </tbody></table></div>
+      <p class="note">&bull; = forward period. Credit and buy-back are option points for the pair; bps = net P&amp;L as a share of
+        the index notional (spot &times; lot). Worst pair = the highest pair ask on the expiry day up to the exit, and its
+        multiple of the credit. {% if st.reserved_read %}Read inside the Strategy Tester's reserved NIFTY window:
+        {{ st.reserved_read|join(', ') }}.{% endif %} {% if st.closes_error %}<span class="amber">Last daily-close fetch failed: {{ st.closes_error }}</span>{% endif %}
+        Paper-only strategy <code>expiry_strangle_2sigma_v1</code>; it never calls a broker order API.</p>
+      <button type="button" id="expiry-strangle-backfill" class="btn-secondary">Refresh backfill</button>
+      <span id="expiry-strangle-backfill-status" class="muted"></span>
+    {% endif %}
+    </section>
