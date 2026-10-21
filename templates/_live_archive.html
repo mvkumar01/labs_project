@@ -1,0 +1,10 @@
+<h1>Archive</h1>
+<p class="sub">Previous Alpha strategies and basket replays. Open a strategy to explore its performance and trade history.</p>
+<div class="cards">
+  {% for key, label in archive_tabs.items() %}
+  <a class="card" style="text-decoration:none;color:inherit" href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}">
+    <div class="v" style="font-size:18px">{{ label }}</div>
+    <div class="sub-k">View performance &amp; history &rarr;</div>
+  </a>
+  {% endfor %}
+</div>

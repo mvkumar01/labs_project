@@ -40,11 +40,21 @@
   <main>
     <div class="live-tabs">
       {% for key, label in live_tabs.items() %}
-      <a href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == key else '' }}">{{ label }}</a>
+      {% if key not in archive_tabs %}
+      <a href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == key or (key == 'archive' and active_live_tab in archive_tabs) else '' }}">{{ label }}</a>
+      {% endif %}
       {% endfor %}
     </div>
 
-    {% if active_live_tab != 'overview' %}
+    {% if active_live_tab in archive_tabs %}
+    <div class="live-tabs" aria-label="Archived strategies">
+      {% for key, label in archive_tabs.items() %}
+      <a href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == key else '' }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if active_live_tab not in ['overview', 'archive'] %}
     <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
       <input type="hidden" name="tab" value="{{ active_live_tab }}">
       <strong>Date filter</strong>
@@ -58,6 +68,9 @@
 
     {% if active_live_tab == 'overview' %}
     {% include '_overview.html' %}
+
+    {% elif active_live_tab == 'archive' %}
+    {% include '_live_archive.html' %}
 
     {% elif active_live_tab == 'crude_macd_st' %}
     <h1>{{ live_tabs[active_live_tab] }}</h1>

@@ -354,8 +354,11 @@ def _parse_legs(form) -> list[dict]:
 
 # ── Live (persistent paper strategy tracker) ─────────────────────────────────
 # Tabs shown on /labs/live, in display order. "overview" is the card dashboard.
+from labs.services.live_archive import ARCHIVE_TABS
+
 LIVE_TABS = {
     "overview": "Overview",
+    "archive": "Archive",
     "nifty": "Alpha v2.11",
     "alpha_v211b": "Alpha 2.11 replay (B)",
     "alpha_v212": "Alpha v2.12",
@@ -1154,7 +1157,8 @@ def live_strategy():
 
         if active_live_tab == "overview":
             from labs.services.book_overview import build_overview
-            overview_cards = build_overview(conn)
+            overview_cards = [card for card in build_overview(conn)
+                              if card.get("tab", card["key"]) not in ARCHIVE_TABS]
 
         # ── Basket replay (v2.11 signals re-priced as multi-leg structures) ──
         try:
@@ -1222,6 +1226,7 @@ def live_strategy():
         comparison_by_date=comparison_by_date,
         active_live_tab=active_live_tab,
         live_tabs=LIVE_TABS,
+        archive_tabs=ARCHIVE_TABS,
         overview_cards=overview_cards,
         sensex_rows=sensex_rows,
         sensex_trades=sensex_trades,
