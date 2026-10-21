@@ -258,7 +258,8 @@ def params_on(day: str, book) -> "pe.ProposerParams":
     """The parameters a book trades with on `day`: the live preset's, except that sessions before
     COOLDOWN_270_FROM (or the book's SETTINGS_FROM), and the shadow books, keep the 300 s re-entry
     cooldown."""
-    params = pe.params_for(book.strategy_version)
+    params = pe.params_for(pe.STRATEGY_VERSION_NIFTY_SCALPER_V1 if book.key in NIFTY_BOOKS
+                           else book.strategy_version)
     if ((day < SETTINGS_FROM.get(book.key, COOLDOWN_270_FROM) or book.key not in DELTA_STRIKE_BOOKS)
             and params.reentry_cooldown_secs != 300.0):
         params = dataclasses.replace(params, reentry_cooldown_secs=300.0)

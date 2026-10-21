@@ -26,7 +26,6 @@ Paper only: it never calls a broker order API.
 """
 from __future__ import annotations
 
-import dataclasses
 import io
 import tarfile
 from datetime import date, datetime, timedelta
@@ -44,9 +43,6 @@ pe = tr.pe
 SYMBOL = "NIFTY"
 LOT_SIZE = int(UNDERLYINGS[SYMBOL]["lot_size"])
 CAPITAL_RS = 1_200_000.0
-SPOT_TARGET_SCALE = 1.5
-DEPTHS = (50, 100, 150)
-MIN_DELTA = 0.60
 
 
 def nifty_bars(day: str) -> list[tuple]:
@@ -84,38 +80,14 @@ def nifty_frame(day: str) -> pd.DataFrame:
 
 
 def pick_strike(snap: pd.DataFrame, typ: str, spot: float, expiry: date, day: date) -> tuple[int | None, str | None]:
-    """(strike, tradingsymbol) under Sentinel's |delta| >= 0.60 rule at NIFTY's ATM -/+50..150."""
-    if snap is None or snap.empty:
-        return None, None
-    atm = round(spot / 50) * 50
-    sign = -1 if typ == "CE" else 1
-    rows = snap[snap["option_type"] == typ].drop_duplicates("strike", keep="last").set_index("strike")
-    T = ps.years_to_expiry(expiry, day)
-    liquid = []
-    for k in (atm + sign * d for d in DEPTHS):
-        if k not in rows.index or not (rows.loc[k, "ltp"] > 0):
-            continue
-        iv = ps.implied_vol(float(rows.loc[k, "ltp"]), float(spot), k, T, typ)
-        dl = abs(ps.bs_delta(float(spot), k, T, iv, typ)) if iv else None
-        sym = str(rows.loc[k, "tradingsymbol"]) if "tradingsymbol" in rows.columns else None
-        liquid.append((int(k), dl, sym))
-        if dl is not None and dl >= MIN_DELTA:
-            return int(k), sym
-    known = [x for x in liquid if x[1] is not None]
-    if known:
-        best = max(known, key=lambda x: x[1])
-        return best[0], best[2]
-    return (liquid[0][0], liquid[0][2]) if liquid else (None, None)
+    """(strike, tradingsymbol) from the shared live/paper NIFTY picker."""
+    symbol, strike, _, _ = ps.delta_itm_symbol_nifty(
+        snap, "CALL" if typ == "CE" else "PUT", spot, day, expiry)
+    return strike, symbol
 
 
 def _params(day: str, book, ratio: float) -> "pe.ProposerParams":
-    p = tr.params_on(day, book)
-    return dataclasses.replace(
-        p,
-        spot_target_decisive_pts=p.spot_target_decisive_pts * ratio * SPOT_TARGET_SCALE,
-        spot_target_neutral_pts=p.spot_target_neutral_pts * ratio * SPOT_TARGET_SCALE,
-        spot_target_tolerance_pts=p.spot_target_tolerance_pts * ratio,
-        spot_floor_pts=p.spot_floor_pts * ratio)
+    return pe.scaled_for_nifty(tr.params_on(day, book), ratio)
 
 
 def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None, book=None) -> dict:

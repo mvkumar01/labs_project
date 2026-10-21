@@ -68,7 +68,8 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # SENSEX loss floor instead of the -20% premium floor); a v8 runner would trade it as the base preset.
 # v10 (2026-10-19): Sensex V4 / V5 take the connection's day target (config proposer_day_target_pct);
 # a v9 runner would ignore it and trade 3.5%.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v10"
+# v11: Nifty Scalper V1 uses NFO, session-scaled NIFTY exits and an editable 1.5% day target.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v11"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

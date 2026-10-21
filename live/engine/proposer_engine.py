@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+import math
 from typing import Iterable, Optional, Sequence
 
 from live.engine import proposer_bar_exit as bar_exit
@@ -68,6 +69,7 @@ REENTRY_COOLDOWN_S = 270.0
 # 1 Jul - 16 Oct: +10.75L vs V4's +8.15L, 150 picked in-sample from four values (alphaIMB REBUILD.md
 # sec. 33, P150). The live preset "Sensex V4 / V5" picks between the two floors (Vipin, 2026-10-19).
 STRATEGY_VERSION_V5 = "proposer_dt35_v5"
+STRATEGY_VERSION_NIFTY_SCALPER_V1 = "proposer_nifty_scalper_v1"
 V5_SPOT_FLOOR_PTS = 150.0
 NO_PREMIUM_FLOOR_PCT = -0.999
 
@@ -101,7 +103,8 @@ class ProposerParams:
 
 # The live preset "Sensex V4 / V5" lets each connection set its own day target (Vipin, 2026-10-19): stored
 # per connection as a percent ("2.5"), applied to these versions only, within these bounds.
-DAY_TARGET_VERSIONS = frozenset({STRATEGY_VERSION_V3_DT35, STRATEGY_VERSION_V5})
+DAY_TARGET_VERSIONS = frozenset({STRATEGY_VERSION_V3_DT35, STRATEGY_VERSION_V5,
+                                 STRATEGY_VERSION_NIFTY_SCALPER_V1})
 DAY_TARGET_MIN_PCT, DAY_TARGET_MAX_PCT = 0.5, 10.0
 
 
@@ -130,6 +133,10 @@ def params_for(strategy_version: Optional[str], day_target_pct: Optional[float] 
 
 
 def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
+    if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V1:
+        # Approved 2026-10-21 after the re-entry-loop replay (plan section 8).
+        return replace(_preset_params(STRATEGY_VERSION_V5), daily_target_pct=0.015,
+                       confirm_bank_tolerance=0.25)
     if str(strategy_version or "") == STRATEGY_VERSION_PX:
         return ProposerParams(bar_exit=PX_BAR_EXIT, max_losses_per_day=1, reentry_cooldown_secs=REENTRY_COOLDOWN_S)
     if str(strategy_version or "") == STRATEGY_VERSION_V3:
@@ -156,7 +163,18 @@ def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
 # Every version params_for knows; a runner must not trade any other Proposer version (it would fall back
 # to the base preset's rules).
 KNOWN_VERSIONS = frozenset({STRATEGY_VERSION, STRATEGY_VERSION_PX, STRATEGY_VERSION_V3, STRATEGY_VERSION_V3_DT35,
-                            STRATEGY_VERSION_V5})
+                            STRATEGY_VERSION_V5, STRATEGY_VERSION_NIFTY_SCALPER_V1})
+
+
+def scaled_for_nifty(params: ProposerParams, ratio: float) -> ProposerParams:
+    """NIFTY exits scaled by the two 09:15 opens; the SENSEX entry filter stays unscaled."""
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("NIFTY/SENSEX opening ratio must be finite and positive")
+    return replace(params,
+                   spot_target_decisive_pts=params.spot_target_decisive_pts * ratio * 1.5,
+                   spot_target_neutral_pts=params.spot_target_neutral_pts * ratio * 1.5,
+                   spot_target_tolerance_pts=params.spot_target_tolerance_pts * ratio,
+                   spot_floor_pts=params.spot_floor_pts * ratio)
 
 
 @dataclass(frozen=True)

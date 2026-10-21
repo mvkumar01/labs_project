@@ -119,3 +119,51 @@ def delta_itm_symbol(chain: pd.DataFrame, side: str, spot: float, today: date) -
         known = [c for c in liquid if c[2] is not None]
         pick = max(known, key=lambda c: c[2]) if known else liquid[0]
     return pick[3], pick[0], typ, {**info, "delta": pick[2], "ltp": pick[1], "depth": abs(pick[0] - int(atm))}
+
+
+def nifty_expiry_code(codes, today: date) -> str | None:
+    """Nearest listed NIFTY expiry strictly after today, including holiday-shifted codes.
+
+    Fail closed on expiry day when the next contract is absent. Monthly codes use NIFTY's
+    expiry weekday through the same decoder as the paper book.
+    """
+    from labs.engine.expiry_strangle_tracker import expiry_date_of
+    dated = [(expiry_date_of(str(c), "NIFTY"), str(c)) for c in codes]
+    valid = [(d, c) for d, c in dated if d is not None and d > today]
+    return min(valid)[1] if valid else None
+
+
+def delta_itm_symbol_nifty(chain: pd.DataFrame, side: str, spot: float, today: date,
+                           expiry: date) -> tuple[str | None, int | None, str, dict]:
+    """The paper book's shallowest liquid ATM -/+50..150 with |delta| >= .60.
+
+    Keep the reference book's IV/delta model and fallback ordering unchanged.
+    """
+    typ = "CE" if side == "CALL" else "PE"
+    atm = round(spot / 50) * 50
+    info = {"atm": atm, "candidates": []}
+    if chain is None or chain.empty:
+        return None, None, typ, {**info, "reason": "no chain prices"}
+    rows = chain[chain["option_type"] == typ].drop_duplicates("strike", keep="last").set_index("strike")
+    sign = -1 if side == "CALL" else 1
+    T = years_to_expiry(expiry, today)
+    liquid, pick = [], None
+    for k in (atm + sign * d for d in (50, 100, 150)):
+        if k not in rows.index or not (rows.loc[k, "ltp"] > 0):
+            continue
+        ltp = float(rows.loc[k, "ltp"])
+        iv = implied_vol(ltp, float(spot), k, T, typ)
+        dl = abs(bs_delta(float(spot), k, T, iv, typ)) if iv else None
+        sym = str(rows.loc[k, "tradingsymbol"]) if "tradingsymbol" in rows.columns else None
+        cand = (int(k), dl, sym, ltp)
+        liquid.append(cand)
+        info["candidates"].append({"strike": k, "ltp": ltp, "delta": dl})
+        if dl is not None and dl >= MIN_ENTRY_DELTA:
+            pick = cand
+            break
+    if pick is None:
+        known = [x for x in liquid if x[1] is not None]
+        pick = max(known, key=lambda x: x[1]) if known else (liquid[0] if liquid else None)
+    if pick is None:
+        return None, None, typ, {**info, "reason": "no liquid strike in ATM -/+50..150"}
+    return pick[2], pick[0], typ, {**info, "delta": pick[1], "ltp": pick[3], "depth": abs(pick[0] - atm)}

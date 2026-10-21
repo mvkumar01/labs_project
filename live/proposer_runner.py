@@ -20,17 +20,19 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
 import os
 import tarfile
 import threading
 import time
 import uuid
 from datetime import date, datetime, time as dtime, timedelta, timezone
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
-from config.labs_config import ARCHIVE_DIR, DATA_DIR, SHARED_LIVE_DIR
+from config.labs_config import ARCHIVE_DIR, DATA_DIR, SHARED_LIVE_DIR, UNDERLYINGS
 from storage.live_db import get_live_conn, init_live_db
 from live import live_executor as ex
 from live import live_runner as lr
@@ -44,6 +46,25 @@ from market_data.expiry import expiry_code_from_symbol, select_expiry_code
 log = logging.getLogger("live.proposer_runner")
 
 UNDERLYING, SEGMENT, LOT_SIZE = "SENSEX", "BFO", 20
+
+
+@dataclass(frozen=True)
+class Instrument:
+    underlying: str
+    segment: str
+    lot_size: int
+    spot_key: str
+    kite_token: int
+
+
+SENSEX_I = Instrument("SENSEX", "BFO", 20, "BSE:SENSEX", 265)
+NIFTY_I = Instrument("NIFTY", "NFO", int(UNDERLYINGS["NIFTY"]["lot_size"]), "NSE:NIFTY 50", 256265)
+
+
+def instrument_for(strategy_version) -> Instrument:
+    return NIFTY_I if strategy_version == pe.STRATEGY_VERSION_NIFTY_SCALPER_V1 else SENSEX_I
+
+
 POLL_OPEN_S, POLL_FLAT_S = 1.0, 2.0
 PRINT_EVERY_MIN = 5
 ENTRY_CUTOFF = dtime(15, 20)
@@ -162,16 +183,26 @@ class KiteMarket:
         from auth.session_manager import get_kite
         return get_kite()
 
-    def spot(self) -> float | None:
+    def spot(self, profile: Instrument = SENSEX_I) -> float | None:
         try:
-            return float(self._kite().ltp("BSE:SENSEX")["BSE:SENSEX"]["last_price"])
+            return float(self._kite().ltp(profile.spot_key)[profile.spot_key]["last_price"])
         except Exception as e:
             log.warning("SENSEX spot read failed: %s", type(e).__name__)
             return None
 
-    def quote(self, symbol: str) -> dict | None:
+    def spots(self) -> dict[str, float | None]:
+        """Both signal and execution spots in one broker read."""
+        try:
+            quotes = self._kite().ltp([SENSEX_I.spot_key, NIFTY_I.spot_key])
+            return {p.underlying: float(quotes.get(p.spot_key, {}).get("last_price") or 0) or None
+                    for p in (SENSEX_I, NIFTY_I)}
+        except Exception as e:
+            log.warning("paired spot read failed: %s", type(e).__name__)
+            return {}
+
+    def quote(self, symbol: str, profile: Instrument = SENSEX_I) -> dict | None:
         """{'ltp', 'bid', 'ask'} for a SENSEX option, or None."""
-        key = f"{SEGMENT}:{symbol}"
+        key = f"{profile.segment}:{symbol}"
         try:
             q = self._kite().quote(key)[key]
         except Exception as e:
@@ -184,13 +215,13 @@ class KiteMarket:
                 "bid": max(bids) if bids else None, "ask": min(asks) if asks else None}
 
 
-def broker_open_candle(day: date) -> dict | None:
+def broker_open_candle(day: date, token: int = SENSEX_KITE_TOKEN) -> dict | None:
     """The broker's completed 09:15 one-minute SENSEX candle (open/high/low/close), or None."""
     from auth.session_manager import get_kite
     start = datetime.combine(day, OPEN_BAR)
     try:
         # through the next minute: a request that ends inside the candle returns it cut short
-        rows = get_kite().historical_data(SENSEX_KITE_TOKEN, start, start + timedelta(minutes=1), "minute")
+        rows = get_kite().historical_data(token, start, start + timedelta(minutes=1), "minute")
     except Exception as e:
         log.warning("09:15 candle read failed: %s", type(e).__name__)
         return None
@@ -287,9 +318,9 @@ def entry_bar_index(bars: list[tuple[datetime, float]], entry_time_utc: str | No
     return next((i for i, b in enumerate(bars) if b[0] >= t), len(bars))
 
 
-def option_chain(day: date) -> pd.DataFrame:
+def option_chain(day: date, profile: Instrument = SENSEX_I) -> pd.DataFrame:
     """Latest minute of today's collector SENSEX option chain (nearest expiry rows only)."""
-    path = SHARED_LIVE_DIR / day.isoformat() / f"{UNDERLYING}_options_1min.csv"
+    path = SHARED_LIVE_DIR / day.isoformat() / f"{profile.underlying}_options_1min.csv"
     if not path.is_file():
         return pd.DataFrame()
     f = pd.read_csv(path, usecols=["timestamp", "tradingsymbol", "strike", "option_type",
@@ -298,8 +329,50 @@ def option_chain(day: date) -> pd.DataFrame:
         return f
     f = f[f["timestamp"] == f["timestamp"].max()].copy()
     f["expiry"] = f["expiry"].astype(str).str.upper()
-    code = select_expiry_code(f["expiry"].unique(), day, "nearest_weekly")
+    code = (ps.nifty_expiry_code(f["expiry"].unique(), day) if profile == NIFTY_I
+            else select_expiry_code(f["expiry"].unique(), day, "nearest_weekly"))
     return f[f["expiry"] == code] if code else pd.DataFrame()
+
+
+def collector_open(day: date, profile: Instrument) -> float | None:
+    """Only the collector's exact 09:15 candle open can substitute for the broker candle."""
+    path = DATA_DIR / f"{day.isoformat()}_{profile.underlying}_spot_1min.csv"
+    try:
+        frame = pd.read_csv(path, usecols=["timestamp", "open"])
+        row = frame[frame["timestamp"].astype(str).str.slice(0, 19) ==
+                    datetime.combine(day, OPEN_BAR).isoformat(sep=" ")]
+        if row.empty:
+            # Collector snapshots may use ISO 'T' rather than a space.
+            stamps = pd.to_datetime(frame["timestamp"].astype(str).str.slice(0, 19), errors="coerce")
+            row = frame[stamps == datetime.combine(day, OPEN_BAR)]
+        value = float(row["open"].iloc[0]) if not row.empty else 0.0
+        return value if value > 0 else None
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
+
+
+def opening_ratio(now: datetime, cache: dict) -> float | None:
+    """Resolve once per day, retry slowly while unavailable; never invent a scaling ratio."""
+    if now.time() < OPEN_READY:
+        return None
+    day = now.date()
+    state = cache.setdefault(day, {})
+    if state.get("ratio"):
+        return state["ratio"]
+    if state.get("retry_at") and now < state["retry_at"]:
+        return None
+    state["retry_at"] = now + timedelta(seconds=OPEN_RETRY_S)
+    values = []
+    for p in (SENSEX_I, NIFTY_I):
+        candle = broker_open_candle(day, p.kite_token)
+        values.append((candle or {}).get("open") or collector_open(day, p))
+    if all(v and float(v) > 0 for v in values):
+        ratio = float(values[1]) / float(values[0])
+        if math.isfinite(ratio):
+            state["ratio"] = ratio
+            log.info("NIFTY opening ratio %s: %.8f (NIFTY=%s SENSEX=%s)", day, ratio, values[1], values[0])
+            return ratio
+    return None
 
 
 def recent_day_closes(today: date, bars_fn=spot_bars, n: int = 60) -> list[tuple[float, float]]:
@@ -513,9 +586,12 @@ class ProposerConnection:
     """Engine + restart-safe state for one (user, connection)."""
 
     def __init__(self, user_id: str, conn_id: str, params: pe.ProposerParams | None = None,
-                 strategy: str | None = None, day_target: float | None = None):
+                 strategy: str | None = None, day_target: float | None = None,
+                 ratio: float | None = None):
         self.user_id, self.conn_id, self.strategy, self.day_target = user_id, conn_id, strategy, day_target
-        self.engine = pe.ProposerEngine(params or pe.params_for(strategy, day_target))
+        self.ratio = ratio
+        params = params or pe.params_for(strategy, day_target)
+        self.engine = pe.ProposerEngine(pe.scaled_for_nifty(params, ratio) if ratio is not None else params)
         self.day: str | None = None
         self.mode: str | None = None
 
@@ -579,11 +655,12 @@ class StepClock:
 
 
 def _adapter(user_id, conn_id, adapters, adapter_factory):
+    profile = instrument_for(svc.get_config(user_id, conn_id, "strategy_version"))
     a = lr._ensure_connected_adapter(user_id, conn_id, adapters=adapters, adapter_factory=adapter_factory)
-    if a is not None and getattr(a, "_proposer_segment", None) != SEGMENT:
+    if a is not None and getattr(a, "_proposer_segment", None) != profile.segment:
         if hasattr(a, "use_segment"):
-            a.use_segment(SEGMENT, UNDERLYING)
-        a._proposer_segment = SEGMENT
+            a.use_segment(profile.segment, profile.underlying)
+        a._proposer_segment = profile.segment
     if a is not None and hasattr(a, "warm_symbols"):
         a.warm_symbols()        # the contract list is in memory before any order needs it
     return a
@@ -628,9 +705,10 @@ def _route(adapter, user_id, conn_id, *, action, side, symbol, qty, price, dry_r
         intent_seq=lr.next_intent_seq(user_id, conn_id, trade_date), price_fn=price_fn)
 
 
-def _entry_price_fn(market: KiteMarket, symbol: str, cap: float, sent: dict):
+def _entry_price_fn(market: KiteMarket, symbol: str, cap: float, sent: dict,
+                    profile: Instrument = SENSEX_I):
     def fn():
-        q = market.quote(symbol) or {}
+        q = (market.quote(symbol, profile) if profile == NIFTY_I else market.quote(symbol)) or {}
         ref = max([v for v in (q.get("ask"), q.get("ltp")) if v] or [0]) or None
         if ref is None or ref > cap:
             sent.update(ask=ref, limit=None)
@@ -683,11 +761,30 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
 
     trade_date = now.date().isoformat()
     strategy = svc.get_config(user_id, conn_id, "strategy_version")
+    profile = instrument_for(strategy)
+    ratio = None
+    if profile == NIFTY_I:
+        ratio = opening_ratio(now, ctx.setdefault("opening_ratios", {}))
+        # Persist only a resolved session ratio so a restart with temporarily unavailable data
+        # can still manage a held NIFTY position with the original, correctly scaled exits.
+        if ratio is None:
+            saved = svc.get_config(user_id, conn_id, "proposer_nifty_ratio_" + trade_date)
+            try:
+                value = float(saved or 0)
+                ratio = value if math.isfinite(value) and value > 0 else None
+            except ValueError:
+                pass
     day_target = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
     pc = ctx["conns"].get(conn_id)
-    if pc is None or pc.strategy != strategy or pc.day_target != day_target:
+    if (pc is None or pc.strategy != strategy or pc.day_target != day_target or pc.ratio != ratio
+            or (profile == NIFTY_I and pc.day != trade_date)):
         # first cycle, or the operator switched variant or day target
-        pc = ctx["conns"][conn_id] = ProposerConnection(user_id, conn_id, strategy=strategy, day_target=day_target)
+        pc = ctx["conns"][conn_id] = ProposerConnection(
+            user_id, conn_id, strategy=strategy, day_target=day_target, ratio=ratio)
+        if ratio is not None:
+            svc.set_config(user_id, conn_id, "proposer_nifty_ratio_" + trade_date, str(ratio))
+        elif profile == NIFTY_I:
+            log.warning("NIFTY entries held: 09:15 opening ratio is unavailable conn=%s day=%s", conn_id, trade_date)
         log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
                  "loss_floor=%s spot_floor_pts=%s day_target=%s", conn_id,
                  strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
@@ -699,10 +796,22 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     snap = feed.snapshot()
     clock.mark("book")
 
-    spot = market.spot()
+    if profile == NIFTY_I:
+        spots = market.spots()
+        sensex_spot, spot = spots.get("SENSEX"), spots.get("NIFTY")
+    else:
+        sensex_spot = spot = market.spot()
     session_bars = ctx.setdefault("bars", SessionBars())
-    session_bars.note(now, spot)
-    quote = market.quote(st["symbol"]) if is_open and st.get("symbol") else None
+    session_bars.note(now, sensex_spot)
+    def read_quote(symbol):
+        if profile == NIFTY_I:
+            # Angel's execution symbol differs from Kite's weekly/monthly symbol. Persist the
+            # exact chain symbol at entry so exits remain priceable after a runner restart.
+            kite_symbol = (svc.get_config(user_id, conn_id, "proposer_quote_symbol:" + symbol)
+                           or lr.kite_symbol_for(symbol, trade_date))
+            return market.quote(kite_symbol, profile)
+        return market.quote(symbol)
+    quote = read_quote(st["symbol"]) if is_open and st.get("symbol") else None
     ltp = (quote or {}).get("ltp")
     clock.mark("market")
     pos = pe.Position()
@@ -713,7 +822,7 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
 
     if is_open and now.time() >= EOD_FLAT:
         sig = pe.Signal("EXIT", st.get("side"), "eod")
-    elif snap and spot:
+    elif snap and spot and (profile != NIFTY_I or ratio is not None):
         closes = entry_idx = move = None
         if is_open and pc.engine.params.bar_exit:
             bars = session_bars.completed(now)
@@ -754,8 +863,14 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
 
     if (sig.action == "ENTER" and not is_open and not blocked and spot
             and now.time() < ENTRY_CUTOFF and lr.check_daily_loss(user_id, conn_id)):
-        chain = option_chain(now.date())
-        symbol, strike, typ, picked = ps.delta_itm_symbol(chain, sig.side, spot, now.date())
+        if profile == NIFTY_I:
+            from labs.engine.expiry_strangle_tracker import expiry_date_of
+            chain = option_chain(now.date(), profile)
+            expiry = expiry_date_of(chain["expiry"].iloc[0], "NIFTY") if not chain.empty else None
+            symbol, strike, typ, picked = ps.delta_itm_symbol_nifty(chain, sig.side, spot, now.date(), expiry)
+        else:
+            chain = option_chain(now.date())
+            symbol, strike, typ, picked = ps.delta_itm_symbol(chain, sig.side, spot, now.date())
         if not symbol:
             log.warning("no %s strike by delta (%s, spot %.0f); entry skipped", typ, picked.get("reason"), spot)
             return False
@@ -765,23 +880,24 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         broker_sym = adapter.broker_symbol(symbol) if hasattr(adapter, "broker_symbol") else symbol
         clock.mark("contract")
         configured = svc.get_lots(user_id, conn_id)
-        lots = ex.freeze_capped_lots(configured, LOT_SIZE, UNDERLYING)
-        q = market.quote(symbol) or {}
+        lots = ex.freeze_capped_lots(configured, profile.lot_size, profile.underlying)
+        q = read_quote(symbol) or {}
         price = q.get("ask") or q.get("ltp")
         clock.mark("quote")
         if not price:
             log.warning("entry skipped: no quote for %s", symbol)
             return False
         if lots < configured:
-            notify_telegram(f"Proposer ENTER {sig.side}: {configured} lots is above the SENSEX freeze "
+            notify_telegram(f"Proposer ENTER {sig.side}: {configured} lots is above the {profile.underlying} freeze "
                             f"quantity; sending {lots} lots")
         sent: dict = {}
-        price_fn = None if dry_run else _entry_price_fn(market, symbol, price * (1 + lr.ENTRY_CHASE_CAP_PCT), sent)
+        price_fn = None if dry_run else _entry_price_fn(
+            market, symbol, price * (1 + lr.ENTRY_CHASE_CAP_PCT), sent, profile)
         key_ts = snap.get("x5_asof") or "none"
         step_downs = 0
         while True:
             result = _route(adapter, user_id, conn_id, action="ENTER", side=sig.side, symbol=broker_sym,
-                            qty=lots * LOT_SIZE, price=price, dry_run=dry_run,
+                            qty=lots * profile.lot_size, price=price, dry_run=dry_run,
                             key_ts=key_ts + (f"|lots{lots}" if step_downs else ""),
                             entry_rule=sig.reason or "none", price_fn=price_fn)
             smaller = None if dry_run else ex.stepped_down_lots(lots, result)
@@ -797,7 +913,7 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         clock.mark("order")
         log.info("entry timing | print %s %s | broker answered %.1fs into the cycle (%s) | %s", key_ts,
                  broker_sym, clock.total(), clock.text(), result.status)
-        qty = lots * LOT_SIZE
+        qty = lots * profile.lot_size
         got = None if dry_run else ex.filled_qty(result)
         partial = bool(got and got > 0 and str(result.status or "").upper() in lr._IOC_NO_FILL
                        and not (result.raw or {}).get("idempotent_skip"))
@@ -805,9 +921,11 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             qty = got                   # hold what actually filled
         if partial:
             notify_telegram(f"⚠️ Proposer ENTER {sig.side} {broker_sym} part-filled: holding "
-                            f"{qty // LOT_SIZE} lots ({qty} qty)")
+                            f"{qty // profile.lot_size} lots ({qty} qty)")
         if partial or lr._order_accepted(result, dry_run=dry_run):
             fill = result.avg_fill_price or sent.get("limit") or price
+            if profile == NIFTY_I:
+                svc.set_config(user_id, conn_id, "proposer_quote_symbol:" + broker_sym, symbol)
             st.update({"position": "OPEN", "side": sig.side, "symbol": broker_sym, "entry_price": fill,
                        "entry_time": datetime.now(timezone.utc).isoformat(), "qty": qty,
                        "virtual": 1 if dry_run else 0, "entry_rule": sig.reason, "entry_spot": spot})

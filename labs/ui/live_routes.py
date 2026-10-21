@@ -550,6 +550,7 @@ STRATEGY_PRESETS = {
     # loss floor (SENSEX_V45_FLOORS) picks the version: -20% of the premium is proposer_dt35_v3 (Sensex V4),
     # 150 SENSEX points against the entry is proposer_dt35_v5 (Sensex V5). The default is V4.
     "proposer_sensex_v45": ("proposer", "proposer_dt35_v3"),
+    "nifty_scalper_v1": ("proposer", "proposer_nifty_scalper_v1"),
 }
 SENSEX_V45 = "proposer_sensex_v45"
 SENSEX_V45_FLOORS = {
@@ -571,19 +572,23 @@ STRATEGY_LABELS = {
     "proposer_dt25_v3": "SENSEX Proposer v3 (improved: trades only with the day's direction, stop at -20%)",
     "proposer_sensex_v45": "Sensex V4 / V5 (v3 with the day, Sentinel strike, 270 s wait; "
                            "loss floor and day target chosen below)",
+    "nifty_scalper_v1": "Nifty Scalper V1 (Sensex V5 signals on NIFTY options; 1.5% day target)",
 }
 
 
 # Day-target choices for Sensex V4 / V5 (percent; "other" = typed in). Stored per connection in
 # proposer_day_target_pct; blank = the preset's 3.5%.
-V45_DAY_TARGETS = {"3.5": "3.5% (preset)", "2.5": "2.5% (as Pramanaa's 2.5% accounts)"}
+V45_DAY_TARGETS = {"3.5": "3.5% (Sensex preset)", "2.5": "2.5% (as Pramanaa's 2.5% accounts)",
+                   "1.5": "1.5% (tested on NIFTY)"}
 V45_DEFAULT_DAY_TARGET = "3.5"
 
 
 def _v45_day_target(user_id: str, conn_id: str) -> str:
     """The connection's day target as a percent string ("3.5" when unset or unreadable)."""
     value = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
-    return f"{value * 100:g}" if value else V45_DEFAULT_DAY_TARGET
+    default = ("1.5" if svc.get_config(user_id, conn_id, "strategy_version") ==
+               pe.STRATEGY_VERSION_NIFTY_SCALPER_V1 else V45_DEFAULT_DAY_TARGET)
+    return f"{value * 100:g}" if value else default
 
 
 def _v45_floor(version: str | None) -> str:
@@ -604,7 +609,7 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     if de == "proposer":
         if sv in {v for v, _ in SENSEX_V45_FLOORS.values()}:
             return SENSEX_V45
-        return sv if sv in STRATEGY_PRESETS else "proposer_dt25"
+        return next((k for k, pair in STRATEGY_PRESETS.items() if pair == (de, sv)), "proposer_dt25")
     if de == "champion_replay" and sv == "v2.11b":
         return "champion_v211b"
     if de == "champion_replay" and sv == "v2.13":
@@ -687,8 +692,8 @@ def configure():
             if floor not in SENSEX_V45_FLOORS:
                 floor = _v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))
             target = ("proposer", SENSEX_V45_FLOORS[floor][0])
-        day_target = None                                  # percent string to store, Sensex V4 / V5 only
-        if strat == SENSEX_V45:
+        day_target = None
+        if strat in (SENSEX_V45, "nifty_scalper_v1"):
             choice = (request.form.get("day_target") or "").strip()
             if choice == "other":
                 typed = request.form.get("day_target_custom")
@@ -701,7 +706,9 @@ def configure():
             elif choice in V45_DAY_TARGETS:
                 day_target = choice
             else:
-                day_target = _v45_day_target(user_id, conn_id)          # a form without the field keeps it
+                day_target = ("1.5" if strat == "nifty_scalper_v1" and
+                              strat != _current_strategy_preset(user_id, conn_id)
+                              else _v45_day_target(user_id, conn_id))
         strategy_changed = target is not None and (
             strat != _current_strategy_preset(user_id, conn_id)
             or target[1] != svc.get_config(user_id, conn_id, "strategy_version")

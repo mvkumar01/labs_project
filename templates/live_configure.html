@@ -65,8 +65,8 @@
           </select>
           <div class="hint">Only for Sensex V4 / V5. Everything else is the same: entries only with the day, Sentinel's strike, 270 s wait after an exit. The 150-point floor exits once SENSEX is 150 points against the entry spot and has no premium floor; 150 was picked in-sample (paper books Sensex V4 and V5).</div>
         </div>
-        <div class="field" id="v45-target-field" {{ '' if strategy == v45_preset else 'hidden' }}>
-          <label for="day_target">Sensex V4 / V5 day target</label>
+        <div class="field" id="v45-target-field" {{ '' if strategy in (v45_preset, 'nifty_scalper_v1') else 'hidden' }}>
+          <label for="day_target">Day target (Sensex V4 / V5 or Nifty Scalper V1)</label>
           {% set preset_target = v45_day_target in v45_day_targets %}
           <select id="day_target" name="day_target">
             {% for key, label in v45_day_targets.items() %}
@@ -77,7 +77,7 @@
           <input type="number" id="day_target_custom" name="day_target_custom" step="0.1"
                  min="{{ v45_day_target_bounds[0] }}" max="{{ v45_day_target_bounds[1] }}" placeholder="e.g. 3.0"
                  value="{{ '' if preset_target else v45_day_target }}" {{ '' if not preset_target else 'hidden' }}>
-          <div class="hint">The bot stops for the day once today's realized profit plus the open trade reaches this share of the trade's entry capital (premium x quantity). Typed values: a percent between {{ v45_day_target_bounds[0] }} and {{ v45_day_target_bounds[1] }}. Only 2.5% and 3.5% have paper books (Sensex V5 2.5% and Sensex V5); any other value has not been backtested. Change it only while flat.</div>
+          <div class="hint">The bot stops for the day once today's realized profit plus the open trade reaches this share of the trade's entry capital (premium x quantity). Typed values: a percent between {{ v45_day_target_bounds[0] }} and {{ v45_day_target_bounds[1] }}. Nifty Scalper V1 defaults to 1.5%; only 1.5% has been backtested on NIFTY. Sensex 2.5% and 3.5% have paper books. Change it only while flat.</div>
         </div>
         <script>
           (function () {
@@ -85,7 +85,12 @@
             const g = document.getElementById('v45-target-field'), d = document.getElementById('day_target');
             const c = document.getElementById('day_target_custom');
             if (!s || !f) return;
-            s.addEventListener('change', () => { f.hidden = g.hidden = s.value !== '{{ v45_preset }}'; });
+            s.addEventListener('change', () => {
+              f.hidden = s.value !== '{{ v45_preset }}';
+              g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1'].includes(s.value);
+              d.value = s.value === 'nifty_scalper_v1' ? '1.5' : '3.5';
+              c.hidden = true;
+            });
             d.addEventListener('change', () => { c.hidden = d.value !== 'other'; if (!c.hidden) c.focus(); });
           })();
         </script>
