@@ -117,6 +117,10 @@ V5 = Book("proposer_v5", pe.STRATEGY_VERSION_V3_DT35)
 # Sensex V5 at 2.5%: the live preset proposer_dt35_v5 (V5, the 150-point floor inside the engine) with the
 # day target at 2.5% instead of 3.5% (DAY_TARGET_PCT; Vipin, 2026-10-19).
 V5_DT25 = Book("proposer_v5_dt25", pe.STRATEGY_VERSION_V5)
+# NIFTY on Sensex V5 signals: the same SENSEX prints and engine, positions in NIFTY options with NIFTY's
+# own exits (labs.engine.proposer_nifty_tracker; Vipin, 2026-10-21).
+NIFTY_V5 = Book("proposer_nifty_v5", pe.STRATEGY_VERSION_V5)
+NIFTY_BOOKS = frozenset({NIFTY_V5.key})
 
 
 # ------------------------------------------------------------------ schema ---
@@ -239,9 +243,10 @@ DELTA_STRIKE_FROM = "2026-10-19"
 # next session. The shadows copy Pramanaa's simulated bot, which waits 300 s.
 COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
-SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01"}
+SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01",
+                 "proposer_nifty_v5": "2026-07-01"}
 # Books whose day target differs from their live preset's.
-DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025}
+DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_nifty_v5": 0.015}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
 # switched off (as in the research run: -99.9%).
@@ -278,7 +283,7 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
-                                "proposer_v4", "proposer_v5", "proposer_v5_dt25"})
+                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_nifty_v5"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
@@ -387,6 +392,9 @@ def _rest_of_minute(sec: float, spot: float, bar) -> list[tuple[float, float]]:
 def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None,
                  book: Book = PX) -> dict:
     """Replay one session to its last recorded minute. Pure: reads market data, writes nothing."""
+    if book.key in NIFTY_BOOKS:                        # positions in NIFTY options, signals as here
+        from labs.engine import proposer_nifty_tracker
+        return proposer_nifty_tracker.simulate_day(day, book_before=book_before, now=now, book=book)
     if date.fromisoformat(day).weekday() >= 5:
         raise ProposerPxInputError(f"{day} is not a trading weekday")
     frame = _session_frame(day)
