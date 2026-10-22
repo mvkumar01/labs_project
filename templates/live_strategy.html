@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Alpha Labs</title>
   <link rel="stylesheet" href="/static/labs.css">
+  <link rel="stylesheet" href="/static/strategy_report.css">
   {{ theme_head() }}
   <style>
     .cards{display:flex;gap:12px;flex-wrap:wrap;margin:16px 0}
@@ -54,7 +55,7 @@
     </div>
     {% endif %}
 
-    {% if active_live_tab not in ['overview', 'archive'] %}
+    {% if active_live_tab != 'archive' %}
     <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
       <input type="hidden" name="tab" value="{{ active_live_tab }}">
       <strong>Date filter</strong>
@@ -65,6 +66,9 @@
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
     {% endif %}
+
+    {% include '_strategy_report.html' %}
+    {% if report_panels %}<details class="strategy-details"><summary>Strategy-specific tables, rules and research</summary>{% endif %}
 
     {% if active_live_tab == 'overview' %}
     {% include '_overview.html' %}
@@ -1013,6 +1017,7 @@
 
     {% endif %}
     {% endif %}
+    {% if report_panels %}</details>{% endif %}
   </main>
 </div>
 {% if active_live_tab == 'crude_macd_st' %}
@@ -1723,5 +1728,6 @@
   }
 </script>
 {% endif %}
+<script src="/static/strategy_report.js" defer></script>
 </body>
 </html>

@@ -324,7 +324,7 @@ def run_backfill(*, start_date: str = PAPER_START, end_date: str | None = None, 
 
 
 # ---------------------------------------------------------------- dashboard ---
-def dry_run_data(limit: int = 60) -> dict | None:
+def dry_run_data(limit: int | None = None, *, date_clause: str = "", date_params=()) -> dict | None:
     """What the real-time runner (live/crudem_runner.py, phase 0: dry run, no orders) has recorded
     in live.db, for a side-by-side with this replayed book. None when it has recorded nothing."""
     try:
@@ -337,7 +337,9 @@ def dry_run_data(limit: int = 60) -> dict | None:
             "SELECT t.trade_date, t.cid, t.direction, t.entry_ts, t.exit_ts, t.entry_price, t.exit_price, "
             "t.stop_price, t.target_price, t.exit_reason, t.net_rs, o.delay_s, o.bar_open "
             "FROM live_crudem_trades t LEFT JOIN live_crudem_orders o ON o.trade_ref = t.trade_ref AND o.kind = 'entry' "
-            "WHERE t.book = 'dry' ORDER BY t.entry_ts DESC LIMIT ?", (int(limit),))
+            "WHERE t.book = 'dry' " + date_clause.replace("trade_date", "t.trade_date") +
+            " ORDER BY t.entry_ts DESC" + (" LIMIT ?" if limit is not None else ""),
+            tuple(date_params) + ((int(limit),) if limit is not None else ()))
         cols = [c[0] for c in cur.description]
         trades = [dict(zip(cols, r)) for r in cur.fetchall()]
     except Exception:                                   # the runner has not created its tables yet
@@ -408,7 +410,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         "max_dd": round(max_dd, 2),
         "worst_day": round(min((float(r["net_rs"] or 0) for r in days), default=0.0), 2),
         "by_member": sorted(by_member.values(), key=lambda b: order.index(b["cid"])),
-        "outcomes": outcomes, "paper_start": PAPER_START, "lots": LOTS, "dry": dry_run_data(),
+        "outcomes": outcomes, "paper_start": PAPER_START, "lots": LOTS, "dry": dry_run_data(date_clause=date_clause, date_params=date_params),
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
     return rows, trades, stats

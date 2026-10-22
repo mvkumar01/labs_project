@@ -45,7 +45,7 @@
   <div class="ov-kpis">
     <div class="ov-kpi"><div class="k">Today, all books</div>
       <div class="v {{ 'ov-pos' if today_total > 0 else ('ov-neg' if today_total < 0 else '') }}">{{ money(today_total) }}</div></div>
-    <div class="ov-kpi"><div class="k">Total P&amp;L, all books</div>
+    <div class="ov-kpi"><div class="k">{{ 'Selected-range' if date_from or date_to else 'Total' }} P&amp;L, all books</div>
       <div class="v {{ 'ov-pos' if grand_total > 0 else ('ov-neg' if grand_total < 0 else '') }}">{{ money(grand_total) }}</div></div>
     <div class="ov-kpi"><div class="k">Books running</div>
       <div class="v">{{ live_cards | length }}</div></div>
@@ -85,7 +85,7 @@
     <div class="ov-meta" style="margin-top:2px">{% if c.trades is defined %}{{ c.trades }} trades &middot; {% endif %}{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
     {% if c.note is defined %}<div class="ov-note">{{ c.note }}</div>{% endif %}
     {% endif %}
-    <a class="ov-btn" href="{{ c.href if c.href is defined else url_for('labs.live_strategy', tab=(c.tab if c.tab is defined else c.key)) }}">View Details</a>
+    <a class="ov-btn" href="{{ c.href if c.href is defined else url_for('labs.live_strategy', tab=(c.tab if c.tab is defined else c.key), date_from=date_from, date_to=date_to) }}">View Details</a>
   </div>
 {% endfor %}
 </div>

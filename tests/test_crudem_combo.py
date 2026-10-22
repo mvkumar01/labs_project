@@ -245,7 +245,7 @@ def test_the_tab_renders_with_and_without_dry_run_rows(book, monkeypatch):
                                    "exit_price": None, "stop_price": 8732.0, "target_price": 8668.0,
                                    "exit_reason": None, "net_rs": None, "delay_s": 7.0, "bar_open": 8701.0}],
                        "closed": 0, "net_total": 0.0, "avg_delay": 7.0, "avg_slip": 1.0, "slip_n": 1}):
-        monkeypatch.setattr(tr, "dry_run_data", lambda limit=60, _d=dry: _d)
+        monkeypatch.setattr(tr, "dry_run_data", lambda limit=None, _d=dry, **kwargs: _d)
         rows, trades, stats = tr.tab_data(conn)
         html = tpl.render(crudem_combo_rows=rows, crudem_combo_trades=trades, crudem_combo_stats=stats)
         assert "CRUDEOILM consistent combination (paper)" in html and "593002" in html

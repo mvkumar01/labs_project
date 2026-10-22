@@ -1,0 +1,53 @@
+{% macro money(value, currency='INR') -%}
+  {%- if value is not none -%}{{ '$' if currency == 'USD' else '₹' }}{{ '{:,.2f}'.format(value) }}{%- else -%}<span class="muted" title="Not recorded or not applicable">—</span>{%- endif -%}
+{%- endmacro %}
+{% macro percent(value) -%}{{ '%.1f%%'|format(value) if value is not none else '—' }}{%- endmacro %}
+{% for panel in report_panels %}
+<section class="strategy-report" data-report-key="{{ panel.key }}">
+  <div class="report-heading"><h1>{{ panel.title }}</h1><span class="report-period">{{ date_from or 'First recorded session' }} → {{ date_to or 'Latest recorded session' }}</span></div>
+  {% if not panel.available %}<p class="note">No ledger is available for this strategy yet.</p>{% endif %}
+  {% set s = panel.stats %}
+  <dl class="report-metrics">
+    <div><dt>Net P&amp;L after costs</dt><dd class="{{ 'green' if (s.net or 0)>0 else 'red' if (s.net or 0)<0 else '' }}">{{ money(s.net,panel.currency) }}</dd><small>{{ s.days }} priced days{% if s.closed is not none %} · {{ s.closed }} closed trades{% endif %}</small></div>
+    <div><dt>Gross profit / loss</dt><dd class="report-split"><span class="green">{{ money(s.gross_profit,panel.currency) }}</span><span class="red">{{ money(s.gross_loss,panel.currency) }}</span></dd><small>Gross P&amp;L {{ money(s.gross,panel.currency) }}</small></div>
+    <div><dt>Charges + slippage</dt><dd>{{ money(s.costs,panel.currency) }}</dd><small>Charges {{ money(s.charges,panel.currency) }} · Slippage {{ money(s.slippage,panel.currency) }}</small></div>
+    <div><dt>Trade win rate</dt><dd>{{ percent(s.trade_win_pct) }}</dd><small>{% if panel.daily_only %}No discrete trade ledger{% else %}{{ s.wins }} wins / {{ s.priced }} priced closed · {{ s.breakeven }} flat{% endif %}</small></div>
+    <div><dt>Day win rate</dt><dd>{{ percent(s.day_win_pct) }}</dd><small>{{ s.winning_days }} wins / {{ s.days }} priced days · {{ s.breakeven_days }} flat</small></div>
+    {% if not panel.daily_only %}<div><dt>Open positions</dt><dd>{{ s.open_count }}</dd><small>Marked net P&amp;L {{ money(s.open_net,panel.currency) }} · excluded above</small></div>{% endif %}
+  </dl>
+  {% if s.unpriced or s.missing_costs or s.missing_gross %}<p class="report-warning">Incomplete pricing: {{ s.unpriced }} closed records lack net P&amp;L; {{ s.missing_costs }} lack costs; {{ s.missing_gross }} lack gross P&amp;L. Totals include only known values; missing values are not zero.</p>{% endif %}
+  <h2>Monthly P&amp;L <small>Selected dates only</small></h2>
+  <div class="report-scroll" tabindex="0" role="region" aria-label="Monthly performance for {{ panel.title }}">
+  <table class="perf report-table"><thead><tr><th>Month</th><th>{{ 'Days' if panel.daily_only else 'Closed trades' }}</th><th>Gross profit</th><th>Gross loss</th><th>Gross P&amp;L</th><th>Costs</th><th>Net P&amp;L</th><th>Trade wins</th><th>Day wins</th></tr></thead><tbody>
+  {% for m in panel.months %}<tr><td>{{ m.month }}</td><td>{{ m.days if panel.daily_only else m.closed }}</td><td class="green">{{ money(m.gross_profit,panel.currency) }}</td><td class="red">{{ money(m.gross_loss,panel.currency) }}</td><td>{{ money(m.gross,panel.currency) }}</td><td>{{ money(m.costs,panel.currency) }}</td><td class="{{ 'green' if (m.net or 0)>0 else 'red' if (m.net or 0)<0 else '' }}">{{ money(m.net,panel.currency) }}</td><td>{% if panel.daily_only %}—{% else %}{{ m.wins }}/{{ m.priced }} · {{ percent(m.trade_win_pct) }}{% endif %}</td><td>{{ m.winning_days }}/{{ m.days }} · {{ percent(m.day_win_pct) }}</td></tr>
+  {% else %}<tr><td colspan="9">No completed results in this date range.</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if panel.daily_only %}
+  <h2>Daily portfolio P&amp;L</h2><div class="report-scroll"><table class="perf report-table"><thead><tr><th>Date</th><th>Gross P&amp;L</th><th>Costs</th><th>Net P&amp;L</th></tr></thead><tbody>{% for d in panel.daily %}<tr><td>{{ d.date }}</td><td>{{ money(d.gross,panel.currency) }}</td><td>{{ money(d.costs,panel.currency) }}</td><td>{{ money(d.net,panel.currency) }}</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}
+  <div class="report-trade-heading"><h2>Trade ledger</h2><span class="muted">{{ panel.count }} records · page {{ panel.page }} of {{ panel.pages }} · times IST</span>
+    <form method="get" action="{{ url_for('labs.live_strategy') }}" class="report-page-size">
+      <input type="hidden" name="tab" value="{{ active_live_tab }}">
+      <input type="hidden" name="date_from" value="{{ date_from or '' }}">
+      <input type="hidden" name="date_to" value="{{ date_to or '' }}">
+      <input type="hidden" name="report_page" value="1">
+      <label>Rows per page <select name="report_size" onchange="this.form.submit()">{% for size in panel.page_sizes %}<option value="{{ size }}"{{ ' selected' if size == panel.per_page else '' }}>{{ size }}</option>{% endfor %}</select></label>
+      <noscript><button type="submit">Apply</button></noscript>
+    </form>
+  </div>
+  <div class="report-scroll" tabindex="0" role="region" aria-label="Trade ledger for {{ panel.title }}">
+  <table class="perf report-table report-trades"><thead><tr><th>Date</th><th>Contract</th><th>Entry time</th><th>Exit time</th><th>Duration</th><th>Direction</th><th>Qty (units)</th><th>Entry capital</th><th>Entry price</th><th>Exit price</th><th>Exit premium / value</th><th>Spot points</th><th>Target</th><th>Gross P&amp;L</th><th>Costs</th><th>Net P&amp;L</th><th>P&amp;L %</th><th>Exit rule</th><th>Peak P&amp;L held</th><th>Peak P&amp;L that day</th><th>Post-exit peak</th><th>Post-exit trough</th></tr></thead><tbody>
+  {% for t in panel.trades %}<tr data-trade-id="{{ t.id }}">
+    <td>{{ t.date }}<small class="report-cell-note">{{ t.status }}</small></td><td>{{ t.contract or 'Not recorded' }}</td><td>{{ t.entry_ts[11:19] if t.entry_ts and t.entry_has_time else '—' }}{% if t.entry_ts and t.entry_ts[:10] != t.date %}<small class="report-cell-note">{{ t.entry_ts[:10] }}</small>{% endif %}</td><td>{{ t.exit_ts[11:19] if t.exit_ts and t.exit_has_time else '—' }}{% if t.exit_ts and t.exit_ts[:10] != t.date %}<small class="report-cell-note">{{ t.exit_ts[:10] }}</small>{% endif %}</td><td>{{ t.duration or '—' }}</td><td>{{ t.direction }}</td><td>{{ t.qty_text or ('{:g}'.format(t.qty) if t.qty is not none else '—') }}</td>
+    <td title="{{ t.capital_basis }}">{{ money(t.capital,panel.currency) }}<small class="report-cell-note">{{ t.capital_basis }}</small></td><td>{{ '{:,.2f}'.format(t.entry_price) if t.entry_price is not none else '—' }}</td><td>{{ '{:,.2f}'.format(t.exit_price) if t.exit_price is not none else '—' }}</td><td>{{ money(t.exit_value,panel.currency) }}</td><td>{{ '%+.2f'|format(t.spot_points) if t.spot_points is not none else '—' }}</td><td>{{ '{:,.2f}'.format(t.target) if t.target is not none else '—' }}{% if t.target is not none %}<small class="report-cell-note">{{ t.target_kind }}</small>{% endif %}</td>
+    <td>{{ money(t.gross,panel.currency) }}</td><td>{{ money(t.costs,panel.currency) }}</td><td class="{{ 'green' if (t.net or 0)>0 else 'red' if (t.net or 0)<0 else '' }}">{{ money(t.net,panel.currency) }}</td><td>{{ percent(t.pnl_pct) }}</td><td>{{ t.exit_rule or '—' }}</td>
+    <td data-excursion="peak">{{ money(t.peak,panel.currency) }}</td><td data-excursion="day_peak">—</td><td data-excursion="post_peak">{{ money(t.post_peak,panel.currency) }}</td><td data-excursion="post_trough">{{ money(t.post_trough,panel.currency) }}</td>
+  </tr>{% else %}<tr><td colspan="22">No trade records in this date range.</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% if panel.pages > 1 %}<nav class="report-pagination" aria-label="Trade pages">{% if panel.page > 1 %}<a href="{{ url_for('labs.live_strategy',tab=active_live_tab,date_from=date_from,date_to=date_to,report_page=panel.page-1,report_size=panel.per_page) }}">Previous</a>{% endif %}{% if panel.page < panel.pages %}<a href="{{ url_for('labs.live_strategy',tab=active_live_tab,date_from=date_from,date_to=date_to,report_page=panel.page+1,report_size=panel.per_page) }}">Next</a>{% endif %}<span>Summary includes all {{ panel.count }} records, not just this page.</span></nav>{% endif %}
+  <button class="report-excursion-load" type="button" data-panel-index="{{ loop.index0 }}">Calculate peak and post-exit P&amp;L for this page</button><span class="report-excursion-status muted" role="status"></span>
+  {% endif %}
+  <details class="report-method"><summary>Definitions and data coverage</summary>{% for note in panel.notes %}<p>{{ note }}</p>{% endfor %}<p>Trade rows are selected by the ledger's strategy date (entry session for intraday books; expiry/settlement for expiry strangles). BTC ledger dates are UTC; displayed times are IST. Monthly totals use that same date. Post-exit extrema run from the exit to the end of that contract's session, measured against the original entry. Estimates use recorded one-minute marks, exclude costs and cannot establish tick-level peaks. “—” means unavailable or not applicable.</p></details>
+</section>
+{% endfor %}
+{% if report_error %}<p class="report-warning" role="alert">{{ report_error }}</p>{% endif %}

@@ -361,7 +361,7 @@ def run_backfill(*, start_date: str = PAPER_START, end_date: str | None = None, 
 
 
 # ---------------------------------------------------------------- dashboard ---
-def dry_run_data(limit: int = 60) -> dict | None:
+def dry_run_data(limit: int | None = None, *, date_clause: str = "", date_params=()) -> dict | None:
     """What the real-time runner (live/gold_runner.py, phase 0: dry run on GOLDM, no orders) has
     recorded in live.db, for a side-by-side with this replayed book. None when it has nothing."""
     try:
@@ -374,10 +374,14 @@ def dry_run_data(limit: int = 60) -> dict | None:
             "SELECT t.trade_date, t.symbol, t.signal_symbol, t.qty, t.signal_ts, t.entry_ts, t.exit_ts, t.entry_price, "
             "t.exit_price, t.stop_price, t.target_price, t.stop_moved_at, t.exit_reason, t.net_rs, o.delay_s "
             "FROM live_gold_trades t LEFT JOIN live_gold_orders o ON o.trade_ref = t.trade_ref AND o.kind = 'entry' "
-            "WHERE t.book = 'dry' ORDER BY t.entry_ts DESC LIMIT ?", (int(limit),))
+            "WHERE t.book = 'dry' " + date_clause.replace("trade_date", "t.trade_date") +
+            " ORDER BY t.entry_ts DESC" + (" LIMIT ?" if limit is not None else ""),
+            tuple(date_params) + ((int(limit),) if limit is not None else ()))
         cols = [c[0] for c in cur.description]
         trades = [dict(zip(cols, r)) for r in cur.fetchall()]
-        held = conn.execute("SELECT outcome, COUNT(*) FROM live_gold_decisions WHERE book='dry' GROUP BY outcome").fetchall()
+        decision_clause = date_clause.replace("trade_date", "substr(signal_ts,1,10)")
+        held = conn.execute("SELECT outcome, COUNT(*) FROM live_gold_decisions WHERE book='dry' " +
+                            decision_clause + " GROUP BY outcome", tuple(date_params)).fetchall()
     except Exception:                                   # the runner has not created its tables yet
         return None
     finally:
@@ -462,7 +466,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         "months": [months[k] for k in sorted(months, reverse=True)],
         "by_reason": sorted(by_reason.values(), key=lambda b: -b["n"]),
         "outcomes": outcomes, "paper_start": PAPER_START, "first_unseen": FIRST_UNSEEN, "lots": LOTS, "qty": QTY,
-        "exit_desc": eng.EXIT_DESC, "dry": dry_run_data(),
+        "exit_desc": eng.EXIT_DESC, "dry": dry_run_data(date_clause=date_clause, date_params=date_params),
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
     return rows, trades, stats

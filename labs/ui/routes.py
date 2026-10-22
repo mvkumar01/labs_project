@@ -1159,6 +1159,9 @@ def live_strategy():
             from labs.services.book_overview import build_overview
             overview_cards = [card for card in build_overview(conn)
                               if card.get("tab", card["key"]) not in ARCHIVE_TABS]
+            if date_from or date_to:
+                from labs.services.strategy_report import filter_overview
+                overview_cards = filter_overview(conn, overview_cards, date_from, date_to, LIVE_TABS)
 
         # ── Basket replay (v2.11 signals re-priced as multi-leg structures) ──
         try:
@@ -1212,8 +1215,26 @@ def live_strategy():
 
     except Exception as exc:  # never 500 the page if the table is empty/new
         stats = {"error": str(exc)}
+    from labs.services.strategy_report import build_reports
+    report_panels, report_error = [], None
+    try:
+        report_page = max(1, int(request.args.get("report_page", 1)))
+    except (ValueError, TypeError):
+        report_page = 1
+    if active_live_tab not in {"overview", "archive"}:
+        report_conn = get_conn()
+        try:
+            report_panels = build_reports(report_conn, active_live_tab, date_from, date_to,
+                                         title=LIVE_TABS[active_live_tab], page=report_page,
+                                         per_page=request.args.get("report_size", 100))
+        except Exception as exc:
+            report_error = f"Performance data unavailable: {type(exc).__name__}: {exc}"
+        finally:
+            report_conn.close()
     return render_template(
         "live_strategy.html",
+        report_panels=report_panels,
+        report_error=report_error,
         basket_defs=basket_defs,
         basket_totals=basket_totals,
         basket_by_date=basket_by_date,
@@ -1719,3 +1740,68 @@ def alpha_v211b_backfill():
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@labs_bp.route("/api/strategy-report/excursions")
+def strategy_report_excursions():
+    """Read-only, bounded excursion estimates from stored quotes; never broker APIs."""
+    from labs.services.strategy_report import (SOURCES, DRY_SOURCES, build_reports,
+                                               normalize, normalized_trades, enrich_baskets, Source, rows as report_rows)
+    from labs.services.strategy_excursions import contract_marks, estimate, day_peak
+    from storage.db import get_conn
+    key = request.args.get("tab", "")
+    if key not in SOURCES:
+        return jsonify({"error": "Unknown strategy"}), 400
+    date_from, date_to = _live_date_range()
+    try:
+        page = max(1, int(request.args.get("report_page", 1)))
+        panel_index = int(request.args.get("panel", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid page or panel"}), 400
+    ids = request.args.get("ids", "").split(",")
+    if not 1 <= len(ids) <= 20 or any(len(i) != 20 or any(c not in "0123456789abcdef" for c in i) for i in ids):
+        return jsonify({"error": "Request up to 20 trade identifiers"}), 400
+    conn = get_conn()
+    live_conn = None
+    try:
+        panels = build_reports(conn, key, date_from, date_to, page=page,
+                               per_page=request.args.get("report_size", 100))
+        if not 0 <= panel_index < len(panels):
+            return jsonify({"error": "Unknown panel"}), 400
+        panel = panels[panel_index]
+        selected = [t for t in panel["trades"] if t["id"] in ids]
+        dry = panel["title"].endswith("Real-time dry run")
+        spec = DRY_SOURCES[key] if dry else SOURCES[key]
+        if key == "nifty" and panel["source_table"] == "paper_strategy_trades":
+            spec = Source("paper_strategy_trades", qty=65)
+        source_conn = conn
+        if dry:
+            import sqlite3
+            from config.labs_config import LIVE_DB_PATH
+            live_conn = sqlite3.connect(LIVE_DB_PATH.resolve().as_uri()+"?mode=ro", uri=True)
+            source_conn = live_conn
+        raw = report_rows(source_conn, spec.table, spec.date_column, date_from, date_to, spec.where) or []
+        if key == "baskets":
+            raw = enrich_baskets(conn, raw, date_from, date_to)
+        all_trades = normalized_trades(raw, spec, key)
+        result, cache = {}, {}
+        for trade in selected:
+            peers = [t for t in all_trades if t["date"] == trade["date"] and t["group"] == trade["group"]]
+            series = {}
+            for peer in peers:
+                cache_key = (peer["underlying"], peer["date"], peer["contract"],
+                             peer["id"] if peer.get("multi_leg") else None)
+                if cache_key not in cache:
+                    cache[cache_key] = contract_marks(conn, peer)
+                series[peer["id"]] = cache[cache_key][0]
+            marks, coverage = cache[(trade["underlying"], trade["date"], trade["contract"],
+                                     trade["id"] if trade.get("multi_leg") else None)]
+            values = estimate(trade, marks)
+            values["day_peak"] = day_peak(peers, series)
+            values["note"] += " " + coverage
+            result[trade["id"]] = values
+        return jsonify({"trades": result})
+    finally:
+        if live_conn is not None:
+            live_conn.close()
+        conn.close()
