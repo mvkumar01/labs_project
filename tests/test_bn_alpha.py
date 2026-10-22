@@ -165,3 +165,14 @@ def test_ledger_round_trip_and_tab_stats():
     assert stats["net_rs"] == round(trades[0]["net_rs"]) and stats["exit_reasons"]["ALPHA_SL"] == 1
     bn._save(conn, "2026-10-27", {}, error="No settled BANKNIFTY baseline")
     assert conn.execute("SELECT status FROM bn_alpha_daily WHERE trade_date='2026-10-27'").fetchone()[0] == "unavailable"
+
+
+def test_a_past_session_that_stops_early_is_closed_at_its_last_mark():
+    t0 = pd.Timestamp(f"{DAY} 09:15")
+    rows = [(t0 + pd.Timedelta(minutes=5 * i), 55600, "PE", "26OCT", 100, 1, 2, "x") for i in range(3)]
+    base = pd.DataFrame({"strike": [55600], "type": ["pe"], "oi": [100]})
+    bars = {datetime(2026, 10, 26, 9, 15) + timedelta(minutes=k): (1, 1, 1, 1) for k in range(15)}
+    assert bn.session_inputs(DAY, close=55600.0, frame=_frame(rows), bars=bars, base=base)["session_done"] is True
+    live = bn.session_inputs(DAY, close=55600.0, frame=_frame(rows), bars=bars, base=base,
+                             now=datetime(2026, 10, 26, 10, 0))
+    assert live["session_done"] is False

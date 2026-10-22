@@ -236,7 +236,8 @@ def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, b
     return {"day": day, "expiry": expiry, "range_lo": lo, "range_hi": hi, "marks": marks,
             "alpha": np.array(alpha, float), "spot": np.array(spot, float),
             "win_high": np.array(wh, float), "win_low": np.array(wl, float), "quotes": quotes,
-            "session_done": bool(marks) and marks[-1].time() >= LAST_MARK}
+            # a past session is over even when its data stops before 15:25 (closed at its last mark)
+            "session_done": bool(marks) and (now is None or marks[-1].time() >= LAST_MARK)}
 
 
 # -------------------------------------------------------------------- rule ---
@@ -447,7 +448,8 @@ def sessions_with_quotes(start: str, end: str) -> list[str]:
     for root in (SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR):
         if root.exists():
             for p in root.iterdir():
-                if p.is_dir() and start <= p.name <= end and any(p.glob(f"{SYMBOL}_options_1min.*")):
+                if (p.is_dir() and start <= p.name <= end and date.fromisoformat(p.name).weekday() < 5
+                        and any(p.glob(f"{SYMBOL}_options_1min.*"))):
                     days.add(p.name)
     return sorted(days)
 
