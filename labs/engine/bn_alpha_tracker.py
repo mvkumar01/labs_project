@@ -458,7 +458,7 @@ def run_backfill(start: str = PAPER_START, end: str | None = None, kite=None) ->
     end = end or (datetime.now(IST).date() - timedelta(days=1)).isoformat()
     done, failed = [], {}
     for day in sessions_with_quotes(start, end):
-        out = run_day(day, now=datetime.combine(date.fromisoformat(day), time(23, 0), tzinfo=IST), kite=kite)
+        out = run_day(day, kite=kite)            # past sessions replay whole, closed at their last mark
         (failed.__setitem__(day, out["error"]) if out.get("error") else done.append(day))
     return {"done": len(done), "failed": failed}
 
