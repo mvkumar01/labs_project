@@ -27,7 +27,7 @@
           <div class="v {{ 'green' if st.net_rs>0 else ('red' if st.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(st.net_rs) }}</div>
           <div class="sub-k">after &#8377;{{ "{:,.0f}".format(st.charges_rs) }} charges{% if st.unpriced %}; {{ st.unpriced }} trades without quotes{% endif %}</div></div>
         <div class="card"><div class="k">Spot points</div>
-          <div class="v {{ 'green' if st.spot_pnl_pts>0 else ('red' if st.spot_pnl_pts<0 else '') }}">{{ "%+.1f"|format(st.spot_pnl_pts) }}</div>
+          <div class="v {{ 'green' if st.spot_pts>0 else ('red' if st.spot_pts<0 else '') }}">{{ "%+.1f"|format(st.spot_pts) }}</div>
           <div class="sub-k">{{ st.trades }} trades; {{ st.green_pts_days }} of {{ st.traded_days }} traded days ahead</div></div>
         <div class="card"><div class="k">Since {{ st.first_unseen }} (not seen)</div>
           <div class="v {{ 'green' if st.unseen_net>0 else ('red' if st.unseen_net<0 else '') }}">&#8377;{{ "{:,.0f}".format(st.unseen_net) }}</div>

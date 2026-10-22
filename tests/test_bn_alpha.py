@@ -176,3 +176,23 @@ def test_a_past_session_that_stops_early_is_closed_at_its_last_mark():
     live = bn.session_inputs(DAY, close=55600.0, frame=_frame(rows), bars=bars, base=base,
                              now=datetime(2026, 10, 26, 10, 0))
     assert live["session_done"] is False
+
+
+def test_tab_template_renders_a_filled_book():
+    import sqlite3
+    import jinja2
+    m = [datetime(2026, 10, 26, 9, 15) + timedelta(minutes=5 * i) for i in range(5)]
+    inp = _inp([0, 31, 50, -31, 0], [55600, 55610, 55620, 55605, 55600])
+    inp.update(expiry="26OCT", range_lo=55200, range_hi=56000,
+               quotes={(m[1], 55600.0, "ce"): (300.0, 302.0, "BANKNIFTY26OCT55600CE"),
+                       (m[3], 55600.0, "ce"): (296.0, 298.0, "BANKNIFTY26OCT55600CE")})
+    closed, _ = bn.simulate(inp)
+    conn = sqlite3.connect(":memory:")
+    bn._ensure_tables(conn)
+    bn._save(conn, DAY, {"inp": inp, "trades": [dict(bn.price_trade(t, inp), status="closed") for t in closed],
+                         "prev_close": 55612.3, "prev_close_date": "2026-10-23", "prev_close_source": "kite_daily",
+                         "baseline_date": "2026-10-23"})
+    rows, trades, stats = bn.tab_data(conn)
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(ROOT / "templates")), undefined=jinja2.StrictUndefined)
+    html = env.get_template("_bn_alpha.html").render(bn_alpha_rows=rows, bn_alpha_trades=trades, bn_alpha_stats=stats)
+    assert "BANKNIFTY Alpha (paper)" in html and "ALPHA_SL" in html and "-5.0" in html
