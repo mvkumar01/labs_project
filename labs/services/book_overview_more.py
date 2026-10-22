@@ -23,7 +23,7 @@ MORE_BOOKS = {
     "proposer_v4": {"label": "Sensex V4", "instrument": "SENSEX options", "size": "100 lots"},
     "proposer_v5": {"label": "Sensex V5", "instrument": "SENSEX options", "size": "100 lots"},
     "proposer_v5_dt25": {"label": "Sensex V5 2.5%", "instrument": "SENSEX options", "size": "100 lots"},
-    "proposer_nifty_v5": {"label": "Nifty · Sensex V5 signals", "instrument": "NIFTY options", "size": "Rs 12L a trade"},
+    "proposer_nifty_v5": {"label": "Nifty Scalper V1", "instrument": "NIFTY options", "size": "Rs 12L a trade"},
     "proposer_v3_dt35_clock": {"label": "Sensex V3 3.5% · Pramanaa timing", "instrument": "SENSEX options",
                                "size": "100 lots"},
     "nifty_expiry_sale_A": {"label": "Expiry straddle sale A", "instrument": "NIFTY options, expiry days",

@@ -67,7 +67,7 @@ def test_strike_is_the_shallowest_itm_with_delta_at_least_0_6():
 def test_registered_as_a_paper_tab_runner_and_overview_card():
     from labs.services.book_overview_more import MORE_BOOKS as BOOKS
     from labs.ui.routes import LIVE_TABS
-    assert LIVE_TABS["proposer_nifty_v5"] == "Nifty · Sensex V5 signals"
+    assert LIVE_TABS["proposer_nifty_v5"] == "Nifty Scalper V1"
     assert BOOKS["proposer_nifty_v5"]["instrument"] == "NIFTY options"
     template = (ROOT / "templates" / "live_strategy.html").read_text(encoding="utf-8")
     assert "{% include '_proposer_nifty_v5.html' %}" in template and "/labs/api/proposer_nifty_v5/backfill" in template
@@ -101,7 +101,7 @@ def test_ui_patch_applies_next_to_the_v5_dt25_wiring_and_is_idempotent(tmp_path)
     second = subprocess.run([sys.executable, script, str(tmp_path)], capture_output=True, text=True)
     assert second.returncode == 0 and second.stdout.count("0 edits applied") == 4
     routes = (tmp_path / "labs/ui/routes.py").read_text(encoding="utf-8")
-    assert routes.count('"proposer_nifty_v5": "Nifty · Sensex V5 signals"') == 1
+    assert routes.count('"proposer_nifty_v5": "Nifty Scalper V1"') == 1
     assert routes.count('"proposer_v5_dt25": "Sensex V5 2.5%"') == 1
     for rel in ("labs/ui/routes.py", "pa_paper_tracker_loop.py", "labs/services/book_overview_more.py"):
         py_compile.compile(str(tmp_path / rel), doraise=True)

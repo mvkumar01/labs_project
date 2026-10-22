@@ -1,4 +1,4 @@
-"""One-shot wiring of the "Nifty · Sensex V5 signals" paper book (proposer_nifty_v5) into the labs dashboard, the paper loop
+"""One-shot wiring of the "Nifty Scalper V1" paper book (proposer_nifty_v5) into the labs dashboard, the paper loop
 and the Overview cards.
 
 The files it edits (labs/ui/routes.py, templates/live_strategy.html, pa_paper_tracker_loop.py,
@@ -125,7 +125,7 @@ def main() -> int:
     kwargs_line = "        proposer_v5_dt25_stats=proposer_v5_dt25_stats,\n"
     route = '@labs_bp.route("/api/proposer_v5_dt25/backfill", methods=["POST"])\n'
     n = patch(ROOT / "labs" / "ui" / "routes.py", [
-        (tabs, tabs + '    "proposer_nifty_v5": "Nifty · Sensex V5 signals",\n'),
+        (tabs, tabs + '    "proposer_nifty_v5": "Nifty Scalper V1",\n'),
         (vars_line, vars_line + "    proposer_nifty_v5_rows, proposer_nifty_v5_trades, proposer_nifty_v5_stats = [], [], {}\n"),
         (comment, ROUTES_QUERY + comment),
         (kwargs_line, kwargs_line + "        proposer_nifty_v5_rows=proposer_nifty_v5_rows,\n"
@@ -156,7 +156,7 @@ def main() -> int:
     meta = '    "proposer_v5_dt25": {"label": "Sensex V5 2.5%", "instrument": "SENSEX options", "size": "100 lots"},\n'
     builder = '        "proposer_v5_dt25": lambda: _proposer(conn, "proposer_v5_dt25", today),\n'
     n = patch(ROOT / "labs" / "services" / "book_overview_more.py", [
-        (meta, meta + '    "proposer_nifty_v5": {"label": "Nifty · Sensex V5 signals", "instrument": "NIFTY options", "size": "Rs 12L a trade"},\n'),
+        (meta, meta + '    "proposer_nifty_v5": {"label": "Nifty Scalper V1", "instrument": "NIFTY options", "size": "Rs 12L a trade"},\n'),
         (builder, builder + '        "proposer_nifty_v5": lambda: _proposer(conn, "proposer_nifty_v5", today),\n'),
     ])
     print(f"book_overview_more.py: {n} edits applied")

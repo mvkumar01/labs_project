@@ -1,5 +1,5 @@
 {# Paper book: NIFTY on Sensex V5 signals - the Sensex V5 2.5% book's SENSEX signals, traded on NIFTY options #}
-    <h1>NIFTY on Sensex V5 signals (paper)</h1>
+    <h1>Nifty Scalper V1 (paper)</h1>
     <p class="sub">The <strong>signals</strong> of the Sensex V5 2.5% book, unchanged &mdash; SENSEX prints every 300 s,
       the Proposer v3 entry gate with the 75-point SENSEX with-the-day filter, the opposite-print exit, a 270 s wait
       after an exit &mdash; <strong>traded on NIFTY options</strong> with NIFTY's own exits: the nearest NIFTY weekly
@@ -20,7 +20,7 @@
     </div>
 
     {% if proposer_nifty_v5_stats.get('error') %}
-      <p class="empty">NIFTY on Sensex V5 signals book unavailable ({{ proposer_nifty_v5_stats.error }}).</p>
+      <p class="empty">Nifty Scalper V1 book unavailable ({{ proposer_nifty_v5_stats.error }}).</p>
     {% elif not proposer_nifty_v5_rows %}
       <p class="empty">No sessions recorded in this date range.</p>
       <button type="button" id="proposer-nifty-v5-backfill" class="btn-secondary">Backfill from 1 July</button>

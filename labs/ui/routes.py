@@ -380,7 +380,7 @@ LIVE_TABS = {
     "proposer_v4": "Sensex V4",
     "proposer_v5": "Sensex V5",
     "proposer_v5_dt25": "Sensex V5 2.5%",
-    "proposer_nifty_v5": "Nifty · Sensex V5 signals",
+    "proposer_nifty_v5": "Nifty Scalper V1",
     "proposer_v3_dt35_clock": "Sensex V3 3.5% · Pramanaa timing",
     "nifty_expiry_sale": "NIFTY Expiry Straddle Sale",
     "expiry_strangle": "Expiry strangle · NIFTY + SENSEX",
