@@ -72,7 +72,7 @@
             <td>{{ "%.0f"|format(t.exit_price) if t.exit_price is not none else '&mdash;' }}</td>
             <td class="muted">{{ "%.0f"|format(t.stop_price) }}{% if t.stop_moved_at %} &rarr; entry {{ t.stop_moved_at[11:16] }}{% endif %}</td>
             <td class="muted">{{ "%.0f"|format(t.target_price) }}</td>
-            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">{{ '&#8377;' ~ "{:,.0f}".format(t.net_rs) if t.net_rs is not none else '&mdash;' }}</td>
+            <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">{{ '₹' ~ "{:,.0f}".format(t.net_rs) if t.net_rs is not none else '—' }}</td>
             <td>{% if not t.exit_ts %}<span class="amber">open</span>{% else %}{{ t.exit_reason }}{% endif %}</td></tr>
         {% endfor %}
         </tbody>
