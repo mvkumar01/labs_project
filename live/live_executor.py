@@ -69,7 +69,8 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v10 (2026-10-19): Sensex V4 / V5 take the connection's day target (config proposer_day_target_pct);
 # a v9 runner would ignore it and trade 3.5%.
 # v11: Nifty Scalper V1 uses NFO, session-scaled NIFTY exits and an editable 1.5% day target.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v11"
+# v12: explicit fixed/dynamic lot sizing, with balance reads only in background workers.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v12"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

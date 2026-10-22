@@ -36,6 +36,7 @@ from flask import (
 from live import live_service as svc
 from live import live_executor as ex
 from live import control_plane as cp
+from live import proposer_sizing as sizing
 from live.engine import proposer_engine as pe
 from live.auth_gate import (
     current_user_id, login_throttled, record_attempt, issue_csrf, csrf_protect,
@@ -672,6 +673,9 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         v45_day_targets=V45_DAY_TARGETS,
         v45_day_target=_v45_day_target(user_id, conn_id),
         v45_day_target_bounds=(pe.DAY_TARGET_MIN_PCT, pe.DAY_TARGET_MAX_PCT),
+        proposer_presets=[k for k, pair in STRATEGY_PRESETS.items() if pair[0] == "proposer"],
+        proposer_sizing_modes=sizing.MODES,
+        proposer_sizing_mode=svc.get_config(user_id, conn_id, "proposer_sizing_mode") or sizing.FIXED,
         error=error,
     )
 
@@ -714,20 +718,33 @@ def configure():
             or target[1] != svc.get_config(user_id, conn_id, "strategy_version")
             or (day_target is not None and day_target != _v45_day_target(user_id, conn_id))
         )
-        if strategy_changed:
+        current_sizing = svc.get_config(user_id, conn_id, "proposer_sizing_mode") or sizing.FIXED
+        sizing_mode = current_sizing
+        is_proposer = target is not None and target[0] == "proposer"
+        if is_proposer:
+            sizing_mode = request.form.get("proposer_sizing_mode", current_sizing)
+            if sizing_mode not in sizing.MODES:
+                return _render_configure(user_id, conn_id, error="Select Fixed or Dynamic lot sizing. Nothing was changed.")
+        sizing_changed = is_proposer and sizing_mode != current_sizing
+        if strategy_changed or sizing_changed:
             state = svc.get_trade_state(user_id, conn_id)
             if (state.get("position") or "NONE").upper() == "OPEN":
                 return _render_configure(
                     user_id,
                     conn_id,
                     error=(
-                        "Decision strategy cannot change while this connection "
+                        ("Decision strategy cannot change while this connection " if strategy_changed else
+                         "Lot sizing cannot change while this connection ") +
                         "has an open position. Close it first, then save."
                     ),
                 )
             not_ready = _runner_not_ready_for(user_id, conn_id, strat, target[1])
             if not_ready:
                 return _render_configure(user_id, conn_id, error=not_ready)
+        if is_proposer and sizing_mode == sizing.DYNAMIC:
+            if svc.get_config(user_id, conn_id, "runner_decision_abi") != ex.PROPOSER_DECISION_ABI:
+                return _render_configure(user_id, conn_id, error=(
+                    "Dynamic sizing requires the updated Proposer runner. Restart it first; nothing was changed."))
 
         try:
             lots = int(request.form.get("lots", "1"))
@@ -741,6 +758,8 @@ def configure():
         except ValueError:
             cap = 3000.0
         svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap))
+        if sizing_changed:
+            svc.set_config(user_id, conn_id, "proposer_sizing_mode", sizing_mode)
 
         # Strategy preset -> decision_engine + strategy_version. Only applied when
         # a known preset is submitted, so an unrelated POST never clobbers it.

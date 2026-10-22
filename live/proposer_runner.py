@@ -37,6 +37,7 @@ from storage.live_db import get_live_conn, init_live_db
 from live import live_executor as ex
 from live import live_runner as lr
 from live import live_service as svc
+from live import proposer_sizing as sizing
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
 from live.engine import proposer_strike as ps
@@ -724,11 +725,15 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     """One cycle for one Proposer connection. Returns True while a position is open."""
     clock = ctx.setdefault("clocks", {})[conn_id] = StepClock()
     if not publish_heartbeat(user_id, conn_id, ctx["task_id"]):
+        if ctx.get("funds_cache") is not None:
+            ctx["funds_cache"].unwatch((user_id, conn_id))
         return False
     mode = ex.get_mode(user_id, conn_id)
     st = svc.get_trade_state(user_id, conn_id)
     is_open = (st.get("position") or "NONE").upper() == "OPEN"
     if mode == ex.Mode.DISARMED:
+        if ctx.get("funds_cache") is not None:
+            ctx["funds_cache"].unwatch((user_id, conn_id))
         if is_open and not int(st.get("virtual") or 0):
             adapter = _adapter(user_id, conn_id, ctx["adapters"], adapter_factory)
             try:
@@ -739,13 +744,27 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                 log.warning("disarmed reconcile failed conn=%s: %s", conn_id, type(e).__name__)
         return False
     if not lr.market_session_available(now.replace(tzinfo=None)):
+        if ctx.get("funds_cache") is not None:
+            ctx["funds_cache"].unwatch((user_id, conn_id))
         return False
     dry_run = mode == ex.Mode.DRY_RUN
     clock.mark("state")
     adapter = _adapter(user_id, conn_id, ctx["adapters"], adapter_factory)
     clock.mark("broker_session")
     if adapter is None:
+        if ctx.get("funds_cache") is not None:
+            ctx["funds_cache"].unwatch((user_id, conn_id))
         return is_open
+    sizing_mode = svc.get_config(user_id, conn_id, "proposer_sizing_mode") or sizing.FIXED
+    funds_key = (user_id, conn_id)
+    funds_cache = ctx.get("funds_cache")
+    if sizing_mode == sizing.DYNAMIC and OPEN_BAR <= now.time() < EOD_FLAT:
+        if funds_cache is None:
+            funds_cache = ctx["funds_cache"] = sizing.FundsCache(
+                on_result=lambda key, funds, error: svc.update_connection_funds(*key, funds, error))
+        funds_cache.watch(funds_key, adapter)
+    elif funds_cache is not None:
+        funds_cache.unwatch(funds_key)
     if not dry_run and is_open and int(st.get("virtual") or 0):
         log.warning("LIVE mode clearing leftover DRY position conn=%s", conn_id)
         svc.reset_trade_state(user_id, conn_id)
@@ -850,9 +869,13 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         # Live crosses the spread by the marketable buffer; DRY_RUN books at the bid, as the
         # NIFTY runner does, so a paper day-target bank is not shaved 0.6% short of its trigger.
         price = ref if dry_run else lr._marketable_limit("SELL", ref)
+        if funds_cache is not None:
+            funds_cache.invalidate(funds_key)
         result = _route(adapter, user_id, conn_id, action="EXIT", side=st.get("side"),
                         symbol=st["symbol"], qty=int(st.get("qty") or 0), price=price,
                         dry_run=dry_run, key_ts=now.strftime("%Y-%m-%dT%H:%M") + f"|{sig.reason}")
+        if funds_cache is not None:
+            funds_cache.invalidate(funds_key)
         if lr._freshly_applied(result, dry_run=dry_run):
             lr._record_exit_result(user_id, conn_id, st,
                                    exit_price=result.avg_fill_price or (ltp if dry_run else price),
@@ -890,16 +913,36 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         if lots < configured:
             notify_telegram(f"Proposer ENTER {sig.side}: {configured} lots is above the {profile.underlying} freeze "
                             f"quantity; sending {lots} lots")
+        price_cap = price * (1 + lr.ENTRY_CHASE_CAP_PCT)
+        if sizing_mode == sizing.DYNAMIC:
+            funds = funds_cache.get(funds_key)
+            if funds is None:
+                log.warning("dynamic sizing: no fresh funds snapshot; using fixed %s lots conn=%s",
+                            lots, conn_id)
+            else:
+                lots = sizing.affordable_lots(lots, profile.lot_size, price_cap, funds)
+                log.info("dynamic size conn=%s configured=%s chosen=%s funds=%.2f price_cap=%.2f",
+                         conn_id, configured, lots, funds, price_cap)
+                if lots < 1:
+                    log.info("entry skipped: funds cannot cover one lot conn=%s", conn_id)
+                    return False
+        elif sizing_mode != sizing.FIXED:
+            log.warning("entry skipped: unknown sizing mode conn=%s", conn_id)
+            return False
         sent: dict = {}
         price_fn = None if dry_run else _entry_price_fn(
-            market, symbol, price * (1 + lr.ENTRY_CHASE_CAP_PCT), sent, profile)
+            market, symbol, price_cap, sent, profile)
         key_ts = snap.get("x5_asof") or "none"
         step_downs = 0
+        if funds_cache is not None:
+            funds_cache.invalidate(funds_key)
         while True:
             result = _route(adapter, user_id, conn_id, action="ENTER", side=sig.side, symbol=broker_sym,
                             qty=lots * profile.lot_size, price=price, dry_run=dry_run,
                             key_ts=key_ts + (f"|lots{lots}" if step_downs else ""),
                             entry_rule=sig.reason or "none", price_fn=price_fn)
+            if funds_cache is not None:
+                funds_cache.invalidate(funds_key)
             smaller = None if dry_run else ex.stepped_down_lots(lots, result)
             if not smaller or step_downs >= ex.LOT_STEP_DOWN_MAX:
                 break
@@ -990,9 +1033,11 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
             except Exception as e:
                 log.error("predictor feed error: %s", e)
             try:
+                proposer_connections = set()
                 for user_id, conn_id in svc.runner_connections():
                     if not ex.is_proposer_strategy(svc.get_config(user_id, conn_id, "strategy_version")):
                         continue
+                    proposer_connections.add((user_id, conn_id))
                     try:
                         any_open |= bool(process_connection(user_id, conn_id, ctx=ctx, feed=feed,
                                                             market=market, now=now,
@@ -1002,6 +1047,8 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
                     took = ctx.get("clocks", {}).get(conn_id)
                     if took is not None and took.total() >= SLOW_CYCLE_S:
                         log.info("cycle timing conn=%s took %.1fs (%s)", conn_id, took.total(), took.text())
+                if ctx.get("funds_cache") is not None:
+                    ctx["funds_cache"].retain(proposer_connections)
             except Exception as e:
                 log.error("proposer loop error: %s", e)
             cycles += 1
@@ -1010,6 +1057,8 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
             time.sleep(POLL_OPEN_S if any_open else POLL_FLAT_S)
     finally:
         stop.set()
+        if ctx.get("funds_cache") is not None:
+            ctx["funds_cache"].close()
         if hb is not None:
             hb.join(timeout=6)
 

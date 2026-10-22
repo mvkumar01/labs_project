@@ -40,10 +40,26 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
         <div class="field">
-          <label for="lots">Number of lots</label>
+          <label for="lots" id="lots-label">{{ 'Maximum lots' if strategy in proposer_presets and proposer_sizing_mode == 'dynamic' else 'Number of lots' }}</label>
           <input type="number" id="lots" name="lots" min="1" step="1"
                  value="{{ lots }}">
           <div class="hint">NIFTY 1 lot = {{ lot_sizes.NIFTY }} qty · BANKNIFTY 1 lot = {{ lot_sizes.BANKNIFTY }} qty · SENSEX 1 lot = {{ lot_sizes.SENSEX }} qty. No lot cap. One order cannot exceed the exchange freeze quantity (NIFTY {{ freeze_qty.NIFTY }} · SENSEX {{ freeze_qty.SENSEX }} qty), so a larger entry is sent at the freeze size. If the broker rejects an entry for its size (freeze or margin), the bot retries at half the lots, down to 1 lot, and alerts you.</div>
+        </div>
+
+        <div class="field" id="proposer-sizing-field" {{ '' if strategy in proposer_presets else 'hidden' }}>
+          <label for="proposer_sizing_mode">Lot sizing</label>
+          <select id="proposer_sizing_mode" name="proposer_sizing_mode">
+            {% for key, label in proposer_sizing_modes.items() %}
+            <option value="{{ key }}" {{ 'selected' if proposer_sizing_mode == key else '' }}>{{ label }}</option>
+            {% endfor %}
+          </select>
+          <div class="hint">Fixed uses the selected lots, halving after a broker funds rejection (4 → 2 → 1).
+            Dynamic treats the selected lots as a maximum and chooses whole lots from a balance refreshed
+            in the background. No balance request is added when a signal arrives. It budgets at the maximum
+            allowed entry price plus 3% headroom. If the balance is unavailable or over 60 seconds old,
+            it uses Fixed sizing for that entry; Dynamic remains selected for future entries.
+            A fresh balance that cannot cover one buffered lot skips the entry.
+            Broker rejection fallback remains active. Dynamic also uses the broker balance in DRY_RUN, without placing orders.</div>
         </div>
 
         <div class="field">
@@ -84,12 +100,23 @@
             const s = document.getElementById('strategy'), f = document.getElementById('v45-floor-field');
             const g = document.getElementById('v45-target-field'), d = document.getElementById('day_target');
             const c = document.getElementById('day_target_custom');
+            const sizingField = document.getElementById('proposer-sizing-field');
+            const sizingMode = document.getElementById('proposer_sizing_mode');
+            const lotsLabel = document.getElementById('lots-label');
+            const proposerPresets = {{ proposer_presets|tojson }};
+            const updateSizing = () => {
+              const proposer = proposerPresets.includes(s.value);
+              sizingField.hidden = !proposer;
+              lotsLabel.textContent = proposer && sizingMode.value === 'dynamic' ? 'Maximum lots' : 'Number of lots';
+            };
             if (!s || !f) return;
+            sizingMode.addEventListener('change', updateSizing);
             s.addEventListener('change', () => {
               f.hidden = s.value !== '{{ v45_preset }}';
               g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1'].includes(s.value);
               d.value = s.value === 'nifty_scalper_v1' ? '1.5' : '3.5';
               c.hidden = true;
+              updateSizing();
             });
             d.addEventListener('change', () => { c.hidden = d.value !== 'other'; if (!c.hidden) c.focus(); });
           })();
