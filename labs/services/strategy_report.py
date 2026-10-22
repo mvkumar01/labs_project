@@ -59,6 +59,7 @@ for _key in ('proposer_px', 'proposer_v3', 'proposer_v3_dt35', 'proposer_v4',
              'proposer_v5', 'proposer_v5_dt25', 'proposer_v3_dt35_clock'):
     SOURCES[_key] = Source(_key + '_trades', 'SENSEX', 2000)
 SOURCES['proposer_nifty_v5'] = Source('proposer_nifty_v5_trades', 'NIFTY')
+SOURCES['bn_alpha'] = Source('bn_alpha_trades', 'BANKNIFTY', 30)
 PAGE_SIZES = (10, 20, 25, 50, 100, 150, 200)
 
 def page_size(value):

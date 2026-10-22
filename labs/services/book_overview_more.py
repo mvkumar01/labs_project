@@ -22,6 +22,7 @@ MORE_BOOKS = {
     "proposer_v3_dt35": {"label": "Sensex V3 3.5%", "instrument": "SENSEX options", "size": "100 lots"},
     "proposer_v4": {"label": "Sensex V4", "instrument": "SENSEX options", "size": "100 lots"},
     "proposer_v5": {"label": "Sensex V5", "instrument": "SENSEX options", "size": "100 lots"},
+    "bn_alpha": {"label": "BANKNIFTY Alpha", "instrument": "BANKNIFTY options", "size": "1 lot"},
     "proposer_v5_dt25": {"label": "Sensex V5 2.5%", "instrument": "SENSEX options", "size": "100 lots"},
     "proposer_nifty_v5": {"label": "Nifty Scalper V1", "instrument": "NIFTY options", "size": "Rs 12L a trade"},
     "proposer_v3_dt35_clock": {"label": "Sensex V3 3.5% · Pramanaa timing", "instrument": "SENSEX options",
@@ -88,6 +89,17 @@ def _proposer(conn, key: str, today: str) -> dict:
     return _card(key, MORE_BOOKS[key], daily, today, capital=capital,
                  position=f"Long {held[-1]['side']}" if held else "Flat",
                  trades=sum(1 for t in trades if t["exit_ts"]))
+
+
+def _bn_alpha(conn, today: str) -> dict:
+    daily = [{"trade_date": r["trade_date"], "net": _f(r["net_rs"])} for r in _rows(
+        conn, "SELECT trade_date, net_rs FROM bn_alpha_daily WHERE status IN ('traded','no_trade','live','partial_quotes')")]
+    trades = _rows(conn, "SELECT trade_date, side, status, entry_ask, qty FROM bn_alpha_trades")
+    held = [t for t in trades if t["trade_date"] == today and t["status"] == "open"]
+    capital = max((_f(t["entry_ask"]) * _f(t["qty"]) for t in trades), default=0.0)
+    return _card("bn_alpha", MORE_BOOKS["bn_alpha"], daily, today, capital=capital,
+                 position=f"Long {held[-1]['side']}" if held else "Flat",
+                 trades=sum(1 for t in trades if t["status"] == "closed"))
 
 
 def _expiry_sale(conn, book: str, today: str) -> dict:
@@ -268,6 +280,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "proposer_v3_dt35": lambda: _proposer(conn, "proposer_v3_dt35", today),
         "proposer_v4": lambda: _proposer(conn, "proposer_v4", today),
         "proposer_v5": lambda: _proposer(conn, "proposer_v5", today),
+        "bn_alpha": lambda: _bn_alpha(conn, today),
         "proposer_v5_dt25": lambda: _proposer(conn, "proposer_v5_dt25", today),
         "proposer_nifty_v5": lambda: _proposer(conn, "proposer_nifty_v5", today),
         "proposer_v3_dt35_clock": lambda: _proposer(conn, "proposer_v3_dt35_clock", today),

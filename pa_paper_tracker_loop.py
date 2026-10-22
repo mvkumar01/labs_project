@@ -50,6 +50,7 @@ def main() -> None:
     from labs.engine.proposer_v3_dt35_book import run_day as run_proposer_v3_dt35_day
     from labs.engine.proposer_v4_book import run_day as run_proposer_v4_day
     from labs.engine.proposer_v5_book import run_day as run_proposer_v5_day
+    from labs.engine.bn_alpha_tracker import run_paper_day as run_bn_alpha_day
     from labs.engine.proposer_v5_dt25_book import run_day as run_proposer_v5_dt25_day
     from labs.engine.proposer_nifty_v5_book import run_day as run_proposer_nifty_v5_day
     from labs.engine.proposer_v3_dt35_clock_book import run_day as run_proposer_v3_dt35_clock_day
@@ -83,6 +84,7 @@ def main() -> None:
         "proposer_v3_dt35": None,
         "proposer_v4": None,
         "proposer_v5": None,
+        "bn_alpha": None,
         "proposer_v5_dt25": None,
         "proposer_nifty_v5": None,
         "proposer_v3_dt35_clock": None,
@@ -118,6 +120,7 @@ def main() -> None:
                 ("proposer_v3_dt35", run_proposer_v3_dt35_day),
                 ("proposer_v4", run_proposer_v4_day),
                 ("proposer_v5", run_proposer_v5_day),
+                ("bn_alpha", run_bn_alpha_day),
                 ("proposer_v5_dt25", run_proposer_v5_dt25_day),
                 ("proposer_nifty_v5", run_proposer_nifty_v5_day),
                 ("proposer_v3_dt35_clock", run_proposer_v3_dt35_clock_day),
