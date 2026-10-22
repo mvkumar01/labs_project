@@ -142,6 +142,63 @@ def test_template_renders_rupee_and_negative_no_escaped_entity():
         assert label in html
 
 
+def test_responsive_ledger_keeps_trade_fields_and_excursion_targets():
+    from html.parser import HTMLParser
+
+    class LedgerParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.groups = []
+            self.excursions = []
+            self.trade_ids = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == 'td' and 'data-label' in attrs:
+                self.groups.append(attrs['data-label'])
+            if 'data-excursion' in attrs:
+                self.excursions.append(attrs['data-excursion'])
+            if 'data-trade-id' in attrs:
+                self.trade_ids.append(attrs['data-trade-id'])
+
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader('templates'), autoescape=True)
+    env.globals['url_for'] = lambda *args, **kwargs: '/labs/live'
+    panel = make_report([trade()], SOURCES['gold_cci'], 'gold_cci', 'Gold')
+    html = env.get_template('_strategy_report.html').render(report_panels=[panel])
+    parsed = LedgerParser()
+    parsed.feed(html)
+    assert parsed.groups == ['Trade', 'Timing', 'Capital & prices', 'Result', 'Exit', 'Peaks & trough']
+    assert parsed.trade_ids == [panel['trades'][0]['id']]
+    assert parsed.excursions == ['peak', 'day_peak', 'post_peak', 'post_trough']
+    for label in ('Entry time', 'Exit time', 'Duration', 'Direction', 'Qty (units)',
+                  'Entry capital', 'Exit premium / value', 'Spot points', 'Target',
+                  'Gross P&amp;L', 'Costs', 'Net P&amp;L', 'P&amp;L %', 'Exit rule'):
+        assert label in html
+
+
+def test_overview_keeps_individual_performance_tiles_and_filtered_detail_links():
+    from html import unescape
+    from urllib.parse import urlencode
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader('templates'), autoescape=True)
+    env.globals['url_for'] = lambda endpoint, **kw: '/labs/live?' + urlencode(kw)
+    cards = [dict(key=key, label=label, size='1 lot', instrument='Options',
+                  status='Running', today_net=0, position='Flat', open_net=0,
+                  win_pct=50, win_days=1, active_days=2, capital=10000,
+                  total_net=net, return_pct=None, trades=2, sessions=2,
+                  last_date='2026-10-22')
+             for key, label, net in [('proposer_nifty_v5', 'Nifty Scalper V1', 1234),
+                                     ('proposer_v5_dt25', 'Sensex V5 2.5%', -567)]]
+    html = env.get_template('_overview.html').render(
+        overview_cards=cards, live_tabs={'overview': 'Overview'}, active_live_tab='overview',
+        date_from='2026-10-09', date_to='2026-10-22')
+    assert html.count('class="ov-card"') == 2
+    assert 'Nifty Scalper V1' in html and 'Sensex V5 2.5%' in html
+    assert '+₹1,234' in unescape(html) and '-₹567' in unescape(html)
+    assert html.count('Selected-range P&amp;L') >= 2
+    assert 'tab=proposer_nifty_v5' in html and 'tab=proposer_v5_dt25' in html
+    assert html.count('date_from=2026-10-09&amp;date_to=2026-10-22') == 2
+
+
 def marks(day='2026-10-22'):
     return [(datetime.fromisoformat(day+'T'+t).replace(tzinfo=IST),lo,hi,cl) for t,lo,hi,cl in [
         ('10:01:00',95,105,100),('10:30:00',80,110,90),('11:02:00',70,120,80)]]

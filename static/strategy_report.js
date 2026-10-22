@@ -1,3 +1,12 @@
+/* Keep labels available when tables reflow into cards on smaller screens. */
+document.querySelectorAll('.strategy-dashboard table').forEach(table => {
+  const headers = [...table.querySelectorAll('thead tr:last-child th')].map(th => th.textContent.trim());
+  table.querySelectorAll('tbody tr').forEach(row => {
+    [...row.cells].forEach((cell, index) => {
+      if (!cell.dataset.label && cell.colSpan === 1 && headers[index]) cell.dataset.label = headers[index];
+    });
+  });
+});
 /* Read-only excursion estimates load separately so ledger rendering stays fast. */
 document.querySelectorAll('.report-excursion-load').forEach(button => {
   button.addEventListener('click', async () => {

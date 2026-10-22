@@ -1,6 +1,6 @@
 {% from "_chrome.html" import theme_head, labs_nav, live_nav, theme_toggle %}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -30,8 +30,9 @@
     .formula{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--c-111827);
       border:1px solid var(--c-2b3445);border-radius:8px;padding:10px 12px;font-size:13px;margin:10px 0}
   </style>
+<link rel="stylesheet" href="/static/dashboard_theme.css">
 </head>
-<body>
+<body class="strategy-dashboard">
 <div class="page">
   <header class="topbar">
     <span class="logo">Labs</span>
@@ -39,25 +40,30 @@
   </header>
 
   <main>
-    <div class="live-tabs">
-      {% for key, label in live_tabs.items() %}
-      {% if key not in archive_tabs %}
-      <a href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == key or (key == 'archive' and active_live_tab in archive_tabs) else '' }}">{{ label }}</a>
-      {% endif %}
-      {% endfor %}
+    <div class="workspace-bar">
+      <nav class="workspace-links" aria-label="Strategy workspace">
+        <a href="{{ url_for('labs.live_strategy', tab='overview', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'overview' else '' }}">Overview</a>
+        <a href="{{ url_for('labs.live_strategy', tab='archive', date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == 'archive' or active_live_tab in archive_tabs else '' }}">Archive</a>
+      </nav>
+      <form method="get" action="{{ url_for('labs.live_strategy') }}" class="strategy-picker">
+        <input type="hidden" name="report_size" value="{{ request.args.get('report_size', '100') }}">
+        <input type="hidden" name="date_from" value="{{ date_from or '' }}">
+        <input type="hidden" name="date_to" value="{{ date_to or '' }}">
+        <label for="strategy-select">Strategy</label>
+        <select id="strategy-select" name="tab" onchange="this.form.submit()">
+          <option value="overview"{{ ' selected' if active_live_tab == 'overview' else '' }}>All strategies</option>
+          <optgroup label="Active strategies">{% for key,label in live_tabs.items() %}{% if key not in archive_tabs and key not in ['overview','archive'] %}<option value="{{ key }}"{{ ' selected' if active_live_tab == key else '' }}>{{ label }}</option>{% endif %}{% endfor %}</optgroup>
+          <optgroup label="Archived strategies">{% for key,label in archive_tabs.items() %}<option value="{{ key }}"{{ ' selected' if active_live_tab == key else '' }}>{{ label }}</option>{% endfor %}</optgroup>
+          <option value="archive"{{ ' selected' if active_live_tab == 'archive' else '' }}>Archive overview</option>
+        </select>
+        <noscript><button type="submit">View</button></noscript>
+      </form>
     </div>
-
-    {% if active_live_tab in archive_tabs %}
-    <div class="live-tabs" aria-label="Archived strategies">
-      {% for key, label in archive_tabs.items() %}
-      <a href="{{ url_for('labs.live_strategy', tab=key, date_from=date_from, date_to=date_to) }}" class="{{ 'active' if active_live_tab == key else '' }}">{{ label }}</a>
-      {% endfor %}
-    </div>
-    {% endif %}
 
     {% if active_live_tab != 'archive' %}
-    <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter" style="display:flex;gap:10px;align-items:center;margin:12px 0;font-size:13px;flex-wrap:wrap;">
+    <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter">
       <input type="hidden" name="tab" value="{{ active_live_tab }}">
+      <input type="hidden" name="report_size" value="{{ request.args.get('report_size', '100') }}">
       <strong>Date filter</strong>
       <label>From <input type="date" name="date_from" value="{{ date_from or '' }}"></label>
       <label>To <input type="date" name="date_to" value="{{ date_to or '' }}"></label>

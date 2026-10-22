@@ -54,7 +54,7 @@
 
 <div class="ov-grid">
 {% for c in overview_cards %}
-  <div class="ov-card">
+  <div class="ov-card" data-strategy-key="{{ c.key }}">
     <div class="ov-top">
       <div>
         <div class="ov-title">{{ c.label }}</div>
@@ -80,7 +80,7 @@
     <div class="ov-sep"></div>
     <div class="ov-row"><span class="l" title="Largest single commitment: premium paid, margin or defined-risk capital">Capital deployed</span>
       <span class="r">{{ money(c.capital, false, cur) }}</span></div>
-    <div class="ov-row"><span class="l">Total P&amp;L</span>
+    <div class="ov-row"><span class="l">{{ 'Selected-range P&L' if date_from or date_to else 'Total P&L' }}</span>
       <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net, true, cur) }}{% if c.return_pct is not none %} ({{ "%+.1f"|format(c.return_pct) }}%){% endif %}</span></div>
     <div class="ov-meta" style="margin-top:2px">{% if c.trades is defined %}{{ c.trades }} trades &middot; {% endif %}{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
     {% if c.note is defined %}<div class="ov-note">{{ c.note }}</div>{% endif %}
