@@ -83,9 +83,11 @@ def _card(key: str, meta: dict, daily: list[dict], today: str, *, capital: float
 def _proposer(conn, key: str, today: str) -> dict:
     daily = [{"trade_date": r["trade_date"], "net": _f(r["net_rs"])} for r in _rows(
         conn, f"SELECT trade_date, net_rs FROM {key}_daily WHERE status IN ('closed','no_trade','live')")]
-    trades = _rows(conn, f"SELECT trade_date, side, entry_price, exit_ts FROM {key}_trades")
+    trades = _rows(conn, f"SELECT * FROM {key}_trades")
     held = [t for t in trades if t["trade_date"] == today and not t["exit_ts"]]
-    capital = max((_f(t["entry_price"]) * SENSEX_PAPER_QTY for t in trades), default=0.0)
+    from labs.services.capital_metrics import peak_deployed_capital
+    from labs.services.strategy_report import SOURCES, normalized_trades
+    capital = peak_deployed_capital(normalized_trades(trades, SOURCES[key], key))
     return _card(key, MORE_BOOKS[key], daily, today, capital=capital,
                  position=f"Long {held[-1]['side']}" if held else "Flat",
                  trades=sum(1 for t in trades if t["exit_ts"]))

@@ -1,0 +1,49 @@
+import sqlite3
+from labs.services.capital_metrics import peak_deployed_capital
+from labs.services.book_overview_more import _proposer
+
+
+def position(capital, entry, exit_=None):
+    return dict(capital=capital, entry_ts='2026-10-22T'+entry,
+                exit_ts='2026-10-22T'+exit_ if exit_ else None)
+
+
+def test_sequential_trades_reuse_capital():
+    assert peak_deployed_capital([position(100000,'09:30','10:00'),
+                                  position(130000,'10:00','11:00')]) == 130000
+
+
+def test_simultaneous_positions_add_only_while_they_overlap():
+    assert peak_deployed_capital([position(100000,'09:30','11:00'),
+                                  position(130000,'10:00','10:30'),
+                                  position(300000,'12:00','13:00')]) == 300000
+    assert peak_deployed_capital([position(100000,'09:30'),position(130000,'10:00')]) == 230000
+
+
+def test_unknown_capital_or_timing_is_not_a_known_peak():
+    assert peak_deployed_capital([position(None,'09:30')]) is None
+    assert peak_deployed_capital([dict(capital=100000)]) is None
+
+
+def test_nifty_uses_recorded_quantity_instead_of_sensex_fixed_units():
+    conn=sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE proposer_nifty_v5_daily (trade_date TEXT,net_rs REAL,status TEXT)')
+    conn.execute("INSERT INTO proposer_nifty_v5_daily VALUES ('2026-10-22',20000,'closed')")
+    conn.execute('CREATE TABLE proposer_nifty_v5_trades (trade_date TEXT,seq INTEGER,side TEXT,entry_price REAL,exit_price REAL,gross_rs REAL,entry_ts TEXT,exit_ts TEXT)')
+    for seq,entry,exit_,qty in [(1,100,110,11960),(2,200,210,5980)]:
+        conn.execute('INSERT INTO proposer_nifty_v5_trades VALUES (?,?,?,?,?,?,?,?)',
+                     ('2026-10-22',seq,'CALL',entry,exit_,(exit_-entry)*qty,
+                      f'2026-10-22T{8+seq:02d}:30:00',f'2026-10-22T{9+seq:02d}:00:00'))
+    card=_proposer(conn,'proposer_nifty_v5','2026-10-22')
+    assert card['capital']==1196000
+
+
+def test_sensex_fixed_size_is_peak_entry_cost_not_sum_of_reentries():
+    conn=sqlite3.connect(':memory:')
+    conn.execute('CREATE TABLE proposer_v5_dt25_daily (trade_date TEXT,net_rs REAL,status TEXT)')
+    conn.execute("INSERT INTO proposer_v5_dt25_daily VALUES ('2026-10-22',20000,'closed')")
+    conn.execute('CREATE TABLE proposer_v5_dt25_trades (trade_date TEXT,seq INTEGER,side TEXT,entry_price REAL,entry_ts TEXT,exit_ts TEXT)')
+    for seq,price in [(1,100),(2,200)]:
+        conn.execute('INSERT INTO proposer_v5_dt25_trades VALUES (?,?,?,?,?,?)',
+                     ('2026-10-22',seq,'CALL',price,f'2026-10-22T{8+seq:02d}:30:00',f'2026-10-22T{9+seq:02d}:00:00'))
+    assert _proposer(conn,'proposer_v5_dt25','2026-10-22')['capital']==400000

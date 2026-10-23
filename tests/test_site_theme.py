@@ -28,7 +28,7 @@ def test_tile_return_uses_planning_capital_for_selected_dates():
         active_live_tab='overview',live_tabs={'overview':'Overview'},date_from='2026-10-01',date_to='2026-10-22')
     from html import unescape
     text = unescape(html)
-    assert '₹130,000' in text and 'Recorded max ₹126,487' in text
+    assert '₹130,000' in text and 'Recorded peak at one time ₹126,487' in text
     assert '(+10.0%)' in text and '66.7%' in text and '66.666666%' not in text
     assert card['capital'] == 126487 and card['return_pct'] == 10.2777
 
