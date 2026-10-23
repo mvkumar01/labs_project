@@ -14,6 +14,12 @@ def test_sequential_trades_reuse_capital():
                                   position(130000,'10:00','11:00')]) == 130000
 
 
+def test_same_second_round_trips_still_deploy_capital_without_double_counting():
+    assert peak_deployed_capital([position(100000,'09:30','10:00'),
+                                  position(130000,'10:00','10:00'),
+                                  position(120000,'10:00','11:00')]) == 130000
+
+
 def test_simultaneous_positions_add_only_while_they_overlap():
     assert peak_deployed_capital([position(100000,'09:30','11:00'),
                                   position(130000,'10:00','10:30'),
@@ -32,7 +38,19 @@ def test_flat_nifty_trade_quantity_requires_matching_recorded_charges():
                charges_rs=round_trip_charges(100,100,11960)['total'])
     assert recorded_nifty_quantity(trade)==11960
     assert recorded_nifty_quantity(dict(trade,charges_rs=trade['charges_rs']+1)) is None
-    assert recorded_nifty_quantity(dict(trade,gross_rs=100)) is None
+    assert recorded_nifty_quantity(dict(trade,gross_rs=1000)) is None
+
+
+def test_nifty_quantity_reconciles_the_precision_of_stored_premiums():
+    from labs.engine.charges import round_trip_charges
+    from labs.services.strategy_report import normalize,SOURCES
+    entry,exit_,qty=100.004,100.006,11960
+    trade=dict(trade_date='2026-10-22',seq=1,side='CALL',entry_price=round(entry,2),
+               exit_price=round(exit_,2),gross_rs=round((exit_-entry)*qty,2),
+               charges_rs=round_trip_charges(entry,exit_,qty)['total'],
+               entry_ts='2026-10-22T10:00:00',exit_ts='2026-10-22T11:00:00')
+    assert recorded_nifty_quantity(trade)==qty
+    assert normalize(trade,SOURCES['proposer_nifty_v5'],'proposer_nifty_v5')['qty']==qty
 
 
 def test_nifty_uses_recorded_quantity_instead_of_sensex_fixed_units():

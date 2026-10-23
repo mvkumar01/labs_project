@@ -135,10 +135,13 @@ def normalize(row, spec, key):
         xp = sum(number(row.get(x)) or 0 for x in ('call_bought', 'put_bought')) or None
     qty = number(row.get('qty'))
     gross = number(pick(row, 'gross_rs', 'gross_pnl', 'option_gross_rs'))
+    if qty is None and key == 'proposer_nifty_v5':
+        from labs.services.capital_metrics import recorded_nifty_quantity
+        qty = recorded_nifty_quantity(row)
     # Recover recorded execution quantity only where premium arithmetic reconciles exactly.
     if qty is None and ep is not None and xp is not None and gross is not None and xp != ep:
         implied = gross / ((ep - xp) if short else (xp - ep))
-        if implied > 0 and abs(implied - round(implied)) < .02:
+        if implied > 0 and abs(implied - round(implied)) < .02 and (key != 'proposer_nifty_v5' or round(implied) % 65 == 0):
             qty = float(round(implied))
     qty = qty if qty is not None else spec.qty
     charges = number(pick(row, 'charges_rs', 'charges_total', 'costs_rs'))
