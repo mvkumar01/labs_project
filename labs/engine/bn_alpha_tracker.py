@@ -64,7 +64,7 @@ TRAIL_ARM, TRAIL_DIST = 100.0, 50.0
 FIRST_MARK, LAST_MARK = time(9, 15), time(15, 25)
 STRATEGY_VERSION = "bn_alpha_pc400_t30_tgt100_sl30_trail100_50_atm_monthly_v1"
 PAPER_START = "2026-06-01"        # the first sessions the labs store holds BANKNIFTY quotes for
-FIRST_UNSEEN = "2026-10-26"       # the research ends 2026-10-21; the book runs forward from here
+FIRST_UNSEEN = "2026-10-22"       # the first session after the research data (which ends 2026-10-21)
 REFERENCE = {"trades": 126, "sessions": 115, "points": 7368.3, "green_pct": 63.5}
 
 
