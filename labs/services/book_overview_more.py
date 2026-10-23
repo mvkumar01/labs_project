@@ -85,8 +85,10 @@ def _proposer(conn, key: str, today: str) -> dict:
         conn, f"SELECT trade_date, net_rs FROM {key}_daily WHERE status IN ('closed','no_trade','live')")]
     trades = _rows(conn, f"SELECT * FROM {key}_trades")
     held = [t for t in trades if t["trade_date"] == today and not t["exit_ts"]]
-    from labs.services.capital_metrics import peak_deployed_capital
+    from labs.services.capital_metrics import peak_deployed_capital, recorded_nifty_quantity
     from labs.services.strategy_report import SOURCES, normalized_trades
+    if key == 'proposer_nifty_v5':
+        trades = [dict(t, qty=recorded_nifty_quantity(t)) if t.get('qty') is None else t for t in trades]
     capital = peak_deployed_capital(normalized_trades(trades, SOURCES[key], key))
     return _card(key, MORE_BOOKS[key], daily, today, capital=capital,
                  position=f"Long {held[-1]['side']}" if held else "Flat",

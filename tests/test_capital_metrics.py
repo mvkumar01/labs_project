@@ -1,5 +1,6 @@
 import sqlite3
 from labs.services.capital_metrics import peak_deployed_capital
+from labs.services.capital_metrics import recorded_nifty_quantity
 from labs.services.book_overview_more import _proposer
 
 
@@ -23,6 +24,15 @@ def test_simultaneous_positions_add_only_while_they_overlap():
 def test_unknown_capital_or_timing_is_not_a_known_peak():
     assert peak_deployed_capital([position(None,'09:30')]) is None
     assert peak_deployed_capital([dict(capital=100000)]) is None
+
+
+def test_flat_nifty_trade_quantity_requires_matching_recorded_charges():
+    from labs.engine.charges import round_trip_charges
+    trade=dict(entry_price=100,exit_price=100,gross_rs=0,
+               charges_rs=round_trip_charges(100,100,11960)['total'])
+    assert recorded_nifty_quantity(trade)==11960
+    assert recorded_nifty_quantity(dict(trade,charges_rs=trade['charges_rs']+1)) is None
+    assert recorded_nifty_quantity(dict(trade,gross_rs=100)) is None
 
 
 def test_nifty_uses_recorded_quantity_instead_of_sensex_fixed_units():
