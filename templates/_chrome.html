@@ -3,8 +3,12 @@
 
 {% macro theme_head() -%}
 <link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/site_theme.css">
+<script src="/static/site_theme.js" defer></script>
 <script>
   (function () {
+    document.documentElement.classList.add('site-theme');
+    document.documentElement.setAttribute('data-theme', 'light');
     try {
       var saved = localStorage.getItem('labs-theme');
       if (saved) document.documentElement.setAttribute('data-theme', saved);

@@ -31,7 +31,7 @@ document.querySelectorAll('.report-excursion-load').forEach(button => {
           row.querySelectorAll('[data-excursion]').forEach(cell => {
             const value = values[cell.dataset.excursion];
             cell.textContent = value == null ? 'Unavailable' : new Intl.NumberFormat('en-IN', {
-              style: 'currency', currency: 'INR', maximumFractionDigits: 2
+              style: 'currency', currency: 'INR', maximumFractionDigits: 0
             }).format(value);
             cell.title = values.note;
           });

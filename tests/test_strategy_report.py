@@ -137,7 +137,7 @@ def test_template_renders_rupee_and_negative_no_escaped_entity():
     p=make_report([trade()],SOURCES['gold_cci'],'gold_cci','Gold')
     env.globals['url_for'] = lambda *args, **kwargs: '/labs/live'
     html=env.get_template('_strategy_report.html').render(report_panels=[p],date_from='2026-10-01',date_to='2026-10-22')
-    assert '₹93.00' in html and '&amp;#8377;' not in html
+    assert '₹93' in html and '₹93.00' not in html and '&amp;#8377;' not in html
     for label in ('Entry capital','Duration','Direction','Peak P&amp;L that day','Post-exit trough','Day win rate'):
         assert label in html
 
@@ -177,9 +177,11 @@ def test_responsive_ledger_keeps_trade_fields_and_excursion_targets():
 
 
 def test_overview_keeps_individual_performance_tiles_and_filtered_detail_links():
+    from labs.services.display_format import planning_capital
     from html import unescape
     from urllib.parse import urlencode
     env = jinja2.Environment(loader=jinja2.FileSystemLoader('templates'), autoescape=True)
+    env.filters['planning_capital'] = planning_capital
     env.globals['url_for'] = lambda endpoint, **kw: '/labs/live?' + urlencode(kw)
     cards = [dict(key=key, label=label, size='1 lot', instrument='Options',
                   status='Running', today_net=0, position='Flat', open_net=0,
@@ -282,7 +284,7 @@ def test_flask_page_filter_and_excursion_endpoint(tmp_path,monkeypatch):
     client=app.test_client()
     url='/labs/live?tab=gold_cci&date_from=2026-10-22&date_to=2026-10-22'
     response=client.get(url);html=response.get_data(as_text=True)
-    assert response.status_code==200 and 'Net P&amp;L after costs' in html and '₹93.00' in html
+    assert response.status_code==200 and 'Net P&amp;L after costs' in html and '₹93' in html and '₹93.00' not in html
     assert '2026-09-01' not in html
     assert client.get('/labs/api/strategy-report/excursions?tab=bad').status_code==400
     c=sqlite3.connect(path)
@@ -329,7 +331,7 @@ def test_page_size_dropdown_preserves_dates_and_resets_page(tmp_path,monkeypatch
     assert '<option value="10" selected>' in html
     assert 'name="report_page" value="1"' in html
     assert 'name="date_from" value="2026-10-22"' in html
-    assert 'report_size=10' in html and '₹2,046.00' in html
+    assert 'report_size=10' in html and '₹2,046' in html and '₹2,046.00' not in html
 
 
 

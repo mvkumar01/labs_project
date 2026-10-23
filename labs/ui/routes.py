@@ -27,6 +27,8 @@ from labs.services.calibration_service import (
 )
 
 labs_bp = Blueprint("labs", __name__, url_prefix="/labs")
+from labs.services.display_format import planning_capital
+labs_bp.add_app_template_filter(planning_capital, "planning_capital")
 
 _FORM_DEFAULTS = dict(
     underlyings=list(UNDERLYINGS.keys()),

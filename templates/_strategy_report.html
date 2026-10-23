@@ -1,5 +1,5 @@
 {% macro money(value, currency='INR') -%}
-  {%- if value is not none -%}{{ '$' if currency == 'USD' else '₹' }}{{ '{:,.2f}'.format(value) }}{%- else -%}<span class="muted" title="Not recorded or not applicable">—</span>{%- endif -%}
+  {%- if value is not none -%}{{ '$' if currency == 'USD' else '₹' }}{{ ('{:,.2f}' if currency == 'USD' else '{:,.0f}').format(value) }}{%- else -%}<span class="muted" title="Not recorded or not applicable">—</span>{%- endif -%}
 {%- endmacro %}
 {% macro percent(value) -%}{{ '%.1f%%'|format(value) if value is not none else '—' }}{%- endmacro %}
 {% for panel in report_panels %}
