@@ -57,6 +57,17 @@ def test_weekly_baseline_is_matched_by_date_and_monthly_by_month(tmp_path, monke
         nna.baseline(DAY, "26N10")
 
 
+def test_a_baseline_without_expiry_is_refused_not_guessed(tmp_path, monkeypatch):
+    # codeB's old one-expiry format: on 2 Jun 2026 it held the 9 Jun weekly, not the expiring 2 Jun one
+    monkeypatch.setattr(nna, "PREV_DAY_DIR", tmp_path)
+    pd.DataFrame({"symbol": "NIFTY", "strike": [25500, 25500], "type": ["ce", "pe"], "oi": [10, 20]}).to_csv(
+        tmp_path / "prev_day_oi_NIFTY_2026-06-01.csv", index=False)
+    pd.DataFrame({"symbol": "NIFTY", "strike": [25500], "type": ["ce"], "oi": [5], "expiry": ["2026-06-02"]}).to_csv(
+        tmp_path / "prev_day_oi_NIFTY_2026-05-29.csv", index=False)
+    with pytest.raises(core.BnAlphaInputError, match="no expiry column"):
+        nna.baseline("2026-06-02", "26602")
+
+
 def _day_inputs(monkeypatch, spots):
     """Marks every 5 minutes; alpha crosses +30 at 09:20 and stays below the target; `spots` = 1-min closes from 09:15."""
     t = [pd.Timestamp(f"{DAY} 09:15") + pd.Timedelta(minutes=5 * i) for i in range(len(spots) // 5 + 1)]

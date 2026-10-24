@@ -74,7 +74,9 @@ def spot_bars(day: str) -> dict:
 
 
 def baseline(day: str, expiry_code: str) -> tuple[pd.DataFrame, str]:
-    """The previous session's settled OI for exactly this expiry (a weekly by date, a monthly code by month)."""
+    """The previous session's settled OI for exactly this expiry (a weekly by date, a monthly code by month).
+    codeB's older files (before 2 Jun 2026) hold one expiry with no expiry column; one of those cannot be
+    matched to the session's contract (on 2 Jun it held the next week's), so the day is not traded."""
     exp = expiry_sort_date(expiry_code)
     monthly = is_monthly_expiry(expiry_code)
     for prev in core._previous_weekdays(day):
@@ -82,14 +84,15 @@ def baseline(day: str, expiry_code: str) -> tuple[pd.DataFrame, str]:
         if not path.is_file():
             continue
         f = pd.read_csv(path)
+        if "expiry" not in f.columns or exp is None:
+            raise core.BnAlphaInputError(f"{path.name} has no expiry column: cannot match {expiry_code}")
         if "symbol" in f.columns:
             f = f[f["symbol"].astype(str).str.upper() == SYMBOL]
-        if "expiry" in f.columns and exp is not None:
-            e = pd.to_datetime(f["expiry"].astype(str), errors="coerce")
-            if monthly:
-                f = f[(e.dt.year == exp.year) & (e.dt.month == exp.month) & (e.dt.date >= date.fromisoformat(day))]
-            else:
-                f = f[e.dt.date == exp]
+        e = pd.to_datetime(f["expiry"].astype(str), errors="coerce")
+        if monthly:
+            f = f[(e.dt.year == exp.year) & (e.dt.month == exp.month) & (e.dt.date >= date.fromisoformat(day))]
+        else:
+            f = f[e.dt.date == exp]
         f = f.assign(type=f["type"].astype(str).str.lower(),
                      strike=pd.to_numeric(f["strike"], errors="coerce"),
                      oi=pd.to_numeric(f["oi"], errors="coerce")).dropna(subset=["strike", "oi"])
