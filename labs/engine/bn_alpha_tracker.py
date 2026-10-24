@@ -176,15 +176,16 @@ def nearest_expiry(codes, day: str) -> str | None:
     return alive[0][1] if alive else None
 
 
-def range_for(close: float) -> tuple[int, int]:
-    c = int(round(close / STRIKE_STEP) * STRIKE_STEP)
-    return c - HALF_WIDTH, c + HALF_WIDTH
+def range_for(close: float, half_width: int = HALF_WIDTH, step: int = STRIKE_STEP) -> tuple[int, int]:
+    c = int(round(close / step) * step)
+    return c - half_width, c + half_width
 
 
 def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, base: pd.DataFrame,
-                   now: datetime | None = None) -> dict:
+                   now: datetime | None = None, half_width: int = HALF_WIDTH, abs_den: bool = False) -> dict:
     """Marks, alpha, mark spots, window highs/lows and the mark quotes for one session, from completed
-    minutes only (a mark counts once its 1-min spot bar exists, and before `now`)."""
+    minutes only (a mark counts once its 1-min spot bar exists, and before `now`). `close` is the
+    range centre before rounding; `abs_den` divides by |sum dPE| + |sum dCE| (the SENSEX books)."""
     f = frame.copy()
     f["timestamp"] = pd.to_datetime(f["timestamp"])
     if f["timestamp"].dt.tz is not None:
@@ -200,7 +201,7 @@ def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, b
     f["type"] = f["option_type"].astype(str).str.lower()
     f = f[f["type"].isin(["ce", "pe"])]
     f = f.sort_values("timestamp").groupby(["minute", "strike", "type"], as_index=False).last()
-    lo, hi = range_for(close)
+    lo, hi = range_for(close, half_width)
     bmap = {(float(s), t): float(o) for s, t, o in zip(base["strike"], base["type"], base["oi"])}
     cutoff = None if now is None else (now.replace(tzinfo=None) if now.tzinfo is None
                                        else now.astimezone(IST).replace(tzinfo=None))
@@ -224,7 +225,7 @@ def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, b
             delta = g["oi"].to_numpy(float) - base_v
             is_pe = (g["type"] == "pe").to_numpy()
             dpe, dce = float(delta[is_pe].sum()), float(delta[~is_pe].sum())
-        den = dpe + dce
+        den = (abs(dpe) + abs(dce)) if abs_den else (dpe + dce)
         alpha.append((dpe - dce) * 100.0 / den if den != 0 else 0.0)
         spot.append(bars[m][3])
         start = marks[j - 1] + timedelta(minutes=1) if j else m
@@ -241,7 +242,7 @@ def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, b
 
 
 # -------------------------------------------------------------------- rule ---
-def simulate(inp: dict) -> tuple[list[dict], dict | None]:
+def simulate(inp: dict, arm: float = TRAIL_ARM, dist: float = TRAIL_DIST) -> tuple[list[dict], dict | None]:
     """The reference rule (reference_book.run_day) on one session. Returns (closed trades, open trade):
     the last mark closes an open trade at EOD only once the session is done."""
     alpha, spot, wh, wl, marks = inp["alpha"], inp["spot"], inp["win_high"], inp["win_low"], inp["marks"]
@@ -254,8 +255,8 @@ def simulate(inp: dict) -> tuple[list[dict], dict | None]:
 
     for i in range(1, len(alpha)):
         if pos:
-            armed = (best - esp) * pos >= TRAIL_ARM
-            stop = best - TRAIL_DIST * pos if armed else None
+            armed = (best - esp) * pos >= arm
+            stop = best - dist * pos if armed else None
             if stop is not None and ((pos == 1 and wl[i] <= stop) or (pos == -1 and wh[i] >= stop)):
                 px = min(stop, spot[i - 1]) if pos == 1 else max(stop, spot[i - 1])
                 trades.append(record(i, px, "TRAIL"))
@@ -287,13 +288,15 @@ def simulate(inp: dict) -> tuple[list[dict], dict | None]:
     return trades, None
 
 
-def price_trade(t: dict, inp: dict) -> dict:
-    """The paper option leg: ATM strike of the session's monthly expiry, ask in, bid out."""
+def price_trade(t: dict, inp: dict, lot_size: int = LOT_SIZE, lots: int = LOTS, charges_fn=None,
+                step: int = STRIKE_STEP) -> dict:
+    """The paper option leg: ATM strike of the session's expiry, ask in, bid out."""
+    charges_fn = charges_fn or round_trip_charges
     typ = "ce" if t["side"] == "CALL" else "pe"
-    strike = float(round(t["entry_spot"] / STRIKE_STEP) * STRIKE_STEP)
+    strike = float(round(t["entry_spot"] / step) * step)
     q_in = inp["quotes"].get((t["entry_ts"], strike, typ))
     q_out = inp["quotes"].get((t["exit_ts"], strike, typ))
-    qty = LOT_SIZE * LOTS
+    qty = lot_size * lots
     row = dict(t, strike=int(strike), tradingsymbol=(q_in or q_out or (None, None, None))[2],
                entry_ask=None, exit_bid=None, option_pts=None, gross_rs=None, charges_rs=None, net_rs=None,
                qty=qty, quote_status="priced")
@@ -304,24 +307,24 @@ def price_trade(t: dict, inp: dict) -> dict:
         row["quote_status"] = "no_entry_ask" if ask is None else "no_exit_bid"
         return row
     pts = bid - ask
-    charges = round_trip_charges(ask, bid, qty)["total"]
+    charges = charges_fn(ask, bid, qty)["total"]
     row.update(option_pts=round(pts, 2), gross_rs=round(pts * qty, 2), charges_rs=round(charges, 2),
                net_rs=round(pts * qty - charges, 2))
     return row
 
 
 # ------------------------------------------------------------------ ledger ---
-def _ensure_tables(conn: sqlite3.Connection) -> None:
+def _ensure_tables(conn: sqlite3.Connection, prefix: str = "bn_alpha") -> None:
     conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS bn_alpha_daily (
+        f"""
+        CREATE TABLE IF NOT EXISTS {prefix}_daily (
             trade_date TEXT PRIMARY KEY, status TEXT NOT NULL, expiry_code TEXT, prev_close REAL,
             prev_close_date TEXT, prev_close_source TEXT, range_lo INTEGER, range_hi INTEGER, baseline_date TEXT,
             n_marks INTEGER, latest_mark TEXT, latest_alpha REAL, latest_spot REAL, n_trades INTEGER NOT NULL DEFAULT 0,
             spot_pnl_pts REAL, gross_rs REAL, charges_rs REAL, net_rs REAL, qty INTEGER, strategy_version TEXT NOT NULL,
             error TEXT, updated_at TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS bn_alpha_trades (
+        CREATE TABLE IF NOT EXISTS {prefix}_trades (
             trade_date TEXT NOT NULL, seq INTEGER NOT NULL, status TEXT NOT NULL, side TEXT NOT NULL,
             entry_ts TEXT NOT NULL, exit_ts TEXT, entry_spot REAL, exit_spot REAL, entry_alpha REAL, exit_alpha REAL,
             spot_pnl_pts REAL, exit_reason TEXT, strike INTEGER, tradingsymbol TEXT, entry_ask REAL, exit_bid REAL,
@@ -353,19 +356,20 @@ def replay_day(day: str, *, now: datetime | None = None, kite=None, known_close:
             "prev_close_source": close_source, "baseline_date": base_date}
 
 
-def _save(conn: sqlite3.Connection, day: str, r: dict, error: str | None = None) -> None:
+def _save(conn: sqlite3.Connection, day: str, r: dict, error: str | None = None, *, prefix: str = "bn_alpha",
+          version: str = STRATEGY_VERSION, qty: int = LOT_SIZE * LOTS, note: str | None = None) -> None:
     stamp = datetime.now(IST).isoformat(timespec="seconds")
-    conn.execute("DELETE FROM bn_alpha_trades WHERE trade_date=?", (day,))
+    conn.execute(f"DELETE FROM {prefix}_trades WHERE trade_date=?", (day,))
     if error:
-        conn.execute("INSERT OR REPLACE INTO bn_alpha_daily (trade_date,status,n_trades,strategy_version,error,updated_at) "
-                     "VALUES (?,?,?,?,?,?)", (day, "unavailable", 0, STRATEGY_VERSION, error[:300], stamp))
+        conn.execute(f"INSERT OR REPLACE INTO {prefix}_daily (trade_date,status,n_trades,strategy_version,error,updated_at) "
+                     "VALUES (?,?,?,?,?,?)", (day, "unavailable", 0, version, error[:300], stamp))
         conn.commit()
         return
     inp, trades = r["inp"], r["trades"]
     fmt = lambda ts: ts.isoformat(timespec="minutes") if ts is not None else None   # noqa: E731
     for seq, t in enumerate(trades, 1):
         conn.execute(
-            "INSERT INTO bn_alpha_trades (trade_date,seq,status,side,entry_ts,exit_ts,entry_spot,exit_spot,entry_alpha,"
+            f"INSERT INTO {prefix}_trades (trade_date,seq,status,side,entry_ts,exit_ts,entry_spot,exit_spot,entry_alpha,"
             "exit_alpha,spot_pnl_pts,exit_reason,strike,tradingsymbol,entry_ask,exit_bid,option_pts,gross_rs,charges_rs,"
             "net_rs,qty,quote_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (day, seq, t["status"], t["side"], fmt(t["entry_ts"]), fmt(t["exit_ts"]) if t["status"] == "closed" else None,
@@ -378,7 +382,7 @@ def _save(conn: sqlite3.Connection, day: str, r: dict, error: str | None = None)
         status = "partial_quotes" if inp["session_done"] else status
     last = len(inp["marks"]) - 1
     conn.execute(
-        "INSERT OR REPLACE INTO bn_alpha_daily (trade_date,status,expiry_code,prev_close,prev_close_date,"
+        f"INSERT OR REPLACE INTO {prefix}_daily (trade_date,status,expiry_code,prev_close,prev_close_date,"
         "prev_close_source,range_lo,range_hi,baseline_date,n_marks,latest_mark,latest_alpha,latest_spot,n_trades,"
         "spot_pnl_pts,gross_rs,charges_rs,net_rs,qty,strategy_version,error,updated_at) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -387,7 +391,7 @@ def _save(conn: sqlite3.Connection, day: str, r: dict, error: str | None = None)
          round(float(inp["alpha"][last]), 2) if last >= 0 else None, float(inp["spot"][last]) if last >= 0 else None,
          len(trades), round(sum(t["spot_pts"] for t in closed), 2),
          round(sum(t["gross_rs"] or 0 for t in closed), 2), round(sum(t["charges_rs"] or 0 for t in closed), 2),
-         round(sum(t["net_rs"] or 0 for t in closed), 2), LOT_SIZE * LOTS, STRATEGY_VERSION, None, stamp))
+         round(sum(t["net_rs"] or 0 for t in closed), 2), qty, version, note, stamp))
     conn.commit()
 
 
@@ -464,12 +468,14 @@ def run_backfill(start: str = PAPER_START, end: str | None = None, kite=None) ->
 
 
 # ---------------------------------------------------------------- dashboard ---
-def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) -> tuple:
+def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), *, prefix: str = "bn_alpha",
+             first_unseen: str | None = None, extra: dict | None = None) -> tuple:
     """(day rows newest first, trades newest first, stats) for the /labs/live tab."""
-    cur = conn.execute(f"SELECT * FROM bn_alpha_daily WHERE 1=1 {date_clause} ORDER BY trade_date DESC LIMIT 400",
+    first_unseen = first_unseen or FIRST_UNSEEN
+    cur = conn.execute(f"SELECT * FROM {prefix}_daily WHERE 1=1 {date_clause} ORDER BY trade_date DESC LIMIT 400",
                        tuple(date_params))
     rows = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
-    cur = conn.execute(f"SELECT * FROM bn_alpha_trades WHERE 1=1 {date_clause} ORDER BY trade_date DESC, seq DESC",
+    cur = conn.execute(f"SELECT * FROM {prefix}_trades WHERE 1=1 {date_clause} ORDER BY trade_date DESC, seq DESC",
                        tuple(date_params))
     trades = [dict(zip([c[0] for c in cur.description], r)) for r in cur.fetchall()]
     if not rows:
@@ -483,7 +489,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         eq += v
         peak = max(peak, eq)
         dd = max(dd, peak - eq)
-    unseen = [t for t in closed if t["trade_date"] >= FIRST_UNSEEN]
+    unseen = [t for t in closed if t["trade_date"] >= first_unseen]
     stats = {
         "sessions": len(days), "traded_days": len(traded), "trades": len(closed),
         "spot_pts": round(sum(float(t["spot_pnl_pts"] or 0) for t in closed), 1),
@@ -496,8 +502,8 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=()) ->
         "unseen_net": round(sum(float(t["net_rs"] or 0) for t in unseen), 0),
         "exit_reasons": {k: sum(1 for t in closed if t["exit_reason"] == k) for k in ("TRAIL", "ALPHA_TGT", "ALPHA_SL", "EOD")},
         "latest": rows[0], "open_trades": [t for t in trades if t["status"] == "open"],
-        "first_unseen": FIRST_UNSEEN, "paper_start": PAPER_START, "lot_size": LOT_SIZE, "lots": LOTS,
-        "half_width": HALF_WIDTH, "reference": REFERENCE,
+        "first_unseen": first_unseen, "paper_start": PAPER_START, "lot_size": LOT_SIZE, "lots": LOTS,
+        "half_width": HALF_WIDTH, "reference": REFERENCE, **(extra or {}),
     }
     return rows, trades, stats
 
