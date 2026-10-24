@@ -171,6 +171,30 @@ def test_money_is_the_testers_what_if_at_0_01_btc():
     assert m["notional_rs"] == pytest.approx(round(70431.69 * 0.01 * 80.0, 2))
 
 
+def test_an_open_trade_next_to_closed_ones_is_priced_at_todays_rate():
+    # in a DataFrame with a closed trade, the open trade's exit_ts None becomes NaT (truthy):
+    # it must still price at today's rate, not fail the whole ledger rewrite (paper loop, 24 Oct)
+    trades = pd.DataFrame([
+        {"signal_ts": pd.Timestamp("2026-10-20 09:59"), "entry_ts": pd.Timestamp("2026-10-20 10:00"),
+         "exit_ts": pd.Timestamp("2026-10-20 12:00"), "entry_price": 100.0, "exit_price": 99.0,
+         "stop_price": 101.0, "target_price": 98.0, "stop_dist": 1.0, "r_multiple": 1.0, "points": 1.0,
+         "status": "closed", "exit_reason": "target", "bars_held": 120, "trade_date": "2026-10-20"},
+        {"signal_ts": pd.Timestamp("2026-10-24 08:59"), "entry_ts": pd.Timestamp("2026-10-24 09:00"),
+         "exit_ts": None, "entry_price": 100.0, "exit_price": 99.5,
+         "stop_price": 101.0, "target_price": 98.0, "stop_dist": 1.0, "r_multiple": 0.5, "points": 0.5,
+         "status": "open", "exit_reason": None, "bars_held": 30, "trade_date": "2026-10-24"},
+    ])
+    assert pd.isna(trades.to_dict("records")[1]["exit_ts"])
+    rates = _rates(("2026-10-20", 84.0), ("2026-10-23", 88.0))
+    conn = sqlite3.connect(":memory:")
+    B._ensure_tables(conn)
+    g = {"n": 0, "days": [], "day_id": [], "valid_counts": [], "partial_last_day": True}
+    out = B.persist(conn, g, trades, rates, date(2026, 10, 24))
+    assert out["trades"] == 2 and out["open"] == 1
+    rows = conn.execute("SELECT status, exit_ts, fx_rate FROM btc_rsi_roc_trades ORDER BY trade_date").fetchall()
+    assert rows == [("closed", "2026-10-20 12:00:00", 84.0), ("open", None, 88.0)]
+
+
 def test_fx_uses_the_last_published_rate_on_weekends():
     r = _rates(("2026-09-18", 83.0), ("2026-09-21", 84.0))
     assert B.rate_on(r, "2026-09-20") == 83.0            # Sunday -> Friday's rate

@@ -560,7 +560,8 @@ def price_trade(t: dict, rates: pd.Series, today_utc: date) -> dict:
     charges = (buy + sell) * FEE_PCT / 100.0
     slippage = 2.0 * SLIPPAGE_TICKS * TICK * QTY
     net = gross - charges - slippage
-    exit_day = pd.Timestamp(t["exit_ts"]).date() if t.get("exit_ts") else today_utc
+    exit_ts = t.get("exit_ts")                           # an open trade's is None or NaT (truthy)
+    exit_day = today_utc if exit_ts is None or pd.isna(exit_ts) else pd.Timestamp(exit_ts).date()
     r_exit = rate_on(rates, exit_day)
     r_entry = rate_on(rates, pd.Timestamp(t["entry_ts"]).date())
     notional = entry * QTY * r_entry
