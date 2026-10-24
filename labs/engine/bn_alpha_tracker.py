@@ -182,10 +182,12 @@ def range_for(close: float, half_width: int = HALF_WIDTH, step: int = STRIKE_STE
 
 
 def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, base: pd.DataFrame,
-                   now: datetime | None = None, half_width: int = HALF_WIDTH, abs_den: bool = False) -> dict:
+                   now: datetime | None = None, half_width: int = HALF_WIDTH, abs_den: bool = False,
+                   step: int = STRIKE_STEP) -> dict:
     """Marks, alpha, mark spots, window highs/lows and the mark quotes for one session, from completed
     minutes only (a mark counts once its 1-min spot bar exists, and before `now`). `close` is the
-    range centre before rounding; `abs_den` divides by |sum dPE| + |sum dCE| (the SENSEX books)."""
+    range centre before rounding (to `step`); `abs_den` divides by |sum dPE| + |sum dCE| (the SENSEX
+    books)."""
     f = frame.copy()
     f["timestamp"] = pd.to_datetime(f["timestamp"])
     if f["timestamp"].dt.tz is not None:
@@ -201,7 +203,7 @@ def session_inputs(day: str, *, close: float, frame: pd.DataFrame, bars: dict, b
     f["type"] = f["option_type"].astype(str).str.lower()
     f = f[f["type"].isin(["ce", "pe"])]
     f = f.sort_values("timestamp").groupby(["minute", "strike", "type"], as_index=False).last()
-    lo, hi = range_for(close, half_width)
+    lo, hi = range_for(close, half_width, step)
     bmap = {(float(s), t): float(o) for s, t, o in zip(base["strike"], base["type"], base["oi"])}
     cutoff = None if now is None else (now.replace(tzinfo=None) if now.tzinfo is None
                                        else now.astimezone(IST).replace(tzinfo=None))

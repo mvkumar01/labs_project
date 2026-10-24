@@ -384,6 +384,7 @@ LIVE_TABS = {
     "bn_alpha": "BANKNIFTY Alpha",
     "sx_pc400": "SENSEX Alpha PC400",
     "sx_open1400": "SENSEX Alpha OPEN1400",
+    "nna_v1": "Nifty New Alpha V1",
     "proposer_v5_dt25": "Sensex V5 2.5%",
     "proposer_nifty_v5": "Nifty Scalper V1",
     "proposer_v3_dt35_clock": "Sensex V3 3.5% · Pramanaa timing",
@@ -428,6 +429,7 @@ def live_strategy():
     proposer_v5_rows, proposer_v5_trades, proposer_v5_stats = [], [], {}
     bn_alpha_rows, bn_alpha_trades, bn_alpha_stats = [], [], {}
     sx_rows, sx_trades, sx_stats = [], [], {}
+    nna_rows, nna_trades, nna_stats = [], [], {}
     proposer_v5_dt25_rows, proposer_v5_dt25_trades, proposer_v5_dt25_stats = [], [], {}
     proposer_nifty_v5_rows, proposer_nifty_v5_trades, proposer_nifty_v5_stats = [], [], {}
     proposer_v3_dt35_clock_rows, proposer_v3_dt35_clock_trades, proposer_v3_dt35_clock_stats = [], [], {}
@@ -1015,6 +1017,15 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_v5_dt25_stats = {"error": str(exc)}
 
+        # Nifty New Alpha V1 (paper).
+        if active_live_tab == "nna_v1":
+            try:
+                from labs.engine.nna_tracker import tab_data as nna_tab_data
+                nna_rows, nna_trades, nna_stats = nna_tab_data(conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    nna_stats = {"error": str(exc)}
+
         # SENSEX Alpha (paper): two books, one template.
         if active_live_tab in ("sx_pc400", "sx_open1400"):
             try:
@@ -1318,6 +1329,9 @@ def live_strategy():
         sx_rows=sx_rows,
         sx_trades=sx_trades,
         sx_stats=sx_stats,
+        nna_rows=nna_rows,
+        nna_trades=nna_trades,
+        nna_stats=nna_stats,
         proposer_v5_dt25_rows=proposer_v5_dt25_rows,
         proposer_v5_dt25_trades=proposer_v5_dt25_trades,
         proposer_v5_dt25_stats=proposer_v5_dt25_stats,
