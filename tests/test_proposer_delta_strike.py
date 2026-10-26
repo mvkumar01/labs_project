@@ -141,7 +141,7 @@ def test_dt35_on_pramanaas_timing_is_a_paper_book_of_the_live_preset():
     book = clock_book.BOOK
     assert book.key == "proposer_v3_dt35_clock" and book.strategy_version == pe.STRATEGY_VERSION_V3_DT35
     assert book.print_gap_s == tr.PRAMANAA_PRINT_GAP_S == pytest.approx(310.5)
-    assert tr.V3_DT35.print_gap_s == 300.0                      # the book that mirrors the live bot keeps five minutes
+    assert tr.V3_DT35.print_gap_s == tr.LIVE_PRINT_GAP_S == 301.0   # the book that mirrors the live bot: its clock
     assert book.key in tr.DELTA_STRIKE_BOOKS
 
 
@@ -166,7 +166,7 @@ def test_v4_takes_the_live_settings_from_its_first_session(deltas):
     from labs.engine import proposer_v4_book as v4
     from live.engine import proposer_engine as pe
     assert v4.BOOK is tr.V4 and v4.BOOK.strategy_version == pe.STRATEGY_VERSION_V3_DT35
-    assert v4.BOOK.print_gap_s == 300.0 and v4.DEFAULT_START == "2026-07-01"
+    assert v4.BOOK.print_gap_s == 301.0 and v4.DEFAULT_START == "2026-07-01"
     assert tr.params_on("2026-07-01", tr.V4).reentry_cooldown_secs == 270.0
     assert tr.params_on("2026-07-01", tr.V4) == pe.params_for(pe.STRATEGY_VERSION_V3_DT35)
     assert tr.params_on("2026-07-01", tr.V3_DT35).reentry_cooldown_secs == 300.0      # the mirror keeps its history
