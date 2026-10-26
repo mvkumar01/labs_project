@@ -164,6 +164,15 @@ def normalize(row, spec, key):
         direction = 'PAIR'
     capital = number(pick(row, 'allocated_capital_rs', 'capital_required_rs', 'margin_rs', 'notional'))
     basis = 'Recorded capital / margin' if capital is not None else 'Not recorded'
+    estimated, quote_asof = False, None
+    if spec.underlying in ('CRUDEOILM','GOLD','GOLDM') and (capital is None or row.get('margin_source') == 'notional_proxy'):
+        from labs.services.margin_estimates import estimate_margin
+        estimate = estimate_margin(spec.underlying,ep,qty,direction)
+        if estimate:
+            capital, basis = estimate['value'], estimate['basis']
+            estimated, quote_asof = True, estimate['asof']
+        elif row.get('margin_source') == 'notional_proxy':
+            capital, basis = None, 'Margin not recorded; contract notional is not margin'
     is_option = spec.underlying in ('NIFTY', 'SENSEX', 'BANKNIFTY')
     if capital is None and is_option and not short and ep is not None and qty is not None:
         capital, basis = ep * qty, 'Premium paid'
@@ -187,7 +196,8 @@ def normalize(row, spec, key):
         duration = f'{seconds // 86400}d {seconds % 86400 // 3600}h {seconds % 3600 // 60}m' if seconds >= 86400 else f'{seconds // 3600}h {seconds % 3600 // 60}m {seconds % 60}s'
     result = dict(id=ident, date=day, contract=contract, entry_ts=entry.isoformat() if entry else None,
                 exit_ts=exit_.isoformat() if exit_ else None, duration=duration, direction=direction,
-                qty=qty, capital=capital, capital_basis=basis, entry_price=ep, exit_price=xp if closed else None,
+                qty=qty, capital=capital, capital_basis=basis, capital_estimated=estimated,
+                capital_quote_asof=quote_asof, entry_price=ep, exit_price=xp if closed else None,
                 exit_value=exit_value if closed else None, spot_points=spot_points,
                 target=number(pick(row, 'target_price', 'target_rs', 'spot_target_pts')),
                 gross=gross, charges=charges, slippage=slippage, costs=costs, net=net,
@@ -200,6 +210,9 @@ def normalize(row, spec, key):
                 multi_leg=key in ('nifty_expiry_sale','expiry_strangle','baskets','infy_tcs_pair'),
                 qty_text=None, source_key=key, strike=row.get('strike'), expiry_code=row.get('expiry_code'),
                 option_type=str(row.get('option_type') or ('PE' if direction in ('PE','PUT') else 'CE')).upper())
+    result.update(signal=pick(row,'signal','entry_rule'), delta=number(row.get('delta')),
+                  entry_gate=pick(row,'entry_gate','gate'), rsi_in=number(pick(row,'entry_rsi','rsi_in')),
+                  rsi_out=number(pick(row,'exit_rsi','rsi_out')), entry_spot=es, exit_spot=xs)
     result['entry_has_time'] = len(str(pick(row,'entry_ts','entry_time','entry_minute','entry_date') or '')) > 10
     result['exit_has_time'] = len(str(pick(row,'exit_ts','exit_time','exit_minute','exit_date') or '')) > 10
     if closed and (not result['entry_has_time'] or not result['exit_has_time']):

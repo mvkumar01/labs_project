@@ -2,6 +2,14 @@
   {%- if value is not none -%}{{ '$' if currency == 'USD' else '₹' }}{{ ('{:,.2f}' if currency == 'USD' else '{:,.0f}').format(value) }}{%- else -%}<span class="muted" title="Not recorded or not applicable">—</span>{%- endif -%}
 {%- endmacro %}
 {% macro percent(value) -%}{{ '%.1f%%'|format(value) if value is not none else '—' }}{%- endmacro %}
+{% macro trade_details(t,currency) %}<div class="report-expanded-fields">
+    <section><h3>Trade</h3><strong class="trade-date">{{ t.date }}</strong><span class="trade-contract">{{ t.contract or 'Not recorded' }}</span><span class="trade-status">{{ t.status }}</span><dl class="trade-fields"><div><dt>Direction</dt><dd>{{ t.direction }}</dd></div><div><dt>Qty (units)</dt><dd>{{ t.qty_text or ('{:g}'.format(t.qty) if t.qty is not none else '—') }}</dd></div></dl></section>
+    <section><h3>Timing</h3><dl class="trade-fields"><div><dt>Entry time</dt><dd>{{ t.entry_ts[11:19] if t.entry_ts and t.entry_has_time else '—' }}{% if t.entry_ts and t.entry_ts[:10] != t.date %}<small class="report-cell-note">{{ t.entry_ts[:10] }}</small>{% endif %}</dd></div><div><dt>Exit time</dt><dd>{{ t.exit_ts[11:19] if t.exit_ts and t.exit_has_time else '—' }}{% if t.exit_ts and t.exit_ts[:10] != t.date %}<small class="report-cell-note">{{ t.exit_ts[:10] }}</small>{% endif %}</dd></div><div><dt>Duration</dt><dd>{{ t.duration or '—' }}</dd></div></dl></section>
+    <section><h3>Capital &amp; prices</h3><dl class="trade-fields"><div><dt>Entry capital</dt><dd>{{ money(t.capital,currency) }}<small class="report-cell-note">{{ t.capital_basis }}</small></dd></div><div><dt>Entry price</dt><dd>{{ '{:,.2f}'.format(t.entry_price) if t.entry_price is not none else '—' }}</dd></div><div><dt>Exit price</dt><dd>{{ '{:,.2f}'.format(t.exit_price) if t.exit_price is not none else '—' }}</dd></div><div><dt>Exit premium / value</dt><dd>{{ money(t.exit_value,currency) }}</dd></div></dl></section>
+    <section><h3>Result</h3><dl class="trade-fields"><div class="trade-net"><dt>Net P&amp;L</dt><dd class="{{ 'green' if (t.net or 0)>0 else 'red' if (t.net or 0)<0 else '' }}">{{ money(t.net,currency) }}</dd></div><div><dt>Gross P&amp;L</dt><dd>{{ money(t.gross,currency) }}</dd></div><div><dt>Costs</dt><dd>{{ money(t.costs,currency) }}</dd></div><div><dt>P&amp;L %</dt><dd>{{ percent(t.pnl_pct) }}</dd></div></dl></section>
+    <section><h3>Exit</h3><dl class="trade-fields"><div><dt>Exit rule</dt><dd>{{ t.exit_rule or '—' }}</dd></div><div><dt>Spot points</dt><dd>{{ '%+.2f'|format(t.spot_points) if t.spot_points is not none else '—' }}</dd></div><div><dt>Target</dt><dd>{{ '{:,.2f}'.format(t.target) if t.target is not none else '—' }}{% if t.target is not none %}<small class="report-cell-note">{{ t.target_kind }}</small>{% endif %}</dd></div></dl></section>
+    <section><h3>Peaks &amp; trough</h3><dl class="trade-fields"><div><dt>Peak P&amp;L held</dt><dd data-excursion="peak">{{ money(t.peak,currency) }}</dd></div><div><dt>Peak P&amp;L that day</dt><dd data-excursion="day_peak">—</dd></div><div><dt>Post-exit peak</dt><dd data-excursion="post_peak">{{ money(t.post_peak,currency) }}</dd></div><div><dt>Post-exit trough</dt><dd data-excursion="post_trough">{{ money(t.post_trough,currency) }}</dd></div></dl></section>
+<section><h3>Signal context</h3><dl class="trade-fields">{% for label,value in [('Signal',t.signal),('Delta',t.delta),('Entry gate',t.entry_gate),('RSI in',t.rsi_in),('RSI out',t.rsi_out),('Spot in',t.entry_spot),('Spot out',t.exit_spot)] %}<div><dt>{{ label }}</dt><dd>{{ value if value is defined and value is not none else '—' }}</dd></div>{% endfor %}</dl></section></div>{% endmacro %}
 {% for panel in report_panels %}
 <section class="strategy-report" data-report-key="{{ panel.key }}">
   <div class="report-heading"><h1>{{ panel.title }}</h1><span class="report-period">{{ date_from or 'First recorded session' }} → {{ date_to or 'Latest recorded session' }}</span></div>
@@ -25,7 +33,7 @@
   {% if panel.daily_only %}
   <h2>Daily portfolio P&amp;L</h2><div class="report-scroll"><table class="perf report-table"><thead><tr><th>Date</th><th>Gross P&amp;L</th><th>Costs</th><th>Net P&amp;L</th></tr></thead><tbody>{% for d in panel.daily %}<tr><td>{{ d.date }}</td><td>{{ money(d.gross,panel.currency) }}</td><td>{{ money(d.costs,panel.currency) }}</td><td>{{ money(d.net,panel.currency) }}</td></tr>{% endfor %}</tbody></table></div>
   {% else %}
-  <div class="report-trade-heading"><h2>Trade ledger</h2><span class="muted">{{ panel.count }} records · page {{ panel.page }} of {{ panel.pages }} · times IST</span>
+  <div class="report-trade-heading"><h2>Trade history</h2><span class="muted">{{ panel.count }} records · page {{ panel.page }} of {{ panel.pages }} · times IST</span>
     <form method="get" action="{{ url_for('labs.live_strategy') }}" class="report-page-size">
       <input type="hidden" name="tab" value="{{ active_live_tab }}">
       <input type="hidden" name="date_from" value="{{ date_from or '' }}">
@@ -36,15 +44,30 @@
     </form>
   </div>
   <div class="report-scroll" role="region" aria-label="Trade ledger for {{ panel.title }}">
-  <table class="perf report-table report-trades"><thead><tr><th scope="col">Trade</th><th scope="col">Timing</th><th scope="col">Capital &amp; prices</th><th scope="col">Result</th><th scope="col">Exit</th><th scope="col">Peaks &amp; trough</th></tr></thead><tbody>
-  {% for t in panel.trades %}<tr data-trade-id="{{ t.id }}">
-    <td data-label="Trade"><strong class="trade-date">{{ t.date }}</strong><span class="trade-contract">{{ t.contract or 'Not recorded' }}</span><span class="trade-status">{{ t.status }}</span><dl class="trade-fields"><div><dt>Direction</dt><dd>{{ t.direction }}</dd></div><div><dt>Qty (units)</dt><dd>{{ t.qty_text or ('{:g}'.format(t.qty) if t.qty is not none else '—') }}</dd></div></dl></td>
-    <td data-label="Timing"><dl class="trade-fields"><div><dt>Entry time</dt><dd>{{ t.entry_ts[11:19] if t.entry_ts and t.entry_has_time else '—' }}{% if t.entry_ts and t.entry_ts[:10] != t.date %}<small class="report-cell-note">{{ t.entry_ts[:10] }}</small>{% endif %}</dd></div><div><dt>Exit time</dt><dd>{{ t.exit_ts[11:19] if t.exit_ts and t.exit_has_time else '—' }}{% if t.exit_ts and t.exit_ts[:10] != t.date %}<small class="report-cell-note">{{ t.exit_ts[:10] }}</small>{% endif %}</dd></div><div><dt>Duration</dt><dd>{{ t.duration or '—' }}</dd></div></dl></td>
-    <td data-label="Capital &amp; prices"><dl class="trade-fields"><div><dt>Entry capital</dt><dd>{{ money(t.capital,panel.currency) }}<small class="report-cell-note">{{ t.capital_basis }}</small></dd></div><div><dt>Entry price</dt><dd>{{ '{:,.2f}'.format(t.entry_price) if t.entry_price is not none else '—' }}</dd></div><div><dt>Exit price</dt><dd>{{ '{:,.2f}'.format(t.exit_price) if t.exit_price is not none else '—' }}</dd></div><div><dt>Exit premium / value</dt><dd>{{ money(t.exit_value,panel.currency) }}</dd></div></dl></td>
-    <td data-label="Result"><dl class="trade-fields"><div class="trade-net"><dt>Net P&amp;L</dt><dd class="{{ 'green' if (t.net or 0)>0 else 'red' if (t.net or 0)<0 else '' }}">{{ money(t.net,panel.currency) }}</dd></div><div><dt>Gross P&amp;L</dt><dd>{{ money(t.gross,panel.currency) }}</dd></div><div><dt>Costs</dt><dd>{{ money(t.costs,panel.currency) }}</dd></div><div><dt>P&amp;L %</dt><dd>{{ percent(t.pnl_pct) }}</dd></div></dl></td>
-    <td data-label="Exit"><dl class="trade-fields"><div><dt>Exit rule</dt><dd>{{ t.exit_rule or '—' }}</dd></div><div><dt>Spot points</dt><dd>{{ '%+.2f'|format(t.spot_points) if t.spot_points is not none else '—' }}</dd></div><div><dt>Target</dt><dd>{{ '{:,.2f}'.format(t.target) if t.target is not none else '—' }}{% if t.target is not none %}<small class="report-cell-note">{{ t.target_kind }}</small>{% endif %}</dd></div></dl></td>
-    <td data-label="Peaks &amp; trough"><dl class="trade-fields"><div><dt>Peak P&amp;L held</dt><dd data-excursion="peak">{{ money(t.peak,panel.currency) }}</dd></div><div><dt>Peak P&amp;L that day</dt><dd data-excursion="day_peak">—</dd></div><div><dt>Post-exit peak</dt><dd data-excursion="post_peak">{{ money(t.post_peak,panel.currency) }}</dd></div><div><dt>Post-exit trough</dt><dd data-excursion="post_trough">{{ money(t.post_trough,panel.currency) }}</dd></div></dl></td>
-  </tr>{% else %}<tr><td colspan="6">No trade records in this date range.</td></tr>{% endfor %}
+  {% set report_index = loop.index0 %}
+  <table class="perf report-table report-trades report-compact"><thead><tr>{% for label in ['Date','Entry','Exit','Duration','Dir','Instrument','Qty','Entry ₹' if panel.currency=='INR' else 'Entry $','Exit ₹' if panel.currency=='INR' else 'Exit $','Capital','Pts','P&L','P&L %','Exit rule','Peak P&L','Post-exit peak',''] %}<th scope="col">{{ label if label else 'More' }}</th>{% endfor %}</tr></thead><tbody>
+  {% for t in panel.trades %}
+  <tr data-trade-id="{{ t.id }}" data-trade-date="{{ t.date }}">
+    <td data-label="Date">{{ t.date[8:10] }}/{{ t.date[5:7] }}<small class="report-cell-note">{{ t.date[:4] }}</small></td>
+    <td data-label="Entry">{{ t.entry_ts[11:19] if t.entry_ts and t.entry_has_time else '—' }}</td>
+    <td data-label="Exit">{{ t.exit_ts[11:19] if t.exit_ts and t.exit_has_time else '—' }}{% if t.status=='Open' %}<span class="trade-status">Open</span>{% endif %}</td>
+    <td data-label="Duration">{{ t.duration[6:] if t.duration and t.duration.startswith('0h 0m ') else t.duration[3:] if t.duration and t.duration.startswith('0h ') else t.duration or '—' }}</td>
+    <td data-label="Dir"><span class="trade-direction">{{ t.direction }}</span></td>
+    <td data-label="Instrument">{{ t.contract or 'Not recorded' }}</td>
+    <td data-label="Qty" title="{{ t.qty_text or '' }}">{{ 'Multi' if t.qty_text else ('{:g}'.format(t.qty) if t.qty is not none else '—') }}</td>
+    <td data-label="Entry price">{{ '{:,.2f}'.format(t.entry_price) if t.entry_price is not none else '—' }}</td>
+    <td data-label="Exit price">{{ '{:,.2f}'.format(t.exit_price) if t.exit_price is not none else '—' }}</td>
+    <td data-label="Entry capital" title="{{ t.capital_basis }}">{{ '~' if t.capital_estimated else '' }}{{ money(t.capital,panel.currency) }}</td>
+    <td data-label="Points">{{ '%+.1f'|format(t.spot_points) if t.spot_points is not none else '—' }}</td>
+    <td data-label="Net P&L" class="{{ 'green' if (t.net or 0)>0 else 'red' if (t.net or 0)<0 else '' }}"><strong>{{ money(t.net,panel.currency) }}</strong></td>
+    <td data-label="P&L %" title="{{ t.capital_basis }}">{{ '~' if t.capital_estimated else '' }}{{ percent(t.pnl_pct) }}</td>
+    <td data-label="Exit rule"><span class="trade-exit-rule">{{ t.exit_rule or '—' }}</span></td>
+    <td data-label="Peak P&L" data-excursion="peak">{{ money(t.peak,panel.currency) }}</td>
+    <td data-label="Post-exit peak" data-excursion="post_peak">{{ money(t.post_peak,panel.currency) }}</td>
+    <td data-label="More"><button type="button" class="report-row-expand" aria-expanded="false" aria-controls="trade-detail-{{ report_index }}-{{ t.id }}" title="Show all trade fields">+</button></td>
+  </tr>
+  <tr class="report-detail-row" data-trade-ref="{{ t.id }}" id="trade-detail-{{ report_index }}-{{ t.id }}" hidden><td colspan="17">{{ trade_details(t,panel.currency) }}</td></tr>
+  {% else %}<tr><td colspan="17">No trade records in this date range.</td></tr>{% endfor %}
   </tbody></table></div>
   {% if panel.pages > 1 %}<nav class="report-pagination" aria-label="Trade pages">{% if panel.page > 1 %}<a href="{{ url_for('labs.live_strategy',tab=active_live_tab,date_from=date_from,date_to=date_to,report_page=panel.page-1,report_size=panel.per_page) }}">Previous</a>{% endif %}{% if panel.page < panel.pages %}<a href="{{ url_for('labs.live_strategy',tab=active_live_tab,date_from=date_from,date_to=date_to,report_page=panel.page+1,report_size=panel.per_page) }}">Next</a>{% endif %}<span>Summary includes all {{ panel.count }} records, not just this page.</span></nav>{% endif %}
   <button class="report-excursion-load" type="button" data-panel-index="{{ loop.index0 }}">Calculate peak and post-exit P&amp;L for this page</button><span class="report-excursion-status muted" role="status"></span>

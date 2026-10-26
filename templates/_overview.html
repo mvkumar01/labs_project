@@ -80,9 +80,9 @@
     <div class="ov-sep"></div>
     {% set capital_budget = c.capital|planning_capital %}
     <div class="ov-row"><span class="l" title="Recorded maximum rounded up to two significant digits; return uses this planning amount">Capital deployed</span>
-      <span class="r">{{ money(capital_budget, false, cur) }}{% if c.capital %}<small class="capital-observed">Recorded peak at one time {{ money(c.capital, false, cur) }}</small>{% endif %}</span></div>
+      <span class="r">{{ '~' if c.capital_estimated else '' }}{{ money(capital_budget, false, cur) }}{% if c.capital %}<small class="capital-observed">{{ 'Estimated peak margin' if c.capital_estimated else 'Recorded peak at one time' }} {{ money(c.capital, false, cur) }}</small>{% if c.capital_estimated %}<small class="capital-observed" title="{{ c.capital_basis }}">Quote {{ c.capital_quote_asof }}</small>{% endif %}{% else %}<small class="capital-observed">Margin not recorded</small>{% endif %}</span></div>
     <div class="ov-row"><span class="l">{{ 'Selected-range P&L' if date_from or date_to else 'Total P&L' }}</span>
-      <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net, true, cur) }}{% if capital_budget %} ({{ "%+.1f"|format(100 * c.total_net / capital_budget) }}%){% endif %}</span></div>
+      <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net, true, cur) }}{% if capital_budget %} ({{ "%+.1f"|format(100 * c.total_net / capital_budget) }}%{{ ' est.' if c.capital_estimated else '' }}){% endif %}</span></div>
     <div class="ov-meta" style="margin-top:2px">{% if c.trades is defined %}{{ c.trades }} trades &middot; {% endif %}{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
     {% if c.note is defined %}<div class="ov-note">{{ c.note }}</div>{% endif %}
     {% endif %}
@@ -90,4 +90,5 @@
   </div>
 {% endfor %}
 </div>
-<p class="ov-foot">Net of charges. Recorded peak at one time is the capital committed simultaneously within a strategy; capital reused by sequential trades is not added. Capital deployed rounds the recorded peak up to two significant digits, in whole currency units. Return is the displayed period's P&amp;L divided by this planning capital. Missing capital is unavailable. The totals at the top add the rupee books: simulated and dry run. Dollar books are shown on their own card, and real-money accounts show their status only &mdash; their trades and P&amp;L are on the Live Trading page.</p>
+<button type="button" data-margin-refresh>Refresh MCX margin estimates</button><span class="muted" data-margin-status role="status"></span>
+<p class="ov-foot">Net of charges. Recorded peak at one time is capital committed simultaneously; sequential trades reuse capital. A ~ marks an estimate: missing MCX margin is estimated using a current standalone broker NRML quote, scaled to the historical entry notional. The quote date is shown; this is not historical margin or a guarantee of funds required. Estimated return uses the rounded estimated capital. Other returns use recorded peak capital rounded up to two significant digits. Dollar books are separate; real-money accounts show status only, with their figures on Live Trading.</p>

@@ -69,3 +69,13 @@ def peak_deployed_capital(trades):
         current += change
         peak = max(peak, current)
     return round(peak, 2)
+
+
+def capital_summary(trades):
+    peak = peak_deployed_capital(trades)
+    estimated = any(t.get('capital_estimated') for t in trades)
+    dates = sorted({t['capital_quote_asof'] for t in trades if t.get('capital_quote_asof')})
+    return dict(capital=peak,capital_estimated=estimated,
+                capital_basis=('Estimated peak margin from current broker quotes, scaled to entry notional'
+                               if estimated else 'Recorded peak at one time'),
+                capital_quote_asof=', '.join(d[:16].replace('T',' ')+' IST' for d in dates))

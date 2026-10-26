@@ -174,7 +174,10 @@ def _mcx(conn, key: str, today: str) -> dict:
     rows = _rows(conn, f"SELECT trade_date, net_rs, n_trades, open_trades FROM {key}_daily ORDER BY trade_date")
     daily = [{"trade_date": r["trade_date"], "net": _f(r["net_rs"])} for r in rows]
     is_open = bool(rows and int(rows[-1]["open_trades"] or 0))
-    return _card(key, MORE_BOOKS[key], daily, today, capital=None, position="Open 1 lot" if is_open else "Flat",
+    from labs.services.capital_metrics import capital_summary
+    from labs.services.strategy_report import SOURCES, normalized_trades
+    capital = capital_summary(normalized_trades(_rows(conn,f'SELECT * FROM {key}_trades'),SOURCES[key],key))
+    return _card(key, MORE_BOOKS[key], daily, today, **capital, position="Open 1 lot" if is_open else "Flat",
                  trades=sum(int(r["n_trades"] or 0) for r in rows) - int(is_open))
 
 
@@ -245,7 +248,7 @@ def _dry_runner(key: str, label: str, instrument: str, table: str, tab: str, tod
     from storage.live_db import get_live_conn
     conn = get_live_conn()
     try:
-        trades = _rows(conn, f"SELECT trade_date, exit_ts, net_rs FROM {table}_trades WHERE book='dry'")
+        trades = _rows(conn, f"SELECT * FROM {table}_trades WHERE book='dry'")
         held = _rows(conn, f"SELECT 1 FROM {table}_position LIMIT 1")
     finally:
         conn.close()
@@ -254,8 +257,11 @@ def _dry_runner(key: str, label: str, instrument: str, table: str, tab: str, tod
         if t["exit_ts"]:
             by_day[t["trade_date"]] = by_day.get(t["trade_date"], 0.0) + _f(t["net_rs"])
     daily = [{"trade_date": d, "net": n} for d, n in sorted(by_day.items())]
+    from labs.services.capital_metrics import capital_summary
+    from labs.services.strategy_report import DRY_SOURCES, normalized_trades
+    capital = capital_summary(normalized_trades(trades,DRY_SOURCES[tab],tab))
     return _card(key, {"label": label, "instrument": instrument, "size": "1 lot", "tab": tab}, daily, today,
-                 capital=None, position="Open 1 lot" if held else "Flat",
+                 **capital, position="Open 1 lot" if held else "Flat",
                  trades=sum(1 for t in trades if t["exit_ts"]), kind="Dry run",
                  note="Real-time runner on live prices; it places no orders")
 

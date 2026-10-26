@@ -7,6 +7,15 @@ document.querySelectorAll('.strategy-dashboard table').forEach(table => {
     });
   });
 });
+document.querySelectorAll('.report-row-expand').forEach(button => {
+  button.addEventListener('click', () => {
+    const detail = document.getElementById(button.getAttribute('aria-controls'));
+    const open = button.getAttribute('aria-expanded') !== 'true';
+    detail.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+    button.textContent = open ? '−' : '+';
+  });
+});
 /* Read-only excursion estimates load separately so ledger rendering stays fast. */
 document.querySelectorAll('.report-excursion-load').forEach(button => {
   button.addEventListener('click', async () => {
@@ -28,7 +37,8 @@ document.querySelectorAll('.report-excursion-load').forEach(button => {
         for (const row of batch) {
           const values = payload.trades[row.dataset.tradeId];
           if (!values) continue;
-          row.querySelectorAll('[data-excursion]').forEach(cell => {
+          const targets = [row, ...section.querySelectorAll(`[data-trade-ref="${row.dataset.tradeId}"]`)];
+          targets.flatMap(target => [...target.querySelectorAll('[data-excursion]')]).forEach(cell => {
             const value = values[cell.dataset.excursion];
             cell.textContent = value == null ? 'Unavailable' : new Intl.NumberFormat('en-IN', {
               style: 'currency', currency: 'INR', maximumFractionDigits: 0

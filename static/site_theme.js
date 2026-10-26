@@ -1,5 +1,21 @@
 /* Presentation only: label asynchronously populated tables for mobile reflow. */
 (() => {
+  document.querySelectorAll('[data-margin-refresh]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const status = document.querySelector('[data-margin-status]');
+      button.disabled = true;
+      if (status) status.textContent = ' Fetching standalone broker margin calculations…';
+      try {
+        const response = await fetch('/labs/api/strategy-report/margins/refresh', {method:'POST'});
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'Some margin quotes are unavailable. Stored estimates are retained.');
+        location.reload();
+      } catch (error) {
+        if (status) status.textContent = ' ' + error.message;
+        button.disabled = false;
+      }
+    });
+  });
   let scheduled = false;
   function labelTables() {
     scheduled = false;

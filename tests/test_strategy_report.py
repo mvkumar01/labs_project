@@ -167,9 +167,10 @@ def test_responsive_ledger_keeps_trade_fields_and_excursion_targets():
     html = env.get_template('_strategy_report.html').render(report_panels=[panel])
     parsed = LedgerParser()
     parsed.feed(html)
-    assert parsed.groups == ['Trade', 'Timing', 'Capital & prices', 'Result', 'Exit', 'Peaks & trough']
+    assert parsed.groups == ['Date','Entry','Exit','Duration','Dir','Instrument','Qty','Entry price','Exit price','Entry capital','Points','Net P&L','P&L %','Exit rule','Peak P&L','Post-exit peak','More']
     assert parsed.trade_ids == [panel['trades'][0]['id']]
-    assert parsed.excursions == ['peak', 'day_peak', 'post_peak', 'post_trough']
+    assert parsed.excursions == ['peak','post_peak','peak','day_peak','post_peak','post_trough']
+    assert 'class="report-detail-row"' in html and 'aria-expanded="false"' in html
     for label in ('Entry time', 'Exit time', 'Duration', 'Direction', 'Qty (units)',
                   'Entry capital', 'Exit premium / value', 'Spot points', 'Target',
                   'Gross P&amp;L', 'Costs', 'Net P&amp;L', 'P&amp;L %', 'Exit rule'):

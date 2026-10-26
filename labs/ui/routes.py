@@ -1851,3 +1851,14 @@ def strategy_report_excursions():
         if live_conn is not None:
             live_conn.close()
         conn.close()
+
+
+@labs_bp.route('/api/strategy-report/margins/refresh', methods=['POST'])
+def refresh_strategy_margin_estimates():
+    from labs.services.margin_estimates import refresh_quotes
+    try:
+        payload = refresh_quotes()
+        return jsonify(ok=not payload.get('unavailable'), asof=payload['asof'],
+                       products=sorted(payload['quotes']), unavailable=payload.get('unavailable',[]))
+    except Exception:
+        return jsonify(ok=False,error='Broker margin quote unavailable. Stored estimates are retained; try again after the broker token refresh.'),503
