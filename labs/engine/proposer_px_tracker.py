@@ -31,7 +31,7 @@ that estimate plus half the recorded bid/ask spread, sells at minus half. So fil
 INSIDE a minute are estimates, not recorded quotes; on Pramanaa's own 15-29 Sep
 ledger the same model was 20% conservative (alphaIMB research, REBUILD.md sec. 9).
 Read the totals as a like-for-like comparison of rule sets, not as a forecast: they
-move by lakhs with the assumed entry second (see LIVE_PRINT_SECOND).
+move by lakhs with the assumed entry second (see PRINT_LAG_S).
 
 Each session depends on the sessions before it (the recovery book), so the book is
 always built in date order.
@@ -64,22 +64,11 @@ LOTS = 100
 QTY = LOT_SIZE * LOTS
 STRATEGY_VERSION = pe.STRATEGY_VERSION_PX
 PRINT_EVERY_MIN = 5
-# When the live bot prints and acts, measured from its own records (storage/live.db, 5-26 Oct 2026):
-# the first 5-class print of a day comes 6-9 s into its first valid minute (09:22 on every day) and
-# then one every ~301 s (median gap), so the second creeps forward through the day; its orders went in
-# 4.2-5.7 s after the print on every entry since 19 Oct (5-19 s before labs 7b2bdf6 of 16 Oct stopped
-# orders waiting for Angel's instrument master; every day here uses today's delay). Days on
-# which the live bot recorded its prints use those times; other days use this clock. Until 27 Oct
-# 2026 every book acted 25 s into every minute (PRINT_LAG_S, read from the first two live entries,
-# which were print + a slow order), about 16 s late on the day's first print (Vipin: "it should not
-# be 25 s"). The book is very sensitive to this because one-minute bars cannot say where inside the
-# minute the extremes fell: 1 Jul - 26 Oct the Sensex V5 2.5% replay nets +8.1L at 25 s and +8.5L
-# on this clock, with very different months, and 26 Oct goes from -2.65L to +31.5k.
-LIVE_PRINT_SECOND = 7
-LIVE_PRINT_GAP_S = 301.0
-ENTRY_DELAY_S = 5.0
-MIN_RECORDED_PRINTS = 60              # a full day has 72; fewer means the live bot was not up all day
-# The Pramanaa-clock shadows keep their own timing: first print 25 s into its minute, acted at once.
+# Second of the minute at which a print is acted on. The live bot's print second drifts through
+# the day; its first real entries (5 Oct 2026) landed 25 s and 28 s into their minutes. The book
+# is very sensitive to this: 1 Jun - 5 Oct at 100 lots it nets about -9L at 10-20 s, -0.9L at
+# 25 s and -0.5L..+0.2L at 30-45 s, because one-minute bars cannot say where inside the minute
+# the extremes fell.
 PRINT_LAG_S = 25
 PRINT_UNTIL = time(15, 21)            # the live feed stops printing here
 ENTRY_CUTOFF, EOD = time(15, 20), time(15, 25)
@@ -107,7 +96,7 @@ class Book:
     its prints."""
     key: str
     strategy_version: str
-    print_gap_s: float = LIVE_PRINT_GAP_S
+    print_gap_s: float = PRINT_EVERY_MIN * 60.0
 
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
@@ -347,43 +336,20 @@ class _Contract:
 
 
 # --------------------------------------------------------------- predictor ---
-def live_print_times(day: str) -> list[datetime]:
-    """The live bot's own 5-class print times for `day` (storage/live.db, read-only), or [] when it
-    did not record a full day there."""
-    try:
-        from config.labs_config import LIVE_DB_PATH
-        if not LIVE_DB_PATH.is_file():
-            return []
-        conn = sqlite3.connect(f"file:{LIVE_DB_PATH.as_posix()}?mode=ro", uri=True, timeout=10)
-        try:
-            rows = conn.execute("SELECT asof FROM live_proposer_prints WHERE trade_date=? ORDER BY asof",
-                                (day,)).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return []
-    times = sorted({datetime.fromisoformat(str(r[0])[:19]) for r in rows if r[0]})
-    times = [t for t in times if SESSION_OPEN <= t.time() <= PRINT_UNTIL.replace(second=59)]
-    return times if len(times) >= MIN_RECORDED_PRINTS else []
-
-
 def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: dict,
-            through: datetime, gap_s: float = LIVE_PRINT_GAP_S,
-            recorded: list[datetime] | None = None) -> tuple[list[dict], pp.Regime]:
-    """The live feed's prints, replayed: gap-rule regime, then 5-class calls, each from completed bars
-    only (bars before its print minute). Live clock (every book but the Pramanaa shadows): the print
-    times the live bot recorded that day (`recorded`), else its clock - the first call LIVE_PRINT_SECOND
-    into the first minute it is valid, then one every `gap_s` seconds - and each acted on
-    ENTRY_DELAY_S after its print. Pramanaa clock (gap_s == PRAMANAA_PRINT_GAP_S): the first call
-    PRINT_LAG_S into its minute, then every 310.5 s, acted on at once. `t` is the minute and `sec`
-    the second at which a print is acted on (an action past :59 falls in the next minute)."""
+            through: datetime, gap_s: float = PRINT_EVERY_MIN * 60.0) -> tuple[list[dict], pp.Regime]:
+    """The live feed's prints, replayed: gap-rule regime, the first 5-class call as soon as one is
+    valid (PRINT_LAG_S into its minute), then one every `gap_s` seconds; each from completed bars
+    only (bars before its minute). `sec` is the second of minute `t` at which the print is acted
+    on. At the default gap (exactly five minutes) every print lands PRINT_LAG_S into its minute,
+    as the live feed's do; at PRAMANAA_PRINT_GAP_S the second and the minute slide."""
     regime = pp.regime_from_gap(prior[-1][1] if prior else None, open_ref)
-    pramanaa = gap_s == PRAMANAA_PRINT_GAP_S
-    delay = timedelta(0) if pramanaa else timedelta(seconds=ENTRY_DELAY_S)
     out = []
-
-    def call(at: datetime):
+    at = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + timedelta(minutes=1, seconds=PRINT_LAG_S)
+    while True:
         m = at.replace(second=0, microsecond=0)
+        if m > through or m.time() > PRINT_UNTIL:
+            break
         done = [b for b in today if b[0] < m]
         chain = None
         if done and m in chains:
@@ -392,31 +358,10 @@ def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: 
             chain = {"spot": done[-1][1],
                      "atm_pcr": (pe_[idx].sum() / ce[idx].sum()) if ce[idx].sum() > 0 else None}
         x = pp.predict_x5(prior, done, chain, regime) if done else None
-        if not x:
-            return None
-        act = at + delay
-        t = act.replace(second=0, microsecond=0)
-        return {"t": t, "sec": (act - t).total_seconds(), "regime": regime.label, "x5": x["x5"],
-                "x5_conf": x["x5_conf"], "x5_asof": m.isoformat(), "drift_state": pp.drift_state(x["micro"])}
-
-    if recorded and not pramanaa:
-        for at in recorded:
-            m = at.replace(second=0, microsecond=0)
-            if m > through or m.time() > PRINT_UNTIL:
-                break
-            p = call(at)
-            if p:
-                out.append(p)
-        return out, regime
-    lag = PRINT_LAG_S if pramanaa else LIVE_PRINT_SECOND
-    at = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + timedelta(minutes=1, seconds=lag)
-    while True:
-        m = at.replace(second=0, microsecond=0)
-        if m > through or m.time() > PRINT_UNTIL:
-            break
-        p = call(at)
-        if p:
-            out.append(p)
+        if x:
+            out.append({"t": m, "sec": (at - m).total_seconds(), "regime": regime.label, "x5": x["x5"],
+                        "x5_conf": x["x5_conf"], "x5_asof": m.isoformat(),
+                        "drift_state": pp.drift_state(x["micro"])})
             at += timedelta(seconds=gap_s)
         else:
             at += timedelta(minutes=1)          # not valid yet: the feed asks again a minute later
@@ -492,7 +437,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     # the gap is read at the close of the 09:15 bar, as the live feed reads the broker's candle
     open_ref = bars[0][4] if bars[0][0].time() == SESSION_OPEN else None
     prints, regime = _prints(day, prior, closes_today, open_ref, chains, min(through, session_end),
-                             gap_s=book.print_gap_s, recorded=live_print_times(day))
+                             gap_s=book.print_gap_s)
     by_min = {}
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)

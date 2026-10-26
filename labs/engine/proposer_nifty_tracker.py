@@ -143,8 +143,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     prior = tr._prior_closes(day)
     open_ref = sbars[0][4] if sbars[0][0].time() == tr.SESSION_OPEN else None
     prints, regime = tr._prints(day, prior, [(b[0], b[4]) for b in sbars], open_ref, chains,
-                                min(through, session_end), gap_s=book.print_gap_s,
-                                recorded=tr.live_print_times(day))
+                                min(through, session_end), gap_s=book.print_gap_s)
     by_min = {}
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)

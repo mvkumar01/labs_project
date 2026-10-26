@@ -35,46 +35,14 @@ def test_pramanaa_clock_is_five_passes_of_its_loop():
     assert 4 * one_pass < tr.PRAMANAA_MIN_GAP_S <= 5 * one_pass
     assert tr.PRAMANAA_PRINT_GAP_S == 310.5
     assert (tr.V3_CLOCK.strategy_version, tr.V3_CLOCK.print_gap_s) == (tr.V3.strategy_version, 310.5)
-    assert tr.V3.print_gap_s == tr.PX.print_gap_s == 301.0          # the live-twin books: the live bot's clock
+    assert tr.V3.print_gap_s == tr.PX.print_gap_s == 300.0          # the live-twin books are unchanged
 
 
-def test_books_on_the_live_clock_act_5_s_after_the_live_bots_print_times():
-    # the live bot: first print 7 s into the first valid minute (09:22), then every 301 s; orders 5 s later
+def test_books_on_the_five_minute_clock_print_as_before():
     today, prior = _session()
     out, _ = tr._prints(DAY.date().isoformat(), prior, today, today[0][1], {}, today[-1][0])
-    assert _times(out) == [("09:22", 12.0), ("09:27", 13.0), ("09:32", 14.0), ("09:37", 15.0), ("09:42", 16.0),
-                           ("09:47", 17.0)]
-    assert out[0]["x5_asof"].endswith("09:22:00")
-
-
-def test_recorded_live_print_times_are_used_and_an_action_past_59_s_falls_in_the_next_minute():
-    today, prior = _session()
-    rec = [DAY.replace(hour=9, minute=22, second=6), DAY.replace(hour=9, minute=27, second=57)]
-    out, _ = tr._prints(DAY.date().isoformat(), prior, today, today[0][1], {}, today[-1][0], recorded=rec)
-    assert _times(out) == [("09:22", 11.0), ("09:28", 2.0)]
-    assert out[1]["x5_asof"].endswith("09:27:00")             # the call still reads the bars before 09:27
-    # the Pramanaa shadows ignore the live bot's times
-    out, _ = tr._prints(DAY.date().isoformat(), prior, today, today[0][1], {}, today[-1][0], gap_s=310.5,
-                        recorded=rec)
-    assert _times(out, 2) == [("09:22", 25.0), ("09:27", 35.5)]
-
-
-def test_live_print_times_need_a_full_recorded_day(tmp_path, monkeypatch):
-    import config.labs_config as cfg
-    db = tmp_path / "live.db"
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE live_proposer_prints (asof TEXT, trade_date TEXT)")
-    start = DAY.replace(hour=9, minute=22, second=7)
-    conn.executemany("INSERT INTO live_proposer_prints VALUES (?, ?)",
-                     [((start + timedelta(seconds=301 * i)).isoformat(), "2026-10-08") for i in range(72)]
-                     + [(start.replace(day=9).isoformat(), "2026-10-09")])
-    conn.commit(); conn.close()
-    monkeypatch.setattr(cfg, "LIVE_DB_PATH", db)
-    got = tr.live_print_times("2026-10-08")
-    assert len(got) == 72 and got[0] == start
-    assert tr.live_print_times("2026-10-09") == [] and tr.live_print_times("2026-10-12") == []
-    monkeypatch.setattr(cfg, "LIVE_DB_PATH", tmp_path / "missing.db")
-    assert tr.live_print_times("2026-10-08") == []
+    assert _times(out) == [("09:22", 25.0), ("09:27", 25.0), ("09:32", 25.0), ("09:37", 25.0), ("09:42", 25.0),
+                           ("09:47", 25.0)]
 
 
 def test_shadow_prints_every_310_5_seconds_and_its_minute_slides():
@@ -100,7 +68,7 @@ def test_the_loop_runs_the_shadow_after_v3_and_a_shadow_failure_never_stops_v3(m
     assert v3.run_day("2026-10-08")["status"] == "closed"
     assert calls == ["proposer_v3", "proposer_dt25_shadow", "proposer_dt25_clock", "proposer_v3_clock"]
     rules = {b.key: (b.strategy_version, b.print_gap_s) for b, _ in v3.SHADOWS}
-    assert rules == {"proposer_dt25_shadow": ("proposer_dt25", 301.0), "proposer_dt25_clock": ("proposer_dt25", 310.5),
+    assert rules == {"proposer_dt25_shadow": ("proposer_dt25", 300.0), "proposer_dt25_clock": ("proposer_dt25", 310.5),
                      "proposer_v3_clock": ("proposer_dt25_v3", 310.5)}
 
 
