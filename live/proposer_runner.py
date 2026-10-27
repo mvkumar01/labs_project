@@ -42,6 +42,7 @@ from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
 from live.engine import proposer_strike as ps
 from live.notify import notify_telegram
+from market_data import tick_feed
 from market_data.expiry import expiry_code_from_symbol, select_expiry_code
 
 log = logging.getLogger("live.proposer_runner")
@@ -67,6 +68,9 @@ def instrument_for(strategy_version) -> Instrument:
 
 
 POLL_OPEN_S, POLL_FLAT_S = 1.0, 2.0
+FAST_CYCLE_S = 0.25            # with a position open and ticks flowing: next tick, but no sooner than this
+HEARTBEAT_EVERY_S = 2.0        # owner/ABI writes at most this often per connection (fast cycles)
+TICKS_ON = os.environ.get("PROPOSER_TICKS", "1") != "0"
 PRINT_EVERY_MIN = 5
 ENTRY_CUTOFF = dtime(15, 20)
 EOD_FLAT = dtime(15, 25)
@@ -203,17 +207,91 @@ class KiteMarket:
 
     def quote(self, symbol: str, profile: Instrument = SENSEX_I) -> dict | None:
         """{'ltp', 'bid', 'ask'} for a SENSEX option, or None."""
+        q = self._raw_quote(symbol, profile)
+        return None if q is None else _quote_fields(q)
+
+    def _raw_quote(self, symbol: str, profile: Instrument) -> dict | None:
         key = f"{profile.segment}:{symbol}"
         try:
-            q = self._kite().quote(key)[key]
+            return self._kite().quote(key)[key]
         except Exception as e:
             log.warning("quote failed %s: %s", symbol, type(e).__name__)
             return None
-        depth = q.get("depth") or {}
-        bids = [float(x.get("price") or 0) for x in depth.get("buy") or [] if float(x.get("price") or 0) > 0]
-        asks = [float(x.get("price") or 0) for x in depth.get("sell") or [] if float(x.get("price") or 0) > 0]
-        return {"ltp": float(q.get("last_price") or 0) or None,
-                "bid": max(bids) if bids else None, "ask": min(asks) if asks else None}
+
+
+def _quote_fields(q: dict) -> dict:
+    depth = q.get("depth") or {}
+    bids = [float(x.get("price") or 0) for x in depth.get("buy") or [] if float(x.get("price") or 0) > 0]
+    asks = [float(x.get("price") or 0) for x in depth.get("sell") or [] if float(x.get("price") or 0) > 0]
+    return {"ltp": float(q.get("last_price") or 0) or None,
+            "bid": max(bids) if bids else None, "ask": min(asks) if asks else None}
+
+
+class TickMarket(KiteMarket):
+    """KiteMarket with the Kite websocket in front (market_data/tick_feed.py): index and held-option prices
+    from ticks while they are fresh, the REST read when the feed is down, stale or not yet subscribed.
+    The option's instrument token comes from its first REST quote, which also subscribes it."""
+
+    REPORT_EVERY_S = 300.0
+
+    def __init__(self, feed: tick_feed.TickFeed | None = None):
+        self.feed = feed or tick_feed.TickFeed(self._credentials)
+        self._tokens: dict[str, int] = {}
+        self.reads = {"tick": 0, "rest": 0}
+        self._reported = time.monotonic()
+
+    def _credentials(self):
+        kite = self._kite()
+        return kite.api_key, kite.access_token
+
+    def _count(self, kind: str) -> None:
+        self.reads[kind] += 1
+        if time.monotonic() - self._reported >= self.REPORT_EVERY_S:
+            log.info("tick feed live=%s reads tick=%d rest=%d", self.feed.live(),
+                     self.reads["tick"], self.reads["rest"])
+            self.reads, self._reported = {"tick": 0, "rest": 0}, time.monotonic()
+
+    def _tick_spot(self, profile: Instrument) -> float | None:
+        self.feed.watch(profile.kite_token, always=True)
+        p = self.feed.price(profile.kite_token)
+        return (p or {}).get("ltp")
+
+    def spot(self, profile: Instrument = SENSEX_I) -> float | None:
+        x = self._tick_spot(profile)
+        self._count("tick" if x else "rest")
+        return x or super().spot(profile)
+
+    def spots(self) -> dict[str, float | None]:
+        out = {p.underlying: self._tick_spot(p) for p in (SENSEX_I, NIFTY_I)}
+        if all(out.values()):
+            self._count("tick")
+            return out
+        self._count("rest")
+        return super().spots()
+
+    def quote(self, symbol: str, profile: Instrument = SENSEX_I) -> dict | None:
+        key = f"{profile.segment}:{symbol}"
+        token = self._tokens.get(key)
+        if token is not None:
+            self.feed.watch(token)
+            p = self.feed.price(token)
+            if p and p["ltp"] and (p["bid"] or p["ask"]):
+                self._count("tick")
+                return p
+        self._count("rest")
+        q = self._raw_quote(symbol, profile)
+        if q is None:
+            return None
+        if q.get("instrument_token"):
+            self._tokens[key] = int(q["instrument_token"])
+            self.feed.watch(self._tokens[key])
+        return _quote_fields(q)
+
+    def ticking(self) -> bool:
+        return self.feed.live()
+
+    def wait_tick(self, timeout: float) -> bool:
+        return self.feed.wait(timeout)
 
 
 def broker_open_candle(day: date, token: int = SENSEX_KITE_TOKEN) -> dict | None:
@@ -731,10 +809,14 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                        market: KiteMarket, now: datetime, adapter_factory=None) -> bool:
     """One cycle for one Proposer connection. Returns True while a position is open."""
     clock = ctx.setdefault("clocks", {})[conn_id] = StepClock()
-    if not publish_heartbeat(user_id, conn_id, ctx["task_id"]):
-        if ctx.get("funds_cache") is not None:
-            ctx["funds_cache"].unwatch((user_id, conn_id))
-        return False
+    beats = ctx.setdefault("beats", {})
+    if time.monotonic() - beats.get(conn_id, float("-inf")) >= HEARTBEAT_EVERY_S:
+        if not publish_heartbeat(user_id, conn_id, ctx["task_id"]):
+            beats.pop(conn_id, None)
+            if ctx.get("funds_cache") is not None:
+                ctx["funds_cache"].unwatch((user_id, conn_id))
+            return False
+        beats[conn_id] = time.monotonic()
     mode = ex.get_mode(user_id, conn_id)
     st = svc.get_trade_state(user_id, conn_id)
     is_open = (st.get("position") or "NONE").upper() == "OPEN"
@@ -1049,11 +1131,12 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
         hb.start()
     ctx = {"task_id": task_id, "adapters": {}, "reconciled": set(), "conns": {}}
     feed = feed or PredictorFeed()
-    market = market or KiteMarket()
+    market = market or (TickMarket() if TICKS_ON else KiteMarket())
     cycles = 0
     try:
         while True:
             any_open = False
+            cycle_started = time.monotonic()
             now = clock()
             try:
                 regime_job.step(now)
@@ -1089,9 +1172,19 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
             cycles += 1
             if max_cycles is not None and cycles >= max_cycles:
                 return
-            time.sleep(POLL_OPEN_S if any_open else POLL_FLAT_S)
+            if any_open and getattr(market, "ticking", lambda: False)():
+                # exits are checked on the next tick, not on the next second's REST read
+                market.wait_tick(POLL_OPEN_S)
+                rest = FAST_CYCLE_S - (time.monotonic() - cycle_started)
+                if rest > 0:
+                    time.sleep(rest)
+            else:
+                time.sleep(POLL_OPEN_S if any_open else POLL_FLAT_S)
     finally:
         stop.set()
+        close = getattr(getattr(market, "feed", None), "close", None)
+        if close is not None:
+            close()
         if ctx.get("funds_cache") is not None:
             ctx["funds_cache"].close()
         if hb is not None:

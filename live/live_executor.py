@@ -72,7 +72,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # v12: explicit fixed/dynamic lot sizing, with balance reads only in background workers.
 # v13 (2026-10-27): an unfinished exit order is resolved (filled -> recorded, working -> cancelled
 # and re-sent) before any new exit; a v12 runner stacks fresh SELLs on a resting one.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v13"
+# v14 (2026-10-27): prices come from the Kite websocket while fresh (REST fallback) and, with a
+#   position open, exits are checked on every tick (no sooner than 0.25 s) instead of once a second.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v14"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
