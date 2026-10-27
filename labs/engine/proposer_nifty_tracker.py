@@ -186,7 +186,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         if pos:
             q = pos["c"].quote(t)
             anchor = (q[0], q[1], pos["c"].delta(t)) if q else None
-        path, i = tr._dense(tr._nodes(nb)), 0
+        path, i = tr._with_print_seconds(tr._dense(tr._nodes(nb)), [p["sec"] for p in pending], nb[4]), 0
         move = (shist[-1][4] - open_ref) if shist and open_ref else None     # the SENSEX with-the-day input
         while i < len(path):
             sec, spot = path[i]

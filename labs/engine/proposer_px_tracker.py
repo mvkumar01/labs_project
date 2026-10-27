@@ -384,6 +384,25 @@ def _dense(nodes) -> list[tuple[float, float]]:
     return pts
 
 
+def _with_print_seconds(path: list[tuple[float, float]], secs, close: float | None = None) -> list[tuple[float, float]]:
+    """The path with a point at every print's second (spot interpolated between its neighbours). The path is
+    walked in 1-point steps, so a quiet minute is visited only at 0/20/40 s: without these points a print due at
+    25 s was acted on at 40 s and one due after the last step was never acted on (Pramanaa's 09:21:54 call on
+    13 Oct and 1 Oct 2026; alphaIMB REBUILD sec. 46)."""
+    out = list(path)
+    for s in sorted({float(x) for x in secs if x is not None}):
+        if s >= 60.0 or any(abs(p[0] - s) < 1e-9 for p in out):
+            continue
+        k = next((i for i, p in enumerate(out) if p[0] > s), len(out))
+        if k == 0:
+            continue
+        s0, x0 = out[k - 1]
+        s1, x1 = out[k] if k < len(out) else (60.0, x0 if close is None else close)
+        x = x0 + (x1 - x0) * (s - s0) / (s1 - s0) if s1 > s0 else x0
+        out.insert(k, (s, x))
+    return out
+
+
 def _rest_of_minute(sec: float, spot: float, bar) -> list[tuple[float, float]]:
     _, o, h, l, c = bar
     return [(sec, spot), ((sec + 60) / 2, h if c >= o else l), (60.0, c)]
@@ -476,7 +495,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         if pos:
             q = pos["c"].quote(t)
             anchor = (q[0], q[1], pos["c"].delta(t)) if q else None
-        path, i = _dense(_nodes(bar)), 0
+        path, i = _with_print_seconds(_dense(_nodes(bar)), [p["sec"] for p in pending], bar[4]), 0
         closes = [b[4] for b in hist]
         # the with-the-day filter's input: last completed close against the 09:15 close
         move = (hist[-1][4] - open_ref) if hist and open_ref else None

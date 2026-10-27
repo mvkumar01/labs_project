@@ -516,3 +516,15 @@ def test_v3_ui_patch_applies_next_to_the_px_wiring_and_is_idempotent(tmp_path):
     for rel in ("templates/live_strategy.html", "templates/_proposer_v3.html"):
         jinja2.Environment().parse((tmp_path / rel).read_text(encoding="utf-8"))
     assert "{% include '_proposer_v3.html' %}" in (tmp_path / "templates/live_strategy.html").read_text(encoding="utf-8")
+
+
+def test_a_print_is_acted_on_at_its_own_second_even_in_a_quiet_minute():
+    """2026-10-27 (alphaIMB REBUILD sec. 46): a quiet minute's path has points only at 0/20/40 s, so a print due at
+    25 s acted at 40 s and one due at 54 s was never acted on. Every print second is now on the path."""
+    from labs.engine import proposer_px_tracker as tr
+    path = tr._dense(tr._nodes((None, 100.0, 100.4, 99.8, 100.2)))
+    assert [s for s, _ in path] == [0.0, 20.0, 40.0]
+    out = tr._with_print_seconds(path, [25.0, 54.0, 0.0], 100.2)
+    assert [s for s, _ in out] == [0.0, 20.0, 25.0, 40.0, 54.0]
+    assert out[2][1] == pytest.approx(99.95) and out[4][1] == pytest.approx(100.4 + (100.2 - 100.4) * 14 / 20)
+    assert tr._with_print_seconds(path, []) == path
