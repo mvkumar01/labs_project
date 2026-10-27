@@ -47,6 +47,24 @@
         <span class="muted">Latest {{ proposer_nifty_v5_stats.latest.trade_date }}: {{ proposer_nifty_v5_stats.latest.status }}, through {{ (proposer_nifty_v5_stats.latest.through_ts or '')[11:16] }}</span>
       </div>
 
+      {% set pc = proposer_nifty_v5_stats.get('pclock') or {} %}
+      <h2 style="margin-top:24px">Same book on Pramanaa's print clock</h2>
+      <p class="muted">The twin of the live "Pramanaa's" print clock: the forming candle counted, first print 09:21:45,
+        then one every 310.5 s (Pramanaa's scheduler), instead of 09:22 and every 300 s. Everything else is this book.
+        On 1-min data the forming candle is priced at the last completed close; live it is the SENSEX spot.</p>
+      {% if pc.get('error') %}<p class="empty">Twin unavailable ({{ pc.error }}).</p>
+      {% elif not pc %}<p class="empty">Twin not filled yet: press Refresh backfill.</p>
+      {% else %}
+      <table class="table"><thead><tr><th></th><th>Net</th><th>Green days</th><th>Trades</th><th>Worst day</th><th>Max drawdown</th></tr></thead><tbody>
+        <tr><td>Our clock (this book)</td><td>&#8377;{{ "{:,.0f}".format(proposer_nifty_v5_stats.net_total) }}</td><td>{{ proposer_nifty_v5_stats.green_pct }}%</td><td>{{ proposer_nifty_v5_stats.trades }}</td><td>&#8377;{{ "{:,.0f}".format(proposer_nifty_v5_stats.worst_day) }}</td><td>&#8377;{{ "{:,.0f}".format(proposer_nifty_v5_stats.max_dd) }}</td></tr>
+        <tr><td>Pramanaa's clock</td><td>&#8377;{{ "{:,.0f}".format(pc.net_total) }}</td><td>{{ pc.green_pct }}%</td><td>{{ pc.trades }}</td><td>&#8377;{{ "{:,.0f}".format(pc.worst_day) }}</td><td>&#8377;{{ "{:,.0f}".format(pc.max_dd) }}</td></tr>
+      </tbody></table>
+      <details style="margin-top:8px"><summary>Day by day (latest 40)</summary>
+      <table class="table"><thead><tr><th>Date</th><th>Our clock</th><th>Pramanaa's clock</th></tr></thead><tbody>
+      {% for d in proposer_nifty_v5_stats.pclock_days %}<tr><td>{{ d.trade_date }}</td><td>{{ "{:,.0f}".format(d.ours or 0) }}</td><td>{{ "{:,.0f}".format(d.pclock or 0) if d.pclock is not none else '' }}</td></tr>{% endfor %}
+      </tbody></table></details>
+      {% endif %}
+
       <h2 style="margin-top:24px">By month</h2>
       <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead><tbody>
       {% for m in proposer_nifty_v5_stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>

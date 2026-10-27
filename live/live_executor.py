@@ -74,7 +74,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # and re-sent) before any new exit; a v12 runner stacks fresh SELLs on a resting one.
 # v14 (2026-10-27): prices come from the Kite websocket while fresh (REST fallback) and, with a
 #   position open, exits are checked on every tick (no sooner than 0.25 s) instead of once a second.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v14"
+# v15 (2026-10-27): per-connection print clock (proposer_print_clock): ours (09:22, every 300 s) or
+#   Pramanaa's (forming candle counted, first print 09:21:45, every 310.5 s; own prints table).
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v15"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

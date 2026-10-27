@@ -82,6 +82,18 @@ OPEN_VERIFY_UNTIL = dtime(9, 20)   # ask the broker for it until then, afterward
 OPEN_RETRY_S = 15
 # Strike choice: live/engine/proposer_strike.py (Sentinel's |delta| >= 0.60 rule, from 2026-10-16).
 SLOW_CYCLE_S = 5.0             # a cycle this long is logged with the time each step took
+# Print clocks, chosen per connection (config proposer_print_clock). "ours": the first print once seven
+# completed 1-min bars exist (09:22), then every PRINT_EVERY_MIN minutes. "pramanaa": Pramanaa's scheduler
+# (services/market-predictor/scheduler.py at 62ef7d4; alphaIMB REBUILD sec. 21) - a loop that works, sleeps
+# 60 s and prints once 300 s have passed, so a print comes every fifth pass, 5 x (60 + ~2.1 s of work) =
+# 310.5 s counted from when it was due; its x5 counts the forming 1-min candle as the seventh bar, so the
+# first print falls in the 09:21 minute. Its bot entered on that first print at 09:21:22 - 09:21:58 (8 days
+# of its ledger, median 09:21:49), so ours is due at 09:21:45. Its prints go to their own table.
+PRINT_CLOCK_OURS, PRINT_CLOCK_PRAMANAA = "ours", "pramanaa"
+PRINT_CLOCKS = (PRINT_CLOCK_OURS, PRINT_CLOCK_PRAMANAA)
+PRAMANAA_PRINT_GAP_S = 310.5
+PRAMANAA_FIRST_PRINT = dtime(9, 21, 45)
+PRINTS_TABLE = {PRINT_CLOCK_OURS: "live_proposer_prints", PRINT_CLOCK_PRAMANAA: "live_proposer_prints_pclock"}
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -95,11 +107,12 @@ def ensure_schema(conn=None) -> None:
     conn = conn or get_live_conn()
     try:
         with conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS live_proposer_prints ("
-                " asof TEXT PRIMARY KEY, trade_date TEXT NOT NULL, regime TEXT, regime_conf REAL,"
-                " x5 TEXT, x5_conf REAL, probs_json TEXT, drift_state TEXT, drift_dist REAL,"
-                " drift_slope REAL, source TEXT, created_at TEXT)")
+            for table in PRINTS_TABLE.values():
+                conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {table} ("
+                    " asof TEXT PRIMARY KEY, trade_date TEXT NOT NULL, regime TEXT, regime_conf REAL,"
+                    " x5 TEXT, x5_conf REAL, probs_json TEXT, drift_state TEXT, drift_dist REAL,"
+                    " drift_slope REAL, source TEXT, created_at TEXT)")
     finally:
         if own:
             conn.close()
@@ -152,13 +165,13 @@ def regime_source() -> str:
     return (os.environ.get("PROPOSER_REGIME_SOURCE") or "gap").strip().lower()
 
 
-def save_print(p: dict, conn=None) -> None:
+def save_print(p: dict, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_OURS]) -> None:
     own = conn is None
     conn = conn or get_live_conn()
     try:
         with conn:
             conn.execute(
-                "INSERT OR IGNORE INTO live_proposer_prints VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                f"INSERT OR IGNORE INTO {table} VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (p["x5_asof"], p["trade_date"], p["regime"], p.get("regime_conf"), p["x5"],
                  p["x5_conf"], json.dumps(p.get("probs5") or {}), p.get("drift_state"),
                  p.get("drift_dist"), p.get("drift_slope"), p.get("source", "proposer_rules_v1"),
@@ -168,11 +181,11 @@ def save_print(p: dict, conn=None) -> None:
             conn.close()
 
 
-def prints_today(trade_date: str, conn=None) -> list[dict]:
+def prints_today(trade_date: str, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_OURS]) -> list[dict]:
     own = conn is None
     conn = conn or get_live_conn()
     try:
-        rows = conn.execute("SELECT * FROM live_proposer_prints WHERE trade_date=? ORDER BY asof",
+        rows = conn.execute(f"SELECT * FROM {table} WHERE trade_date=? ORDER BY asof",
                             (trade_date,)).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -528,10 +541,16 @@ class LlmRegimeJob:
 
 
 class PredictorFeed:
-    """Publishes Proposer prints every PRINT_EVERY_MIN minutes (first once 7 bars of today exist)."""
+    """Publishes Proposer prints on one print clock (PRINT_CLOCKS): every PRINT_EVERY_MIN minutes from
+    the first once 7 completed bars of today exist, or on Pramanaa's 310.5 s clock with the forming
+    bar (the latest SENSEX spot, from `spot_fn`) counted."""
 
-    def __init__(self, bars_fn=spot_bars, chain_fn=option_chain, store=save_print,
-                 store_regime=save_regime, lookup_regime=get_regime, open_fn=broker_open_candle):
+    def __init__(self, bars_fn=spot_bars, chain_fn=option_chain, store=None,
+                 store_regime=save_regime, lookup_regime=get_regime, open_fn=broker_open_candle,
+                 clock: str = PRINT_CLOCK_OURS, spot_fn=None):
+        self.clock, self.spot_fn = clock, spot_fn
+        self.table = PRINTS_TABLE[clock]
+        store = store or (lambda p: save_print(p, table=self.table))
         self.bars_fn, self.chain_fn, self.store = bars_fn, chain_fn, store
         self.store_regime, self.lookup_regime, self.open_fn = store_regime, lookup_regime, open_fn
         self._open_try: datetime | None = None
@@ -551,9 +570,12 @@ class PredictorFeed:
             if bars:
                 self.prior = bars
                 break
-        for row in prints_today(day.isoformat()):
+        for row in prints_today(day.isoformat(), table=self.table):
             self.latest = {"regime": row["regime"], "x5": row["x5"], "x5_conf": row["x5_conf"],
                            "x5_asof": row["asof"], "drift_state": row["drift_state"]}
+        if self.clock == PRINT_CLOCK_PRAMANAA and self.latest:
+            # a restart keeps the clock's phase: the next print is due one gap after the last
+            self.next_due = datetime.fromisoformat(self.latest["x5_asof"]) + timedelta(seconds=PRAMANAA_PRINT_GAP_S)
 
     def snapshot(self) -> dict:
         return dict(self.latest)
@@ -564,9 +586,18 @@ class PredictorFeed:
             self._new_day(now.date())
         if self.next_due is not None and now < self.next_due:
             return None
-        today = [b for b in self.bars_fn(now.date()) if b[0] < now.replace(second=0, microsecond=0)]
+        pclock = self.clock == PRINT_CLOCK_PRAMANAA
+        if pclock and self.next_due is None and now.time() < PRAMANAA_FIRST_PRINT:
+            return None
+        minute = now.replace(second=0, microsecond=0)
+        today = [b for b in self.bars_fn(now.date()) if b[0] < minute]
         if not today:
             return None
+        if pclock:
+            spot = self.spot_fn() if self.spot_fn is not None else None
+            if not spot:
+                return None                     # no forming bar without a live spot: ask again next cycle
+            today = today + [(minute, float(spot))]
         if self.regime is None:
             gap = self._gap_regime(now, today)
             if gap is None:
@@ -601,9 +632,15 @@ class PredictorFeed:
              "drift_slope": x["micro"].get("slope_pct")}
         self.store(p)
         self.latest = {k: p[k] for k in ("regime", "x5", "x5_conf", "x5_asof", "drift_state")}
-        self.next_due = asof + timedelta(minutes=PRINT_EVERY_MIN)
-        log.info("print %s regime=%s x5=%s conf=%.2f drift=%s", asof.time(), p["regime"],
-                 p["x5"], p["x5_conf"], p["drift_state"])
+        if pclock:
+            due = self.next_due or now
+            while due <= now:
+                due += timedelta(seconds=PRAMANAA_PRINT_GAP_S)
+            self.next_due = due
+        else:
+            self.next_due = asof + timedelta(minutes=PRINT_EVERY_MIN)
+        log.info("print%s %s regime=%s x5=%s conf=%.2f drift=%s", " [pramanaa clock]" if pclock else "",
+                 asof.time(), p["regime"], p["x5"], p["x5_conf"], p["drift_state"])
         return p
 
     def _gap_regime(self, now: datetime, today: list) -> pp.Regime | None:
@@ -666,9 +703,9 @@ class ProposerConnection:
 
     def __init__(self, user_id: str, conn_id: str, params: pe.ProposerParams | None = None,
                  strategy: str | None = None, day_target: float | None = None,
-                 ratio: float | None = None):
+                 ratio: float | None = None, print_clock: str = PRINT_CLOCK_OURS):
         self.user_id, self.conn_id, self.strategy, self.day_target = user_id, conn_id, strategy, day_target
-        self.ratio = ratio
+        self.ratio, self.print_clock = ratio, print_clock
         params = params or pe.params_for(strategy, day_target)
         self.engine = pe.ProposerEngine(pe.scaled_for_nifty(params, ratio) if ratio is not None else params)
         self.day: str | None = None
@@ -680,7 +717,7 @@ class ProposerConnection:
             return
         self.engine.reset_session()
         today, _ = _today_trades(self.user_id, self.conn_id, trade_date, dry_run)
-        prints = prints_today(trade_date)
+        prints = prints_today(trade_date, table=getattr(feed, "table", PRINTS_TABLE[PRINT_CLOCK_OURS]))
         regime = prints[-1]["regime"] if prints else None
         stale_asof = None
         if prints:
@@ -702,6 +739,11 @@ class ProposerConnection:
         day_gross = sum(float(t.get("gross_pnl") or 0) for t in today)
         book_gross = sum(float(t.get("gross_pnl") or 0) for t in all_rows)
         return day_gross, book_gross, sum(1 for t in today if float(t.get("gross_pnl") or 0) < 0)
+
+
+def print_clock_for(user_id: str, conn_id: str) -> str:
+    value = (svc.get_config(user_id, conn_id, "proposer_print_clock") or "").strip()
+    return value if value in PRINT_CLOCKS else PRINT_CLOCK_OURS
 
 
 def publish_heartbeat(user_id: str, conn_id: str, task_id: str) -> bool:
@@ -806,7 +848,8 @@ def _entry_price_fn(market: KiteMarket, symbol: str, cap: float, sent: dict,
 
 
 def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: PredictorFeed,
-                       market: KiteMarket, now: datetime, adapter_factory=None) -> bool:
+                       market: KiteMarket, now: datetime, adapter_factory=None,
+                       feeds: dict | None = None) -> bool:
     """One cycle for one Proposer connection. Returns True while a position is open."""
     clock = ctx.setdefault("clocks", {})[conn_id] = StepClock()
     beats = ctx.setdefault("beats", {})
@@ -883,21 +926,24 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             except ValueError:
                 pass
     day_target = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
+    print_clock = print_clock_for(user_id, conn_id)
+    if feeds:
+        feed = feeds.get(print_clock) or feed
     pc = ctx["conns"].get(conn_id)
     if (pc is None or pc.strategy != strategy or pc.day_target != day_target or pc.ratio != ratio
-            or (profile == NIFTY_I and pc.day != trade_date)):
-        # first cycle, or the operator switched variant or day target
+            or pc.print_clock != print_clock or (profile == NIFTY_I and pc.day != trade_date)):
+        # first cycle, or the operator switched variant, day target or print clock
         pc = ctx["conns"][conn_id] = ProposerConnection(
-            user_id, conn_id, strategy=strategy, day_target=day_target, ratio=ratio)
+            user_id, conn_id, strategy=strategy, day_target=day_target, ratio=ratio, print_clock=print_clock)
         if ratio is not None:
             svc.set_config(user_id, conn_id, "proposer_nifty_ratio_" + trade_date, str(ratio))
         elif profile == NIFTY_I:
             log.warning("NIFTY entries held: 09:15 opening ratio is unavailable conn=%s day=%s", conn_id, trade_date)
         log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
-                 "loss_floor=%s spot_floor_pts=%s day_target=%s", conn_id,
+                 "loss_floor=%s spot_floor_pts=%s day_target=%s print_clock=%s", conn_id,
                  strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
                  pc.engine.params.with_day_pts or "off", pc.engine.params.loss_floor_pct,
-                 pc.engine.params.spot_floor_pts or "off", pc.engine.params.daily_target_pct)
+                 pc.engine.params.spot_floor_pts or "off", pc.engine.params.daily_target_pct, print_clock)
     pc.ensure_session(trade_date, dry_run, feed, now)
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
@@ -1115,7 +1161,8 @@ def _heartbeat_loop(task_id: str, stop: threading.Event) -> None:
 
 
 def run(task_id: str | None = None, max_cycles: int | None = None, adapter_factory=None,
-        market: KiteMarket | None = None, feed: PredictorFeed | None = None, clock=now_ist) -> None:
+        market: KiteMarket | None = None, feed: PredictorFeed | None = None, clock=now_ist,
+        pclock_feed: PredictorFeed | None = None) -> None:
     task_id = task_id or f"proposer_runner:{uuid.uuid4().hex[:8]}"
     init_live_db()
     ensure_schema()
@@ -1132,6 +1179,8 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
     ctx = {"task_id": task_id, "adapters": {}, "reconciled": set(), "conns": {}}
     feed = feed or PredictorFeed()
     market = market or (TickMarket() if TICKS_ON else KiteMarket())
+    pclock_feed = pclock_feed or PredictorFeed(clock=PRINT_CLOCK_PRAMANAA, spot_fn=lambda: market.spot())
+    feeds = {PRINT_CLOCK_OURS: feed, PRINT_CLOCK_PRAMANAA: pclock_feed}
     cycles = 0
     try:
         while True:
@@ -1145,7 +1194,11 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
             try:
                 if lr.market_session_available(now) and now.time() <= dtime(15, 21):
                     feed_started = time.monotonic()
-                    feed.step(now)
+                    for f in feeds.values():
+                        try:
+                            f.step(now)
+                        except Exception as e:
+                            log.error("predictor feed (%s clock) error: %s", f.clock, e)
                     if time.monotonic() - feed_started >= SLOW_CYCLE_S:
                         log.info("predictor feed step took %.1fs", time.monotonic() - feed_started)
             except Exception as e:
@@ -1159,7 +1212,7 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
                     try:
                         any_open |= bool(process_connection(user_id, conn_id, ctx=ctx, feed=feed,
                                                             market=market, now=now,
-                                                            adapter_factory=adapter_factory))
+                                                            adapter_factory=adapter_factory, feeds=feeds))
                     except Exception as e:
                         log.error("proposer conn %s cycle error: %s", conn_id, e)
                     took = ctx.get("clocks", {}).get(conn_id)

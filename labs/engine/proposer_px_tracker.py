@@ -84,6 +84,11 @@ DEFAULT_START = "2026-06-01"
 PRAMANAA_LOOP_SLEEP_S, PRAMANAA_MIN_GAP_S, PRAMANAA_PASS_WORK_S = 60.0, 300.0, 2.1
 _PASS_S = PRAMANAA_LOOP_SLEEP_S + PRAMANAA_PASS_WORK_S
 PRAMANAA_PRINT_GAP_S = math.ceil(PRAMANAA_MIN_GAP_S / _PASS_S) * _PASS_S        # 310.5
+# Pramanaa's x5 counts the forming 1-min candle as the seventh bar, so its first print falls in the 09:21
+# minute; its bot entered on it at 09:21:22 - 09:21:58 (median 09:21:49), so a book with `forming` prints
+# first at 09:21:45 (the live runner's Pramanaa clock does the same). The forming bar's price here is the
+# last completed close (no look-ahead into the minute); live it is the SENSEX spot at the print.
+PRAMANAA_FIRST_PRINT_S = 6 * 60 + 45
 
 
 class ProposerPxInputError(RuntimeError):
@@ -97,6 +102,7 @@ class Book:
     key: str
     strategy_version: str
     print_gap_s: float = PRINT_EVERY_MIN * 60.0
+    forming: bool = False             # Pramanaa's first print: the forming candle counted, 09:21:45
 
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
@@ -120,7 +126,9 @@ V5_DT25 = Book("proposer_v5_dt25", pe.STRATEGY_VERSION_V5)
 # NIFTY on Sensex V5 signals: the same SENSEX prints and engine, positions in NIFTY options with NIFTY's
 # own exits (labs.engine.proposer_nifty_tracker; Vipin, 2026-10-21).
 NIFTY_V5 = Book("proposer_nifty_v5", pe.STRATEGY_VERSION_V5)
-NIFTY_BOOKS = frozenset({NIFTY_V5.key})
+# Nifty Scalper V1 on Pramanaa's print clock, the paper twin of the live clock switch (Vipin, 2026-10-27).
+NIFTY_V5_PCLOCK = Book("proposer_nifty_v5_pclock", pe.STRATEGY_VERSION_V5, PRAMANAA_PRINT_GAP_S, forming=True)
+NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V5_PCLOCK.key})
 
 
 # ------------------------------------------------------------------ schema ---
@@ -244,9 +252,9 @@ DELTA_STRIKE_FROM = "2026-10-19"
 COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
 SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01",
-                 "proposer_nifty_v5": "2026-07-01"}
+                 "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v5_pclock": "2026-07-01"}
 # Books whose day target differs from their live preset's.
-DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_nifty_v5": 0.015}
+DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v5_pclock": 0.015}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
 # switched off (as in the research run: -99.9%).
@@ -284,7 +292,8 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
-                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_nifty_v5"})
+                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_nifty_v5",
+                                "proposer_nifty_v5_pclock"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
@@ -337,15 +346,18 @@ class _Contract:
 
 # --------------------------------------------------------------- predictor ---
 def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: dict,
-            through: datetime, gap_s: float = PRINT_EVERY_MIN * 60.0) -> tuple[list[dict], pp.Regime]:
+            through: datetime, gap_s: float = PRINT_EVERY_MIN * 60.0,
+            forming: bool = False) -> tuple[list[dict], pp.Regime]:
     """The live feed's prints, replayed: gap-rule regime, the first 5-class call as soon as one is
     valid (PRINT_LAG_S into its minute), then one every `gap_s` seconds; each from completed bars
     only (bars before its minute). `sec` is the second of minute `t` at which the print is acted
     on. At the default gap (exactly five minutes) every print lands PRINT_LAG_S into its minute,
-    as the live feed's do; at PRAMANAA_PRINT_GAP_S the second and the minute slide."""
+    as the live feed's do; at PRAMANAA_PRINT_GAP_S the second and the minute slide. `forming`: Pramanaa's
+    first print - the forming bar counted (at the last completed close), from 09:21:45."""
     regime = pp.regime_from_gap(prior[-1][1] if prior else None, open_ref)
     out = []
-    at = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + timedelta(minutes=1, seconds=PRINT_LAG_S)
+    at = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + (
+        timedelta(seconds=PRAMANAA_FIRST_PRINT_S) if forming else timedelta(minutes=1, seconds=PRINT_LAG_S))
     while True:
         m = at.replace(second=0, microsecond=0)
         if m > through or m.time() > PRINT_UNTIL:
@@ -357,7 +369,8 @@ def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: 
             idx = abs(k - done[-1][1]).argsort()[:7]
             chain = {"spot": done[-1][1],
                      "atm_pcr": (pe_[idx].sum() / ce[idx].sum()) if ce[idx].sum() > 0 else None}
-        x = pp.predict_x5(prior, done, chain, regime) if done else None
+        rows = done + [(m, done[-1][1])] if forming and done else done
+        x = pp.predict_x5(prior, rows, chain, regime) if done else None
         if x:
             out.append({"t": m, "sec": (at - m).total_seconds(), "regime": regime.label, "x5": x["x5"],
                         "x5_conf": x["x5_conf"], "x5_asof": m.isoformat(),
@@ -456,7 +469,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     # the gap is read at the close of the 09:15 bar, as the live feed reads the broker's candle
     open_ref = bars[0][4] if bars[0][0].time() == SESSION_OPEN else None
     prints, regime = _prints(day, prior, closes_today, open_ref, chains, min(through, session_end),
-                             gap_s=book.print_gap_s)
+                             gap_s=book.print_gap_s, forming=book.forming)
     by_min = {}
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)

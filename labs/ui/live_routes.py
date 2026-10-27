@@ -592,6 +592,17 @@ def _v45_day_target(user_id: str, conn_id: str) -> str:
     return f"{value * 100:g}" if value else default
 
 
+# Print clock for any Proposer preset (config proposer_print_clock; blank = ours). See
+# live/proposer_runner.py PRINT_CLOCKS.
+PRINT_CLOCK_CHOICES = {"ours": "Ours - first print 09:22, then every 5 min",
+                       "pramanaa": "Pramanaa's - first print 09:21 (forming candle counted), then every 310.5 s"}
+
+
+def _print_clock(user_id: str, conn_id: str) -> str:
+    value = (svc.get_config(user_id, conn_id, "proposer_print_clock") or "").strip()
+    return value if value in PRINT_CLOCK_CHOICES else "ours"
+
+
 def _v45_floor(version: str | None) -> str:
     return next((k for k, (v, _) in SENSEX_V45_FLOORS.items() if v == version), "premium_20")
 
@@ -673,6 +684,8 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         v45_day_targets=V45_DAY_TARGETS,
         v45_day_target=_v45_day_target(user_id, conn_id),
         v45_day_target_bounds=(pe.DAY_TARGET_MIN_PCT, pe.DAY_TARGET_MAX_PCT),
+        print_clocks=PRINT_CLOCK_CHOICES,
+        print_clock=_print_clock(user_id, conn_id),
         proposer_presets=[k for k, pair in STRATEGY_PRESETS.items() if pair[0] == "proposer"],
         proposer_sizing_modes=sizing.MODES,
         proposer_sizing_mode=svc.get_config(user_id, conn_id, "proposer_sizing_mode") or sizing.FIXED,
@@ -726,6 +739,17 @@ def configure():
             if sizing_mode not in sizing.MODES:
                 return _render_configure(user_id, conn_id, error="Select Fixed or Dynamic lot sizing. Nothing was changed.")
         sizing_changed = is_proposer and sizing_mode != current_sizing
+        print_clock = (request.form.get("print_clock") or "").strip()
+        clock_changed = is_proposer and print_clock in PRINT_CLOCK_CHOICES and print_clock != _print_clock(user_id, conn_id)
+        if clock_changed:
+            state = svc.get_trade_state(user_id, conn_id)
+            if (state.get("position") or "NONE").upper() == "OPEN":
+                return _render_configure(user_id, conn_id, error=(
+                    "The print clock cannot change while this connection has an open position. "
+                    "Close it first, then save."))
+            if svc.get_config(user_id, conn_id, "runner_decision_abi") != ex.PROPOSER_DECISION_ABI:
+                return _render_configure(user_id, conn_id, error=(
+                    "The print clock needs the updated Proposer runner. Restart it first; nothing was changed."))
         if strategy_changed or sizing_changed:
             state = svc.get_trade_state(user_id, conn_id)
             if (state.get("position") or "NONE").upper() == "OPEN":
@@ -760,6 +784,8 @@ def configure():
         svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap))
         if sizing_changed:
             svc.set_config(user_id, conn_id, "proposer_sizing_mode", sizing_mode)
+        if clock_changed:
+            svc.set_config(user_id, conn_id, "proposer_print_clock", print_clock)
 
         # Strategy preset -> decision_engine + strategy_version. Only applied when
         # a known preset is submitted, so an unrelated POST never clobbers it.

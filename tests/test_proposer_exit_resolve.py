@@ -225,4 +225,4 @@ def test_runner_waits_while_the_cancel_is_unconfirmed(db, monkeypatch):
 
 
 def test_contract_bumped():
-    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v14"
+    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v15"
