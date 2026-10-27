@@ -706,6 +706,13 @@ def _route(adapter, user_id, conn_id, *, action, side, symbol, qty, price, dry_r
         intent_seq=lr.next_intent_seq(user_id, conn_id, trade_date), price_fn=price_fn)
 
 
+def _attempt_suffix(user_id: str, conn_id: str, symbol: str, since: str | None) -> str:
+    """'|rN' after the first live exit order of the day for this symbol, so a re-send after a
+    cancel is a new order even within the same minute (the idempotency key is minute-granular)."""
+    n = ex.exit_attempts(user_id, conn_id, symbol, since or "")
+    return f"|r{n}" if n else ""
+
+
 def _entry_price_fn(market: KiteMarket, symbol: str, cap: float, sent: dict,
                     profile: Instrument = SENSEX_I):
     def fn():
@@ -839,6 +846,31 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                           entry_price=float(st.get("entry_price") or 0),
                           entry_spot=float(st.get("entry_spot") or 0), qty=int(st.get("qty") or 0))
 
+    forced_exit = None
+    if is_open and not dry_run:
+        # An earlier exit order of this position may still be working or may have filled since:
+        # resolve it with the broker before deciding anything else (2026-10-27 incident).
+        w = ex.resolve_working_exit(adapter, user_id=user_id, conn_id=conn_id, symbol=st["symbol"],
+                                    since=st.get("entry_time") or "")
+        if w is not None:
+            if w["state"] == "working":
+                log.warning("exit pending (%s) - no new order this cycle | conn=%s", w.get("detail"), conn_id)
+                return True
+            if w["filled_qty"] and w["avg"]:
+                held = int(st.get("qty") or 0)
+                part = min(held, int(w["filled_qty"]))
+                lr._record_exit_result(user_id, conn_id, st, exit_price=float(w["avg"]), qty=part,
+                                       reason=w.get("reason") or "exit", dry_run=False)
+                notify_telegram(f"EXIT {st.get('side')} {st.get('symbol')} {part} @ {w['avg']:.2f} "
+                                f"({w.get('reason') or 'exit'}, resolved after the order rested)")
+                if w["state"] == "filled" or part >= held:
+                    svc.reset_trade_state(user_id, conn_id)
+                    return False
+                st["qty"] = held - part
+                svc.save_trade_state(user_id, conn_id, st)
+            # the exit decision stands: re-send it now at the current bid
+            forced_exit = pe.Signal("EXIT", st.get("side"), w.get("reason") or "exit")
+
     if is_open and now.time() >= EOD_FLAT:
         sig = pe.Signal("EXIT", st.get("side"), "eod")
     elif snap and spot and (profile != NIFTY_I or ratio is not None):
@@ -856,6 +888,8 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                      pc.engine.params.with_day_pts)
     else:
         sig = pe.Signal("HOLD")
+    if forced_exit is not None and sig.action != "EXIT":
+        sig = forced_exit
     if sig.action == "ENTER" and strategy not in pe.KNOWN_VERSIONS:
         # a version this release does not know would trade on the base preset's rules
         log.warning("entry held: strategy %s is unknown to this runner (%s)", strategy, ex.PROPOSER_DECISION_ABI)
@@ -873,7 +907,8 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             funds_cache.invalidate(funds_key)
         result = _route(adapter, user_id, conn_id, action="EXIT", side=st.get("side"),
                         symbol=st["symbol"], qty=int(st.get("qty") or 0), price=price,
-                        dry_run=dry_run, key_ts=now.strftime("%Y-%m-%dT%H:%M") + f"|{sig.reason}")
+                        dry_run=dry_run, key_ts=now.strftime("%Y-%m-%dT%H:%M") + f"|{sig.reason}"
+                        + ("" if dry_run else _attempt_suffix(user_id, conn_id, st["symbol"], st.get("entry_time"))))
         if funds_cache is not None:
             funds_cache.invalidate(funds_key)
         if lr._freshly_applied(result, dry_run=dry_run):

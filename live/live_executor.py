@@ -70,7 +70,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # a v9 runner would ignore it and trade 3.5%.
 # v11: Nifty Scalper V1 uses NFO, session-scaled NIFTY exits and an editable 1.5% day target.
 # v12: explicit fixed/dynamic lot sizing, with balance reads only in background workers.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v12"
+# v13 (2026-10-27): an unfinished exit order is resolved (filled -> recorded, working -> cancelled
+# and re-sent) before any new exit; a v12 runner stacks fresh SELLs on a resting one.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v13"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
@@ -301,6 +303,125 @@ def gate_transport_clear(user_id, conn_id, conn=None):
 
 def all_passed(results: list) -> bool:
     return all(r.passed for r in results)
+
+
+# ── A working exit order is resolved before any new exit (2026-10-27) ─────
+# The exit is a DAY limit so it can never be lost, but on 27 Oct 2026 the 10:20 Nifty Scalper stop
+# rested (the call fell from ~289 to ~260 while the sell at 280.15 was in flight) and the runner sent
+# a fresh SELL every minute on top of it: 12 rejected by the broker, and when the first filled at
+# ~10:32 nothing read it back, so the position stayed OPEN in the DB all day. Now, while a position
+# is open, the runner first asks the broker about its own unfinished exit orders: filled -> record;
+# still working -> cancel it and re-send at the current bid; status unknown or cancel unconfirmed ->
+# send nothing this cycle. A new SELL therefore never goes out while an earlier one can still fill.
+_FILLED_STATUSES = {"COMPLETE", "COMPLETED", "FILLED", "EXECUTED"}
+_DEAD_STATUSES = {"REJECTED", "CANCELLED", "CANCELED", "FAILED"}
+_CANCEL_CONFIRM_POLLS, _CANCEL_CONFIRM_DELAY_S = 6, 0.5
+
+
+def _order_fields(snap: dict) -> tuple[str, int, float | None]:
+    status = str(snap.get("status") or snap.get("orderstatus") or snap.get("order_status") or "").upper()
+    try:
+        filled = int(float(snap.get("filled_quantity") or snap.get("filledshares") or 0))
+    except (TypeError, ValueError):
+        filled = 0
+    try:
+        avg = float(snap.get("average_price") or snap.get("averageprice") or snap.get("avgprice") or 0) or None
+    except (TypeError, ValueError):
+        avg = None
+    return status, filled, avg
+
+
+def _cancel_params(adapter, order_id: str) -> dict:
+    if getattr(adapter, "broker_name", "") == "zerodha":
+        return {"variety": "regular", "order_id": str(order_id)}
+    return {"variety": getattr(adapter, "_VARIETY", "NORMAL"), "orderid": str(order_id)}
+
+
+def exit_attempts(user_id: str, conn_id: str, symbol: str, since: str, conn=None) -> int:
+    """Live exit orders recorded for this symbol since the position's entry (keeps each re-send's key unique)."""
+    own = conn is None
+    conn = conn or svc.get_live_conn()
+    try:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM live_orders WHERE user_id=? AND conn_id=? AND created_at>=? "
+            "AND action='EXIT' AND symbol=? AND dry_run=0", (user_id, conn_id, since or "", symbol)).fetchone()[0])
+    finally:
+        if own:
+            conn.close()
+
+
+def resolve_working_exit(adapter, *, user_id: str, conn_id: str, symbol: str, since: str,
+                         conn=None, sleep=time.sleep) -> dict | None:
+    """Bring this connection's unfinished live EXIT orders for `symbol`, placed since `since` (the
+    position's entry time, UTC ISO), to a known end.
+
+    Returns None when there are none; otherwise {"state", "filled_qty", "avg", "reason"} with state
+      filled    - an exit filled in full (record it, the position is gone),
+      partial   - cancelled after a partial fill (record the filled part, re-send the rest),
+      cancelled - nothing filled and nothing working any more (re-send the exit now),
+      working   - still working / cancel not confirmed / status unreadable (send nothing).
+    """
+    from live.brokers.order_transport import send_order
+    own = conn is None
+    conn = conn or svc.get_live_conn()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT idem_key, broker_order_id, status, bar_timestamp, qty FROM live_orders "
+            "WHERE user_id=? AND conn_id=? AND created_at>=? AND action='EXIT' AND symbol=? AND dry_run=0 "
+            "AND broker_order_id IS NOT NULL AND broker_order_id<>'' ORDER BY created_at",
+            (user_id, conn_id, since or "", symbol)).fetchall()]
+    finally:
+        if own:
+            conn.close()
+    open_rows = [r for r in rows if str(r.get("status") or "").upper() not in _FILLED_STATUSES | _DEAD_STATUSES]
+    if not open_rows:
+        return None
+    filled_qty, value, any_full = 0, 0.0, False
+    reason = None
+    for r in open_rows:
+        oid, key = str(r["broker_order_id"]), r["idem_key"]
+        reason = (str(r.get("bar_timestamp") or "").split("|", 1) + [None])[1] or reason
+        try:
+            snap = adapter.get_order_status(oid) or {}
+        except Exception as e:
+            log.warning("exit order %s status read failed: %s | conn=%s", oid, type(e).__name__, conn_id)
+            snap = {}
+        if not snap:
+            return {"state": "working", "filled_qty": filled_qty, "avg": None, "reason": reason,
+                    "detail": f"status of exit order {oid} unreadable"}
+        status, filled, avg = _order_fields(snap)
+        if status not in _FILLED_STATUSES | _DEAD_STATUSES:
+            log.warning("exit order %s still %s - cancelling before any new exit | conn=%s", oid, status, conn_id)
+            try:
+                send_order(adapter, "cancel", _cancel_params(adapter, oid), key + "|cancel")
+            except Exception as e:
+                log.warning("cancel of exit order %s failed: %s %s | conn=%s", oid, type(e).__name__,
+                            str(e)[:160], conn_id)
+            for _ in range(_CANCEL_CONFIRM_POLLS):
+                sleep(_CANCEL_CONFIRM_DELAY_S)
+                try:
+                    snap = adapter.get_order_status(oid) or snap
+                except Exception:
+                    pass
+                status, filled, avg = _order_fields(snap)
+                if status in _FILLED_STATUSES | _DEAD_STATUSES:
+                    break
+            if status not in _FILLED_STATUSES | _DEAD_STATUSES:
+                return {"state": "working", "filled_qty": filled_qty, "avg": None, "reason": reason,
+                        "detail": f"exit order {oid} still {status} after cancel"}
+        svc.update_order_ledger(key, status=status.lower(), avg_fill_price=avg,
+                                filled_at=_now_iso() if status in _FILLED_STATUSES else None)
+        if status in _FILLED_STATUSES:
+            any_full = True
+            filled = filled or int(r.get("qty") or 0)
+        if filled > 0 and avg:
+            filled_qty += filled
+            value += filled * avg
+    state = "filled" if any_full else ("partial" if filled_qty else "cancelled")
+    log.info("exit orders resolved | conn=%s symbol=%s state=%s filled=%s avg=%s", conn_id, symbol, state,
+             filled_qty, round(value / filled_qty, 2) if filled_qty else None)
+    return {"state": state, "filled_qty": filled_qty, "avg": (value / filled_qty) if filled_qty else None,
+            "reason": reason}
 
 
 def _is_final_status(status: str) -> bool:

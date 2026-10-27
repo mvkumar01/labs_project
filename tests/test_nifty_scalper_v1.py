@@ -23,7 +23,7 @@ def test_params_equal_the_reference_paper_book_field_by_field():
     assert pe.params_for(pe.STRATEGY_VERSION_V5).confirm_bank_tolerance == .10
     assert asdict(pe.scaled_for_nifty(p, .31)) == asdict(nt._params("2026-10-21", tr.NIFTY_V5, .31))
     assert pe.params_for(VERSION, .02).daily_target_pct == .02
-    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v12"
+    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v13"
 
 
 @pytest.mark.parametrize("ratio", [0, -1, float("inf"), float("nan")])

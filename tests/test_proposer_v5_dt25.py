@@ -44,7 +44,7 @@ def test_day_target_applies_only_to_sensex_v4_and_v5():
         assert pe.params_for(v).daily_target_pct == 0.035 and pe.params_for(v, None).daily_target_pct == 0.035
     for v in (pe.STRATEGY_VERSION, pe.STRATEGY_VERSION_PX, pe.STRATEGY_VERSION_V3):
         assert pe.params_for(v, 0.05) == pe.params_for(v)
-    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v12"
+    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v13"
 
 
 def test_runner_rebuilds_the_engine_when_the_day_target_changes(monkeypatch):
