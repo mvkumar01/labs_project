@@ -552,6 +552,7 @@ STRATEGY_PRESETS = {
     # 150 SENSEX points against the entry is proposer_dt35_v5 (Sensex V5). The default is V4.
     "proposer_sensex_v45": ("proposer", "proposer_dt35_v3"),
     "nifty_scalper_v1": ("proposer", "proposer_nifty_scalper_v1"),
+    "nifty_scalper_v3": ("proposer", "proposer_nifty_scalper_v3"),
 }
 SENSEX_V45 = "proposer_sensex_v45"
 SENSEX_V45_FLOORS = {
@@ -574,7 +575,9 @@ STRATEGY_LABELS = {
     "proposer_sensex_v45": "Sensex V4 / V5 (v3 with the day, Sentinel strike, 270 s wait; "
                            "loss floor and day target chosen below)",
     "nifty_scalper_v1": "Nifty Scalper V1 (Sensex V5 signals on NIFTY options; 1.5% day target)",
+    "nifty_scalper_v3": "Nifty Scalper V3 (V1 with the predictor printing every 3 min; 1.5% day target)",
 }
+NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3")
 
 
 # Day-target choices for Sensex V4 / V5 (percent; "other" = typed in). Stored per connection in
@@ -587,20 +590,9 @@ V45_DEFAULT_DAY_TARGET = "3.5"
 def _v45_day_target(user_id: str, conn_id: str) -> str:
     """The connection's day target as a percent string ("3.5" when unset or unreadable)."""
     value = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
-    default = ("1.5" if svc.get_config(user_id, conn_id, "strategy_version") ==
-               pe.STRATEGY_VERSION_NIFTY_SCALPER_V1 else V45_DEFAULT_DAY_TARGET)
+    default = ("1.5" if svc.get_config(user_id, conn_id, "strategy_version") in
+               pe.NIFTY_SCALPER_VERSIONS else V45_DEFAULT_DAY_TARGET)
     return f"{value * 100:g}" if value else default
-
-
-# Print clock for any Proposer preset (config proposer_print_clock; blank = ours). See
-# live/proposer_runner.py PRINT_CLOCKS.
-PRINT_CLOCK_CHOICES = {"ours": "Ours - first print 09:22, then every 5 min",
-                       "pramanaa": "Pramanaa's - first print 09:21 (forming candle counted), then every 310.5 s"}
-
-
-def _print_clock(user_id: str, conn_id: str) -> str:
-    value = (svc.get_config(user_id, conn_id, "proposer_print_clock") or "").strip()
-    return value if value in PRINT_CLOCK_CHOICES else "ours"
 
 
 def _v45_floor(version: str | None) -> str:
@@ -684,8 +676,6 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         v45_day_targets=V45_DAY_TARGETS,
         v45_day_target=_v45_day_target(user_id, conn_id),
         v45_day_target_bounds=(pe.DAY_TARGET_MIN_PCT, pe.DAY_TARGET_MAX_PCT),
-        print_clocks=PRINT_CLOCK_CHOICES,
-        print_clock=_print_clock(user_id, conn_id),
         proposer_presets=[k for k, pair in STRATEGY_PRESETS.items() if pair[0] == "proposer"],
         proposer_sizing_modes=sizing.MODES,
         proposer_sizing_mode=svc.get_config(user_id, conn_id, "proposer_sizing_mode") or sizing.FIXED,
@@ -710,7 +700,7 @@ def configure():
                 floor = _v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))
             target = ("proposer", SENSEX_V45_FLOORS[floor][0])
         day_target = None
-        if strat in (SENSEX_V45, "nifty_scalper_v1"):
+        if strat in (SENSEX_V45, *NIFTY_SCALPER_PRESETS):
             choice = (request.form.get("day_target") or "").strip()
             if choice == "other":
                 typed = request.form.get("day_target_custom")
@@ -723,7 +713,7 @@ def configure():
             elif choice in V45_DAY_TARGETS:
                 day_target = choice
             else:
-                day_target = ("1.5" if strat == "nifty_scalper_v1" and
+                day_target = ("1.5" if strat in NIFTY_SCALPER_PRESETS and
                               strat != _current_strategy_preset(user_id, conn_id)
                               else _v45_day_target(user_id, conn_id))
         strategy_changed = target is not None and (
@@ -739,17 +729,6 @@ def configure():
             if sizing_mode not in sizing.MODES:
                 return _render_configure(user_id, conn_id, error="Select Fixed or Dynamic lot sizing. Nothing was changed.")
         sizing_changed = is_proposer and sizing_mode != current_sizing
-        print_clock = (request.form.get("print_clock") or "").strip()
-        clock_changed = is_proposer and print_clock in PRINT_CLOCK_CHOICES and print_clock != _print_clock(user_id, conn_id)
-        if clock_changed:
-            state = svc.get_trade_state(user_id, conn_id)
-            if (state.get("position") or "NONE").upper() == "OPEN":
-                return _render_configure(user_id, conn_id, error=(
-                    "The print clock cannot change while this connection has an open position. "
-                    "Close it first, then save."))
-            if svc.get_config(user_id, conn_id, "runner_decision_abi") != ex.PROPOSER_DECISION_ABI:
-                return _render_configure(user_id, conn_id, error=(
-                    "The print clock needs the updated Proposer runner. Restart it first; nothing was changed."))
         if strategy_changed or sizing_changed:
             state = svc.get_trade_state(user_id, conn_id)
             if (state.get("position") or "NONE").upper() == "OPEN":
@@ -784,8 +763,6 @@ def configure():
         svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap))
         if sizing_changed:
             svc.set_config(user_id, conn_id, "proposer_sizing_mode", sizing_mode)
-        if clock_changed:
-            svc.set_config(user_id, conn_id, "proposer_print_clock", print_clock)
 
         # Strategy preset -> decision_engine + strategy_version. Only applied when
         # a known preset is submitted, so an unrelated POST never clobbers it.

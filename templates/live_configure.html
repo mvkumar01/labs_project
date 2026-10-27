@@ -81,8 +81,8 @@
           </select>
           <div class="hint">Only for Sensex V4 / V5. Everything else is the same: entries only with the day, Sentinel's strike, 270 s wait after an exit. The 150-point floor exits once SENSEX is 150 points against the entry spot and has no premium floor; 150 was picked in-sample (paper books Sensex V4 and V5).</div>
         </div>
-        <div class="field" id="v45-target-field" {{ '' if strategy in (v45_preset, 'nifty_scalper_v1') else 'hidden' }}>
-          <label for="day_target">Day target (Sensex V4 / V5 or Nifty Scalper V1)</label>
+        <div class="field" id="v45-target-field" {{ '' if strategy in (v45_preset, 'nifty_scalper_v1', 'nifty_scalper_v3') else 'hidden' }}>
+          <label for="day_target">Day target (Sensex V4 / V5 or Nifty Scalper V1 / V3)</label>
           {% set preset_target = v45_day_target in v45_day_targets %}
           <select id="day_target" name="day_target">
             {% for key, label in v45_day_targets.items() %}
@@ -94,15 +94,6 @@
                  min="{{ v45_day_target_bounds[0] }}" max="{{ v45_day_target_bounds[1] }}" placeholder="e.g. 3.0"
                  value="{{ '' if preset_target else v45_day_target }}" {{ '' if not preset_target else 'hidden' }}>
           <div class="hint">The bot stops for the day once today's realized profit plus the open trade reaches this share of the trade's entry capital (premium x quantity). Typed values: a percent between {{ v45_day_target_bounds[0] }} and {{ v45_day_target_bounds[1] }}. Nifty Scalper V1 defaults to 1.5%; only 1.5% has been backtested on NIFTY. Sensex 2.5% and 3.5% have paper books. Change it only while flat.</div>
-        </div>
-        <div class="field" id="proposer-clock-field" {{ '' if strategy in proposer_presets else 'hidden' }}>
-          <label for="print_clock">Predictor print clock (Proposer presets)</label>
-          <select id="print_clock" name="print_clock">
-            {% for key, label in print_clocks.items() %}
-            <option value="{{ key }}" {{ 'selected' if print_clock == key else '' }}>{{ label }}</option>
-            {% endfor %}
-          </select>
-          <div class="hint">When the 5-class calls are made. Pramanaa's clock copies its scheduler: the first call counts the still-forming candle and comes at about 09:21:45, then one every 310.5 s, so the minute slides through the day. Its exact timing varies a few seconds a day with Pramanaa's server, so calls land on Pramanaa's minute most days, not every day. Backtests (1-min) did not favour either clock; the paper book "Nifty Scalper V1 (Pramanaa clock)" tracks it. Change it only while flat.</div>
         </div>
         <script>
           (function () {
@@ -116,16 +107,14 @@
             const updateSizing = () => {
               const proposer = proposerPresets.includes(s.value);
               sizingField.hidden = !proposer;
-              const clockField = document.getElementById('proposer-clock-field');
-              if (clockField) clockField.hidden = !proposer;
               lotsLabel.textContent = proposer && sizingMode.value === 'dynamic' ? 'Maximum lots' : 'Number of lots';
             };
             if (!s || !f) return;
             sizingMode.addEventListener('change', updateSizing);
             s.addEventListener('change', () => {
               f.hidden = s.value !== '{{ v45_preset }}';
-              g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1'].includes(s.value);
-              d.value = s.value === 'nifty_scalper_v1' ? '1.5' : '3.5';
+              g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1', 'nifty_scalper_v3'].includes(s.value);
+              d.value = ['nifty_scalper_v1', 'nifty_scalper_v3'].includes(s.value) ? '1.5' : '3.5';
               c.hidden = true;
               updateSizing();
             });

@@ -86,8 +86,7 @@ _PASS_S = PRAMANAA_LOOP_SLEEP_S + PRAMANAA_PASS_WORK_S
 PRAMANAA_PRINT_GAP_S = math.ceil(PRAMANAA_MIN_GAP_S / _PASS_S) * _PASS_S        # 310.5
 # Pramanaa's x5 counts the forming 1-min candle as the seventh bar, so its first print falls in the 09:21
 # minute; its bot entered on it at 09:21:22 - 09:21:58 (median 09:21:49), so a book with `forming` prints
-# first at 09:21:45 (the live runner's Pramanaa clock does the same). The forming bar's price here is the
-# last completed close (no look-ahead into the minute); live it is the SENSEX spot at the print.
+# first at 09:21:45. The forming bar's price here is the last completed close (no look-ahead into the minute).
 PRAMANAA_FIRST_PRINT_S = 6 * 60 + 45
 
 
@@ -126,9 +125,11 @@ V5_DT25 = Book("proposer_v5_dt25", pe.STRATEGY_VERSION_V5)
 # NIFTY on Sensex V5 signals: the same SENSEX prints and engine, positions in NIFTY options with NIFTY's
 # own exits (labs.engine.proposer_nifty_tracker; Vipin, 2026-10-21).
 NIFTY_V5 = Book("proposer_nifty_v5", pe.STRATEGY_VERSION_V5)
-# Nifty Scalper V1 on Pramanaa's print clock, the paper twin of the live clock switch (Vipin, 2026-10-27).
-NIFTY_V5_PCLOCK = Book("proposer_nifty_v5_pclock", pe.STRATEGY_VERSION_V5, PRAMANAA_PRINT_GAP_S, forming=True)
-NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V5_PCLOCK.key})
+# Nifty Scalper V3: the same book with prints every 3 minutes - the live preset proposer_nifty_scalper_v3 - and
+# the same on Pramanaa's print clock, paper only (Vipin, 2026-10-28).
+NIFTY_V3 = Book("proposer_nifty_v3", pe.STRATEGY_VERSION_V5, 180.0)
+NIFTY_V3_PCLOCK = Book("proposer_nifty_v3_pclock", pe.STRATEGY_VERSION_V5, PRAMANAA_PRINT_GAP_S, forming=True)
+NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key})
 
 
 # ------------------------------------------------------------------ schema ---
@@ -252,9 +253,11 @@ DELTA_STRIKE_FROM = "2026-10-19"
 COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
 SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01",
-                 "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v5_pclock": "2026-07-01"}
+                 "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
+                 "proposer_nifty_v3_pclock": "2026-07-01"}
 # Books whose day target differs from their live preset's.
-DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v5_pclock": 0.015}
+DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
+                  "proposer_nifty_v3_pclock": 0.015}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
 # switched off (as in the research run: -99.9%).
@@ -293,7 +296,7 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
                                 "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_nifty_v5",
-                                "proposer_nifty_v5_pclock"})
+                                "proposer_nifty_v3", "proposer_nifty_v3_pclock"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,

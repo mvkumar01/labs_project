@@ -74,8 +74,8 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 # and re-sent) before any new exit; a v12 runner stacks fresh SELLs on a resting one.
 # v14 (2026-10-27): prices come from the Kite websocket while fresh (REST fallback) and, with a
 #   position open, exits are checked on every tick (no sooner than 0.25 s) instead of once a second.
-# v15 (2026-10-27): per-connection print clock (proposer_print_clock): ours (09:22, every 300 s) or
-#   Pramanaa's (forming candle counted, first print 09:21:45, every 310.5 s; own prints table).
+# v15 (2026-10-28): Nifty Scalper V3 (proposer_nifty_scalper_v3) - V1's rules with prints every 3 minutes
+#   (the print clock follows the version; its prints in live_proposer_prints_3min).
 PROPOSER_DECISION_ABI = "proposer-dt25-live-v15"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 

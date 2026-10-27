@@ -1,4 +1,4 @@
-"""Per-connection print clock: ours (09:22, every 300 s) or Pramanaa's (forming candle, 09:21:45, 310.5 s)."""
+"""Print clocks: Nifty Scalper V3 prints every 3 minutes (live and paper); Pramanaa's timing is a paper book only."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -7,12 +7,15 @@ import pandas as pd
 import pytest
 
 from labs.engine import proposer_px_tracker as tr
+from live import live_executor as ex
 from live import live_service as svc
 from live import proposer_runner as pr
+from live.engine import proposer_engine as pe
 from storage import live_db
 from storage.live_db import init_live_db
+from tests.test_configure_strategy import CONN_ID, CSRF_TOKEN, USER_ID, _set_strategy, _strategy_pair
+from tests.test_configure_strategy import client  # noqa: F401  (fixture)
 
-USER, CONN = "u1", "u1:zerodha"
 DAY = datetime(2026, 10, 5)
 
 
@@ -23,102 +26,70 @@ def db(tmp_path, monkeypatch):
     init_live_db()
     pr.ensure_schema()
     pr.ensure_regime_schema()
-    svc.upsert_connection(USER, CONN, broker="zerodha", account_label="T", account_ref="zerodha:T",
-                          status="connected")
 
 
-def _bars(n_today: int):
+def _feed(clock, n_today=60):
     base = DAY.replace(hour=9, minute=15)
     today = [(base + timedelta(minutes=i), 74000.0 + 3 * i) for i in range(n_today)]
     prior = [(datetime(2026, 10, 1, 14, 0) + timedelta(minutes=i), 74000.0) for i in range(80)]
-    return lambda day: today if day == base.date() else (prior if day.isoformat() == "2026-10-01" else [])
+    bars = lambda day: today if day == base.date() else (prior if day.isoformat() == "2026-10-01" else [])  # noqa: E731
+    return pr.PredictorFeed(bars_fn=bars, chain_fn=lambda d: pd.DataFrame(), open_fn=lambda d: None, clock=clock)
 
 
-def _feed(clock, n_today=6, spot=74020.0):
-    return pr.PredictorFeed(bars_fn=_bars(n_today), chain_fn=lambda d: pd.DataFrame(), open_fn=lambda d: None,
-                            clock=clock, spot_fn=lambda: spot)
+def test_v3_is_v1_on_a_3_minute_clock_on_nifty():
+    v1, v3 = pe.STRATEGY_VERSION_NIFTY_SCALPER_V1, pe.STRATEGY_VERSION_NIFTY_SCALPER_V3
+    assert pe.params_for(v3) == pe.params_for(v1)
+    assert pe.params_for(v3, 0.02) == pe.params_for(v1, 0.02)              # the day target is editable
+    assert v3 in pe.KNOWN_VERSIONS and v3 in pe.DAY_TARGET_VERSIONS and ex.is_proposer_strategy(v3)
+    assert pr.instrument_for(v3) is pr.NIFTY_I
+    assert pr.print_clock_for(v3) == pr.PRINT_CLOCK_3MIN
+    assert pr.print_clock_for(v1) == pr.print_clock_for("proposer_dt35_v5") == pr.PRINT_CLOCK_5MIN
 
 
-def test_pramanaa_clock_counts_the_forming_candle_and_prints_first_at_092145(db):
-    feed = _feed(pr.PRINT_CLOCK_PRAMANAA, n_today=6)          # completed 09:15..09:20
-    assert feed.step(DAY.replace(hour=9, minute=21, second=30)) is None      # before 09:21:45
-    p = feed.step(DAY.replace(hour=9, minute=21, second=46))
-    assert p is not None and p["x5_asof"] == "2026-10-05T09:21:46"
-    ours = _feed(pr.PRINT_CLOCK_OURS, n_today=6)
-    assert ours.step(DAY.replace(hour=9, minute=21, second=46)) is None      # ours needs 7 completed bars
-    # stored in its own table, ours untouched
-    assert [r["asof"] for r in pr.prints_today("2026-10-05", table="live_proposer_prints_pclock")] == [p["x5_asof"]]
-    assert pr.prints_today("2026-10-05") == []
+def test_3_minute_feed_prints_at_0922_then_every_180_s_in_its_own_table(db):
+    feed, five = _feed(pr.PRINT_CLOCK_3MIN), _feed(pr.PRINT_CLOCK_5MIN)
+    first = DAY.replace(hour=9, minute=22, second=7)
+    assert feed.step(first - timedelta(minutes=1)) is None                # six completed bars at 09:21
+    p = feed.step(first)
+    assert p and p["x5_asof"] == "2026-10-05T09:22:07"
+    assert feed.next_due == first + timedelta(seconds=180)
+    assert feed.step(first + timedelta(seconds=179)) is None
+    assert feed.step(first + timedelta(seconds=181))
+    assert five.step(first) and five.next_due == first + timedelta(minutes=5)
+    assert len(pr.prints_today("2026-10-05", table=pr.PRINTS_TABLE[pr.PRINT_CLOCK_3MIN])) == 2
+    assert len(pr.prints_today("2026-10-05")) == 1
 
 
-def test_pramanaa_clock_every_310_5_s_from_when_due(db):
-    feed = _feed(pr.PRINT_CLOCK_PRAMANAA, n_today=12)
-    first = DAY.replace(hour=9, minute=21, second=46)
-    assert feed.step(first)
-    assert feed.next_due == first + timedelta(seconds=310.5)
-    assert feed.step(first + timedelta(seconds=310)) is None
-    second = first + timedelta(seconds=311.4)                 # the cycle came 0.9 s late
-    assert feed.step(second)
-    assert feed.next_due == first + timedelta(seconds=621)    # counted from the due time, not the print
-    # a restart keeps the phase
-    again = _feed(pr.PRINT_CLOCK_PRAMANAA, n_today=12)
-    again._new_day(DAY.date())
-    assert again.next_due == datetime.fromisoformat(feed.latest["x5_asof"]) + timedelta(seconds=310.5)
-
-
-def test_pramanaa_clock_waits_for_a_live_spot(db):
-    feed = _feed(pr.PRINT_CLOCK_PRAMANAA, n_today=6, spot=None)
-    assert feed.step(DAY.replace(hour=9, minute=21, second=50)) is None
-
-
-def test_connection_reads_its_own_clock(db):
-    assert pr.print_clock_for(USER, CONN) == "ours"
-    svc.set_config(USER, CONN, "proposer_print_clock", "pramanaa")
-    assert pr.print_clock_for(USER, CONN) == "pramanaa"
-    svc.set_config(USER, CONN, "proposer_print_clock", "nonsense")
-    assert pr.print_clock_for(USER, CONN) == "ours"
-
-
-def test_paper_prints_forming_first_at_092145_then_310_5_s():
+def test_paper_books_v3_every_3_min_and_pramanaa_timing():
     base = DAY.replace(hour=9, minute=15)
     today = [(base + timedelta(minutes=i), 74000.0 + 3 * i) for i in range(60)]
     prior = [(datetime(2026, 10, 1, 14, 0) + timedelta(minutes=i), 74000.0) for i in range(80)]
     through = base + timedelta(minutes=40)
-    plain, _ = tr._prints("2026-10-05", prior, today, 74000.0, {}, through)
-    twin, _ = tr._prints("2026-10-05", prior, today, 74000.0, {}, through, gap_s=tr.PRAMANAA_PRINT_GAP_S,
-                         forming=True)
-    assert (plain[0]["t"].strftime("%H:%M"), plain[0]["sec"]) == ("09:22", 25.0)
-    assert (twin[0]["t"].strftime("%H:%M"), twin[0]["sec"]) == ("09:21", 45.0)
-    assert [p["t"].strftime("%H:%M:%S")[:5] for p in twin[:4]] == ["09:21", "09:26", "09:32", "09:37"]
-    assert tr.NIFTY_V5_PCLOCK.key in tr.NIFTY_BOOKS and tr.NIFTY_V5_PCLOCK.forming
-    assert tr.PRAMANAA_PRINT_GAP_S == pr.PRAMANAA_PRINT_GAP_S
+    v3, _ = tr._prints("2026-10-05", prior, today, 74000.0, {}, through, gap_s=tr.NIFTY_V3.print_gap_s)
+    pc, _ = tr._prints("2026-10-05", prior, today, 74000.0, {}, through, gap_s=tr.NIFTY_V3_PCLOCK.print_gap_s,
+                       forming=tr.NIFTY_V3_PCLOCK.forming)
+    assert [p["t"].strftime("%H:%M") for p in v3[:4]] == ["09:22", "09:25", "09:28", "09:31"]
+    assert (pc[0]["t"].strftime("%H:%M"), pc[0]["sec"]) == ("09:21", 45.0)
+    assert [p["t"].strftime("%H:%M") for p in pc[:4]] == ["09:21", "09:26", "09:32", "09:37"]
+    for book in (tr.NIFTY_V3, tr.NIFTY_V3_PCLOCK):
+        assert book.key in tr.NIFTY_BOOKS and book.key in tr.DELTA_STRIKE_BOOKS
+        assert tr.params_on("2026-10-20", book) == tr.params_on("2026-10-20", tr.NIFTY_V5)
 
 
-from live import live_executor as ex  # noqa: E402
-from tests.test_configure_strategy import CONN_ID, CSRF_TOKEN, USER_ID, _set_strategy  # noqa: E402
-from tests.test_configure_strategy import client  # noqa: E402,F401  (fixture)
+def _post(client, strategy, day_target="1.5"):                               # noqa: F811
+    return client.post("/live/configure", data={"csrf_token": CSRF_TOKEN, "lots": "1", "daily_loss_cap": "3000",
+                                                "strategy": strategy, "day_target": day_target})
 
 
-def _post_clock(client, clock):                                               # noqa: F811
-    return client.post("/live/configure", data={
-        "csrf_token": CSRF_TOKEN, "lots": "1", "daily_loss_cap": "3000", "strategy": "nifty_scalper_v1",
-        "day_target": "1.5", "print_clock": clock})
-
-
-def test_configure_print_clock_needs_flat_and_a_current_runner(client):     # noqa: F811
-    _set_strategy("proposer", "proposer_nifty_scalper_v1")
-    svc.set_config(USER_ID, CONN_ID, "proposer_day_target_pct", "1.5")
-    page = client.get("/live/configure").get_data(as_text=True)
-    assert 'name="print_clock"' in page and 'value="ours" selected' in page
-    svc.set_config(USER_ID, CONN_ID, "runner_decision_abi", "proposer-dt25-live-v14")
-    assert "updated Proposer runner" in _post_clock(client, "pramanaa").get_data(as_text=True)
-    assert not svc.get_config(USER_ID, CONN_ID, "proposer_print_clock")
+def test_configure_offers_nifty_scalper_v3_with_a_day_target(client):       # noqa: F811
+    _set_strategy("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V1)
     svc.set_config(USER_ID, CONN_ID, "runner_decision_abi", ex.PROPOSER_DECISION_ABI)
-    assert _post_clock(client, "pramanaa").status_code == 302
-    assert svc.get_config(USER_ID, CONN_ID, "proposer_print_clock") == "pramanaa"
-    assert 'value="pramanaa" selected' in client.get("/live/configure").get_data(as_text=True)
-    state = svc.get_trade_state(USER_ID, CONN_ID)
-    state["position"] = "OPEN"
-    svc.save_trade_state(USER_ID, CONN_ID, state)
-    assert "open position" in _post_clock(client, "ours").get_data(as_text=True)
-    assert svc.get_config(USER_ID, CONN_ID, "proposer_print_clock") == "pramanaa"
+    page = client.get("/live/configure").get_data(as_text=True)
+    assert 'value="nifty_scalper_v3"' in page and 'name="print_clock"' not in page
+    assert _post(client, "nifty_scalper_v3", "2.5").status_code == 302
+    assert _strategy_pair() == ("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V3)
+    assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "2.5"
+    svc.set_config(USER_ID, CONN_ID, "runner_decision_abi", "proposer-dt25-live-v14")
+    _set_strategy("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V1)
+    assert "restarted first" in _post(client, "nifty_scalper_v3").get_data(as_text=True)
+    assert _strategy_pair() == ("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V1)

@@ -64,7 +64,7 @@ NIFTY_I = Instrument("NIFTY", "NFO", int(UNDERLYINGS["NIFTY"]["lot_size"]), "NSE
 
 
 def instrument_for(strategy_version) -> Instrument:
-    return NIFTY_I if strategy_version == pe.STRATEGY_VERSION_NIFTY_SCALPER_V1 else SENSEX_I
+    return NIFTY_I if strategy_version in pe.NIFTY_SCALPER_VERSIONS else SENSEX_I
 
 
 POLL_OPEN_S, POLL_FLAT_S = 1.0, 2.0
@@ -82,18 +82,12 @@ OPEN_VERIFY_UNTIL = dtime(9, 20)   # ask the broker for it until then, afterward
 OPEN_RETRY_S = 15
 # Strike choice: live/engine/proposer_strike.py (Sentinel's |delta| >= 0.60 rule, from 2026-10-16).
 SLOW_CYCLE_S = 5.0             # a cycle this long is logged with the time each step took
-# Print clocks, chosen per connection (config proposer_print_clock). "ours": the first print once seven
-# completed 1-min bars exist (09:22), then every PRINT_EVERY_MIN minutes. "pramanaa": Pramanaa's scheduler
-# (services/market-predictor/scheduler.py at 62ef7d4; alphaIMB REBUILD sec. 21) - a loop that works, sleeps
-# 60 s and prints once 300 s have passed, so a print comes every fifth pass, 5 x (60 + ~2.1 s of work) =
-# 310.5 s counted from when it was due; its x5 counts the forming 1-min candle as the seventh bar, so the
-# first print falls in the 09:21 minute. Its bot entered on that first print at 09:21:22 - 09:21:58 (8 days
-# of its ledger, median 09:21:49), so ours is due at 09:21:45. Its prints go to their own table.
-PRINT_CLOCK_OURS, PRINT_CLOCK_PRAMANAA = "ours", "pramanaa"
-PRINT_CLOCKS = (PRINT_CLOCK_OURS, PRINT_CLOCK_PRAMANAA)
-PRAMANAA_PRINT_GAP_S = 310.5
-PRAMANAA_FIRST_PRINT = dtime(9, 21, 45)
-PRINTS_TABLE = {PRINT_CLOCK_OURS: "live_proposer_prints", PRINT_CLOCK_PRAMANAA: "live_proposer_prints_pclock"}
+# Print clocks, by strategy version: every PRINT_EVERY_MIN minutes, or every 3 minutes for Nifty Scalper V3.
+# Both print first once seven completed 1-min bars exist (09:22); each clock's prints have their own table.
+PRINT_CLOCK_5MIN, PRINT_CLOCK_3MIN = "5min", "3min"
+PRINT_GAP_S = {PRINT_CLOCK_5MIN: PRINT_EVERY_MIN * 60.0, PRINT_CLOCK_3MIN: 180.0}
+PRINTS_TABLE = {PRINT_CLOCK_5MIN: "live_proposer_prints", PRINT_CLOCK_3MIN: "live_proposer_prints_3min"}
+PRINT_CLOCK_BY_VERSION = {pe.STRATEGY_VERSION_NIFTY_SCALPER_V3: PRINT_CLOCK_3MIN}
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -165,7 +159,7 @@ def regime_source() -> str:
     return (os.environ.get("PROPOSER_REGIME_SOURCE") or "gap").strip().lower()
 
 
-def save_print(p: dict, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_OURS]) -> None:
+def save_print(p: dict, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_5MIN]) -> None:
     own = conn is None
     conn = conn or get_live_conn()
     try:
@@ -181,7 +175,7 @@ def save_print(p: dict, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_OURS]) 
             conn.close()
 
 
-def prints_today(trade_date: str, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_OURS]) -> list[dict]:
+def prints_today(trade_date: str, conn=None, table: str = PRINTS_TABLE[PRINT_CLOCK_5MIN]) -> list[dict]:
     own = conn is None
     conn = conn or get_live_conn()
     try:
@@ -541,14 +535,13 @@ class LlmRegimeJob:
 
 
 class PredictorFeed:
-    """Publishes Proposer prints on one print clock (PRINT_CLOCKS): every PRINT_EVERY_MIN minutes from
-    the first once 7 completed bars of today exist, or on Pramanaa's 310.5 s clock with the forming
-    bar (the latest SENSEX spot, from `spot_fn`) counted."""
+    """Publishes Proposer prints on one print clock (PRINT_GAP_S): the first once 7 completed bars of
+    today exist, then one every gap."""
 
     def __init__(self, bars_fn=spot_bars, chain_fn=option_chain, store=None,
                  store_regime=save_regime, lookup_regime=get_regime, open_fn=broker_open_candle,
-                 clock: str = PRINT_CLOCK_OURS, spot_fn=None):
-        self.clock, self.spot_fn = clock, spot_fn
+                 clock: str = PRINT_CLOCK_5MIN):
+        self.clock = clock
         self.table = PRINTS_TABLE[clock]
         store = store or (lambda p: save_print(p, table=self.table))
         self.bars_fn, self.chain_fn, self.store = bars_fn, chain_fn, store
@@ -573,9 +566,6 @@ class PredictorFeed:
         for row in prints_today(day.isoformat(), table=self.table):
             self.latest = {"regime": row["regime"], "x5": row["x5"], "x5_conf": row["x5_conf"],
                            "x5_asof": row["asof"], "drift_state": row["drift_state"]}
-        if self.clock == PRINT_CLOCK_PRAMANAA and self.latest:
-            # a restart keeps the clock's phase: the next print is due one gap after the last
-            self.next_due = datetime.fromisoformat(self.latest["x5_asof"]) + timedelta(seconds=PRAMANAA_PRINT_GAP_S)
 
     def snapshot(self) -> dict:
         return dict(self.latest)
@@ -586,18 +576,9 @@ class PredictorFeed:
             self._new_day(now.date())
         if self.next_due is not None and now < self.next_due:
             return None
-        pclock = self.clock == PRINT_CLOCK_PRAMANAA
-        if pclock and self.next_due is None and now.time() < PRAMANAA_FIRST_PRINT:
-            return None
-        minute = now.replace(second=0, microsecond=0)
-        today = [b for b in self.bars_fn(now.date()) if b[0] < minute]
+        today = [b for b in self.bars_fn(now.date()) if b[0] < now.replace(second=0, microsecond=0)]
         if not today:
             return None
-        if pclock:
-            spot = self.spot_fn() if self.spot_fn is not None else None
-            if not spot:
-                return None                     # no forming bar without a live spot: ask again next cycle
-            today = today + [(minute, float(spot))]
         if self.regime is None:
             gap = self._gap_regime(now, today)
             if gap is None:
@@ -632,14 +613,9 @@ class PredictorFeed:
              "drift_slope": x["micro"].get("slope_pct")}
         self.store(p)
         self.latest = {k: p[k] for k in ("regime", "x5", "x5_conf", "x5_asof", "drift_state")}
-        if pclock:
-            due = self.next_due or now
-            while due <= now:
-                due += timedelta(seconds=PRAMANAA_PRINT_GAP_S)
-            self.next_due = due
-        else:
-            self.next_due = asof + timedelta(minutes=PRINT_EVERY_MIN)
-        log.info("print%s %s regime=%s x5=%s conf=%.2f drift=%s", " [pramanaa clock]" if pclock else "",
+        self.next_due = asof + timedelta(seconds=PRINT_GAP_S[self.clock])
+        log.info("print%s %s regime=%s x5=%s conf=%.2f drift=%s",
+                 "" if self.clock == PRINT_CLOCK_5MIN else f" [{self.clock}]",
                  asof.time(), p["regime"], p["x5"], p["x5_conf"], p["drift_state"])
         return p
 
@@ -703,7 +679,7 @@ class ProposerConnection:
 
     def __init__(self, user_id: str, conn_id: str, params: pe.ProposerParams | None = None,
                  strategy: str | None = None, day_target: float | None = None,
-                 ratio: float | None = None, print_clock: str = PRINT_CLOCK_OURS):
+                 ratio: float | None = None, print_clock: str = PRINT_CLOCK_5MIN):
         self.user_id, self.conn_id, self.strategy, self.day_target = user_id, conn_id, strategy, day_target
         self.ratio, self.print_clock = ratio, print_clock
         params = params or pe.params_for(strategy, day_target)
@@ -717,7 +693,7 @@ class ProposerConnection:
             return
         self.engine.reset_session()
         today, _ = _today_trades(self.user_id, self.conn_id, trade_date, dry_run)
-        prints = prints_today(trade_date, table=getattr(feed, "table", PRINTS_TABLE[PRINT_CLOCK_OURS]))
+        prints = prints_today(trade_date, table=getattr(feed, "table", PRINTS_TABLE[PRINT_CLOCK_5MIN]))
         regime = prints[-1]["regime"] if prints else None
         stale_asof = None
         if prints:
@@ -741,9 +717,8 @@ class ProposerConnection:
         return day_gross, book_gross, sum(1 for t in today if float(t.get("gross_pnl") or 0) < 0)
 
 
-def print_clock_for(user_id: str, conn_id: str) -> str:
-    value = (svc.get_config(user_id, conn_id, "proposer_print_clock") or "").strip()
-    return value if value in PRINT_CLOCKS else PRINT_CLOCK_OURS
+def print_clock_for(strategy_version) -> str:
+    return PRINT_CLOCK_BY_VERSION.get(str(strategy_version or ""), PRINT_CLOCK_5MIN)
 
 
 def publish_heartbeat(user_id: str, conn_id: str, task_id: str) -> bool:
@@ -926,7 +901,7 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             except ValueError:
                 pass
     day_target = pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct"))
-    print_clock = print_clock_for(user_id, conn_id)
+    print_clock = print_clock_for(strategy)
     if feeds:
         feed = feeds.get(print_clock) or feed
     pc = ctx["conns"].get(conn_id)
@@ -1162,7 +1137,7 @@ def _heartbeat_loop(task_id: str, stop: threading.Event) -> None:
 
 def run(task_id: str | None = None, max_cycles: int | None = None, adapter_factory=None,
         market: KiteMarket | None = None, feed: PredictorFeed | None = None, clock=now_ist,
-        pclock_feed: PredictorFeed | None = None) -> None:
+        feed_3min: PredictorFeed | None = None) -> None:
     task_id = task_id or f"proposer_runner:{uuid.uuid4().hex[:8]}"
     init_live_db()
     ensure_schema()
@@ -1179,8 +1154,7 @@ def run(task_id: str | None = None, max_cycles: int | None = None, adapter_facto
     ctx = {"task_id": task_id, "adapters": {}, "reconciled": set(), "conns": {}}
     feed = feed or PredictorFeed()
     market = market or (TickMarket() if TICKS_ON else KiteMarket())
-    pclock_feed = pclock_feed or PredictorFeed(clock=PRINT_CLOCK_PRAMANAA, spot_fn=lambda: market.spot())
-    feeds = {PRINT_CLOCK_OURS: feed, PRINT_CLOCK_PRAMANAA: pclock_feed}
+    feeds = {PRINT_CLOCK_5MIN: feed, PRINT_CLOCK_3MIN: feed_3min or PredictorFeed(clock=PRINT_CLOCK_3MIN)}
     cycles = 0
     try:
         while True:
