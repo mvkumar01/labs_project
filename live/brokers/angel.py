@@ -41,6 +41,53 @@ def _live_orders_enabled() -> bool:
 _LIVE_ORDERS_ENABLED = True
 
 
+class _KeepAliveRequests:
+    """Stands in for the `requests` module inside SmartApi.smartConnect. The SDK builds a
+    session but calls the module-level requests.request(...) for every call, so each Angel read
+    (position, orderBook, rmsLimit) paid a new TCP + TLS handshake to India: 0.74 s a call from
+    PythonAnywhere against 0.25 s on a kept-alive connection, which Angel holds open for at least
+    90 s idle (measured 2026-10-27). The runner's 15 s health check keeps it warm in session.
+
+    One session per thread; cookies are refused, so connections share nothing but the TCP pool
+    to Angel and every call still carries only its own bearer token. Orders never come this way
+    (they go through order_transport and the static IP); a GET read that fails on a reused
+    connection the server had dropped is retried once on a fresh one."""
+
+    def __init__(self, module):
+        self._module = module
+        self._local = threading.local()
+
+    def _session(self):
+        s = getattr(self._local, "session", None)
+        if s is None:
+            from http.cookiejar import DefaultCookiePolicy
+            s = self._module.Session()
+            s.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+            self._local.session = s
+        return s
+
+    def request(self, method, url, **kwargs):
+        try:
+            return self._session().request(method, url, **kwargs)
+        except self._module.exceptions.ConnectionError:
+            if str(method).upper() != "GET" or "order/v1/" in str(url).lower():
+                raise
+            self._local.session = None              # drop the pool with the dead connection
+            return self._session().request(method, url, **kwargs)
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+
+def _install_sdk_keep_alive() -> None:
+    import SmartApi.smartConnect as sdk
+    if not isinstance(sdk.requests, _KeepAliveRequests):
+        sdk.requests = _KeepAliveRequests(sdk.requests)
+
+
 def _angel_order_tag(idempotency_key: str) -> str:
     """Angel rejects ordertag values >= 20 chars; keep this deterministic."""
     digest = hashlib.sha1(str(idempotency_key).encode("utf-8")).hexdigest()[:14]
@@ -210,6 +257,7 @@ class AngelAdapter(BrokerAdapter):
         import pyotp                        # TOTP for Angel login
 
         self._health_ok_at = None           # a new session is checked afresh
+        _install_sdk_keep_alive()
         self._smart = SmartConnect(api_key=self._creds["api_key"])
         totp = pyotp.TOTP(self._creds["totp_secret"]).now()
         session = self._smart.generateSession(

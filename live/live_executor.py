@@ -549,6 +549,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
     5. UPDATE the ledger row with broker_order_id / status / avg_fill_price.
     """
     order_type = "LIMIT"
+    steps = _OrderSteps()
     inserted = svc.insert_order_ledger(
         idem_key, user_id=user_id, conn_id=conn_id, trade_date=trade_date,
         strategy_version=strategy_version, bar_timestamp=bar_timestamp,
@@ -596,6 +597,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
     # ── LIVE real path — gate (entry only), then call the (guarded) adapter ──
     # Exits bypass entry gates 5/6 (daily-loss / lots) but still require
     # mode-armed, kill-clear, broker-connected, account-isolation (spec §6).
+    steps.mark("ledger")
     if action == "EXIT":
         gates = [
             gate_mode_armed(user_id, conn_id, conn),
@@ -611,6 +613,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         if gates_took > 3.0:
             log.info("entry gates took %.1fs | conn=%s key=%s", gates_took, conn_id, idem_key)
 
+    steps.mark("gates")
     if not all_passed(gates):
         failed = [g.name for g in gates if not g.passed]
         log.warning("Gates FAILED — not placing | conn=%s failing=%s key=%s",
@@ -624,6 +627,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
             adapter, symbol=symbol, qty=qty, conn_id=conn_id,
             idem_key=idem_key, conn=conn,
         )
+        steps.mark("position")
         if blocked is not None:
             return blocked
     elif price_fn is not None:
@@ -636,6 +640,7 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
                                avg_fill_price=None, raw={"price_skip": True})
         price = fresh
         svc.update_order_ledger(idem_key, limit_price=price, conn=conn)
+        steps.mark("price")
 
     try:
         if action == "EXIT":
@@ -657,10 +662,36 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
             avg_fill_price=None,
             raw={"error_type": type(e).__name__, "message": str(e)[:300]},
         )
+    steps.mark("send")
+    acked_at = _now_iso()
     result = _refresh_order_result(adapter, result)
+    steps.mark("confirm")
 
     svc.update_order_ledger(idem_key, status=result.status,
                             broker_order_id=result.broker_order_id,
                             avg_fill_price=result.avg_fill_price,
                             placed_at=_now_iso(), conn=conn)
+    snap = (result.raw or {}).get("status_snapshot") or {}
+    exch = next((snap.get(k) for k in ("exchorderupdatetime", "exchtime", "exchange_timestamp",
+                                       "updatetime", "order_timestamp") if snap.get(k)), None)
+    log.info("order timing | conn=%s %s %s | %s | broker ack %s exchange %s | %s",
+             conn_id, action, symbol, steps.text(), acked_at, exch, result.status)
     return result
+
+
+class _OrderSteps:
+    """Seconds each step of one live order took (ledger, gates, position/price, send, confirm), so
+    a slow order names the step that held it. `send` ends at the broker's acknowledgement; `confirm`
+    is the fill-status polling after it, which does not delay the order at the exchange."""
+
+    def __init__(self):
+        self.last = time.monotonic()
+        self.steps: list[tuple[str, float]] = []
+
+    def mark(self, name: str) -> None:
+        now = time.monotonic()
+        self.steps.append((name, now - self.last))
+        self.last = now
+
+    def text(self) -> str:
+        return " ".join(f"{name}={took:.2f}s" for name, took in self.steps)
