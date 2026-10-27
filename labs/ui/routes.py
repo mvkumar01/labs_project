@@ -395,6 +395,8 @@ LIVE_TABS = {
     "risk_core": "Risk core · trend × vol",
     "crypto_xs": "Crypto taker imbalance",
     "crypto_xs_c": "Crypto taker · crypto only",
+    "crypto_xs_trend": "Crypto trend · BTC/ETH",
+    "crypto_xs_combo": "Crypto taker + trend",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
     "gold_cci": "GOLD CCI short",
 }
@@ -440,6 +442,7 @@ def live_strategy():
     risk_core_months, risk_core_years, risk_core_stats = [], [], {}
     crypto_xs_rows, crypto_xs_book, crypto_xs_stats = [], [], {}
     crypto_xs_c_rows, crypto_xs_c_book, crypto_xs_c_stats = [], [], {}
+    ct_rows, ct_stats = [], {}
     iron_fly_rows, iron_fly_trades, iron_fly_stats = [], [], {}
     overlay_version = {
         "alpha_v211b": "2.11 - champion replay (B)",
@@ -918,6 +921,15 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     crude_stats = {"error": str(exc)}
 
+        # Crypto trend (BTC/ETH) and taker + trend combined (paper): one template.
+        if active_live_tab in ("crypto_xs_trend", "crypto_xs_combo"):
+            try:
+                from labs.engine.crypto_trend_tracker import tab_data as ct_tab_data
+                ct_rows, ct_stats = ct_tab_data(conn, active_live_tab, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    ct_stats = {"error": str(exc)}
+
         # Crypto taker imbalance, crypto-only twin (paper): same panels, its own ledger and tab.
         if active_live_tab == "crypto_xs_c":
             try:
@@ -1362,6 +1374,8 @@ def live_strategy():
         crypto_xs_c_rows=crypto_xs_c_rows,
         crypto_xs_c_book=crypto_xs_c_book,
         crypto_xs_c_stats=crypto_xs_c_stats,
+        ct_rows=ct_rows,
+        ct_stats=ct_stats,
         iron_fly_rows=iron_fly_rows,
         iron_fly_trades=iron_fly_trades,
         iron_fly_stats=iron_fly_stats,

@@ -1,0 +1,102 @@
+{# Crypto trend (BTC/ETH) and combined taker + trend tabs (shared; ct_stats.key says which book) #}
+    <section id="crypto-trend-view">
+    <style>
+      #crypto-trend-view { min-width:0; max-width:100%; }
+      #crypto-trend-view .crypto-table { width:100%; max-width:100%; overflow-x:auto; margin:12px 0; }
+      #crypto-trend-view .perf { width:max-content; min-width:100%; }
+      #crypto-trend-view .perf td, #crypto-trend-view .perf th { white-space:nowrap; }
+      #crypto-trend-view .cards > * { min-width:0; overflow-wrap:anywhere; }
+    </style>
+    {% set st = ct_stats %}
+    {% if st.combined %}
+    <h1>Crypto taker + trend combined (paper)</h1>
+    <p class="sub">Each day, {{ "%.2f"|format(100 * (st.taker_weight or 0.5555)) }}% of capital in the taker-imbalance book (at unit gross,
+      its research model) and {{ "%.2f"|format(100 * (st.trend_weight or 0.4445)) }}% in the BTC/ETH trend book, rebalanced daily to those
+      weights. The weights are inverse-volatility weights fixed on 2021&ndash;24 data and are never re-fitted. Daily result =
+      {{ st.taker_weight or 0.5555 }} &times; taker net + {{ st.trend_weight or 0.4445 }} &times; trend net. Paper equity starts at
+      ${{ "{:,.0f}".format(st.equity_start or 100000) }} on {{ st.paper_start or '2026-06-01' }}.</p>
+    {% else %}
+    <h1>Crypto trend, BTC/ETH (paper)</h1>
+    <p class="sub">BTCUSDT and ETHUSDT perpetuals, half the capital each, on the taker book's clock: decide at 00:00 UTC, trade at the
+      01:00 UTC price, hold a day. Direction = the sign of the {{ st.lookback or 60 }}-day price change. Size = {{ "%.0f"|format(100 * (st.target_vol or 0.3)) }}%
+      &divide; the asset's volatility (hourly returns over 30 days, annualised), capped at {{ st.cap or 2 }}&times;, so gross exposure
+      can reach 2&times; capital when markets are calm. Result = price moves &minus; funding paid &minus; {{ "%.0f"|format(st.cost_bps or 7) }} bps
+      of everything traded. Paper equity starts at ${{ "{:,.0f}".format(st.equity_start or 100000) }} on {{ st.paper_start or '2026-06-01' }}.</p>
+    {% endif %}
+
+    <div class="formula">
+      Evidence status: <strong>a candidate being watched, not a proven edge</strong>. The rule comes from the crypto research project
+      (net Sharpe {{ '1.57 / 2.03, largest fall &minus;17%' if st.combined else '0.69 / 0.92, about +22% a year, largest fall &minus;32%' }}
+      in 2021&ndash;24 / 2025&ndash;Aug 2026) and is fixed. <strong>1 June &ndash; 30 August 2026</strong> reproduces the research backtest;
+      <strong>from {{ st.first_unseen or '2026-09-01' }}</strong> the research had not seen the data and nothing may be tuned on it.
+      Funding for the month Binance has not yet published is <em>estimated</em> from the premium index. Fills are assumed at the
+      hourly close with a flat cost. Paper only: no exchange account is involved.
+    </div>
+
+    {% if st.empty_range %}
+      <p class="empty">No days in the selected date range.</p>
+    {% elif st.get('error') %}
+      <p class="empty">Book unavailable ({{ st.error }}).</p>
+    {% elif not st %}
+      <p class="empty">No days recorded yet. The paper loop builds this book after the taker book's next update.</p>
+    {% else %}
+      {% set r = st.research %}{% set u = st.unseen %}{% set rc = st.reconcile %}
+      <div class="cards">
+        <div class="card"><div class="k">Paper equity</div>
+          <div class="v {{ 'green' if st.equity > st.equity_start else ('red' if st.equity < st.equity_start else '') }}">${{ "{:,.0f}".format(st.equity) }}</div>
+          <div class="sub-k">from ${{ "{:,.0f}".format(st.equity_start) }}; last completed day {{ st.last_done.decision_date if st.last_done else '—' }}</div></div>
+        <div class="card"><div class="k">June &ndash; August (research period)</div>
+          <div class="v {{ 'green' if r.days and r.net_pct>0 else ('red' if r.days and r.net_pct<0 else '') }}">{{ "%+.2f"|format(r.net_pct) if r.days else '—' }}%</div>
+          <div class="sub-k">{{ r.days }} days; {{ 'matches the research months' if rc.ok else 'monthly check incomplete or different' }}</div></div>
+        <div class="card"><div class="k">Since {{ st.first_unseen }} (not seen)</div>
+          <div class="v {{ 'green' if u.days and u.net_pct>0 else ('red' if u.days and u.net_pct<0 else '') }}">{{ "%+.2f"|format(u.net_pct) if u.days else '—' }}%</div>
+          <div class="sub-k">{{ u.days }} days{% if u.days %}; {{ u.estimated_days }} with estimated funding; deepest fall {{ "%.2f"|format(u.max_drawdown_pct) }}%{% endif %}</div></div>
+        <div class="card"><div class="k">Data</div>
+          <div class="v">{{ st.state.data_through or '—' }}</div>
+          <div class="sub-k">bars through this UTC day; actual funding through {{ st.state.funding_through or '—' }}{% if st.state.error %}; <span class="red">last build failed: {{ st.state.error }}</span>{% endif %}</div></div>
+      </div>
+
+      <p class="note">Research months (compounded): {% for m, v in rc.want.items() %}{{ m }} {{ "%+.2f"|format(v) }}%{{ ', ' if not loop.last }}{% endfor %}.
+        This ledger: {% for m, v in rc.got.items() %}{{ m }} {{ "%+.2f"|format(v) }}%{{ ', ' if not loop.last }}{% endfor %}{{ '.' if rc.got else 'none yet.' }}
+        {% if not rc.ok %}<span class="red">Not matching yet (or the period is incomplete).</span>{% endif %}</p>
+
+      <h2 style="margin-top:24px">Months</h2>
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable monthly results"><table class="perf">
+        <thead><tr><th>Month</th><th>Days</th><th>Net (compounded)</th><th>Price moves</th><th>Funding</th><th>Costs</th><th>Estimated funding days</th></tr></thead>
+        <tbody>
+        {% for m in (r.months or []) + (u.months or []) %}
+          <tr><td>{{ m.month }}{% if m.month >= st.first_unseen[:7] %} <span class="muted">&bull;</span>{% endif %}</td><td>{{ m.days }}</td>
+            <td class="{{ 'green' if m.net_pct>0 else ('red' if m.net_pct<0 else '') }}">{{ "%+.2f"|format(m.net_pct) }}%</td>
+            <td>{{ "%+.2f"|format(m.gross_pct) }}%</td><td>{{ "%+.2f"|format(m.funding_pct) }}%</td><td>{{ "%+.2f"|format(-m.cost_pct) }}%</td>
+            <td>{{ m.estimated_days }}</td></tr>
+        {% endfor %}
+        </tbody></table></div>
+
+      <h2 style="margin-top:24px">Day by day</h2>
+      <div class="crypto-table" tabindex="0" role="region" aria-label="Scrollable daily results"><table class="perf">
+        <thead><tr><th>Decision (00:00 UTC)</th>
+          {% if st.combined %}<th>Taker net</th><th>Trend net</th>
+          {% else %}<th>BTC</th><th>BTC vol / size</th><th>ETH</th><th>ETH vol / size</th>{% endif %}
+          <th>Gross exposure</th><th>Net</th><th>Equity</th><th>Funding</th></tr></thead>
+        <tbody>
+        {% for d in ct_rows %}
+          <tr><td>{{ d.decision_date }}{% if d.decision_date >= st.first_unseen %} <span class="muted">&bull;</span>{% endif %}</td>
+            {% if st.combined %}
+              <td>{{ "%+.2f"|format(100 * d.taker_net) ~ '%' if d.taker_net is not none else '—' }}</td>
+              <td>{{ "%+.2f"|format(100 * d.trend_net) ~ '%' if d.trend_net is not none else '—' }}</td>
+            {% else %}
+              {% for a in ['btc', 'eth'] %}
+                {% set w = d[a ~ '_weight'] %}
+                <td class="{{ 'green' if w>0 else ('red' if w<0 else 'muted') }}">{{ ('long ' if w>0 else ('short ' if w<0 else 'flat')) }}{% if w %}{{ "%.2f"|format(w|abs) }}&times;{% endif %}</td>
+                <td class="muted">{{ "%.0f"|format(100 * d[a ~ '_vol']) ~ '%' if d[a ~ '_vol'] is not none else '—' }} / {{ "%.2f"|format(d[a ~ '_scale']) if d[a ~ '_scale'] is not none else '—' }}</td>
+              {% endfor %}
+            {% endif %}
+            <td>{{ "%.2f"|format(d.exposure) }}&times;</td>
+            <td class="{{ 'green' if (d.net or 0)>0 else ('red' if (d.net or 0)<0 else '') }}">{{ "%+.2f"|format(100 * d.net) ~ '%' if d.net is not none else 'holding' }}</td>
+            <td>{{ "${:,.0f}".format(d.equity) if d.equity else '—' }}</td>
+            <td class="{{ 'amber' if d.funding_source != 'actual' else 'muted' }}">{{ d.funding_source }}</td></tr>
+        {% endfor %}
+        </tbody></table></div>
+      <p class="note">&bull; = after the research data ended (not seen). Paper only.</p>
+    {% endif %}
+    </section>

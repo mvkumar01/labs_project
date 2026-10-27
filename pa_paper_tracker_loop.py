@@ -66,6 +66,7 @@ def main() -> None:
     from labs.engine.gold_cci_tracker import run_live as run_gold_cci_live
     from labs.engine.btc_rsi_roc_tracker import run_live as run_btc_rsi_roc_live
     from labs.engine.crypto_xs_tracker import run_live as run_crypto_xs_live
+    from labs.engine.crypto_trend_tracker import run_live as run_crypto_trend_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
@@ -102,6 +103,7 @@ def main() -> None:
         "gold_cci": None,
         "btc_rsi_roc": None,
         "crypto_xs": None,
+        "crypto_trend": None,
     }
     while True:
         now = datetime.now(IST)
@@ -206,6 +208,13 @@ def main() -> None:
                 last_log["crypto_xs"] = res
         except Exception as exc:
             print(f"[paper-loop:crypto_xs] error: {type(exc).__name__}: {exc}", flush=True)
+        try:
+            res = run_crypto_trend_live(now)
+            if res != last_log["crypto_trend"]:
+                print(f"[paper-loop:crypto_trend] {now.strftime('%H:%M')} {res}", flush=True)
+                last_log["crypto_trend"] = res
+        except Exception as exc:
+            print(f"[paper-loop:crypto_trend] error: {type(exc).__name__}: {exc}", flush=True)
         _time.sleep(POLL_MARKET)
 
 

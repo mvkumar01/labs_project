@@ -45,6 +45,8 @@ MORE_BOOKS = {
     "risk_core": {"label": "Risk core · trend × vol", "instrument": "NIFTY, BANK NIFTY, BTC, ETH, crude",
                   "size": "Rs 10 lakh, five sleeves"},
     "crypto_xs": {"label": "Crypto taker imbalance", "instrument": "Binance USDT perpetuals", "size": "$100,000 simulated equity"},
+    "crypto_xs_trend": {"label": "Crypto trend · BTC/ETH", "instrument": "Binance BTC/ETH perpetuals", "size": "$100,000 simulated equity"},
+    "crypto_xs_combo": {"label": "Crypto taker + trend", "instrument": "Binance USDT perpetuals", "size": "$100,000 simulated equity"},
     "crypto_xs_c": {"label": "Crypto taker imbalance · crypto only", "instrument": "Binance USDT perpetuals, crypto contracts",
                     "size": "$100,000 simulated equity"},
 }
@@ -320,6 +322,8 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "risk_core": lambda: _risk_core(conn, today),
         "crypto_xs": lambda: _crypto(conn, today),
         "crypto_xs_c": lambda: _crypto(conn, today, "crypto_xs_c"),
+        "crypto_xs_trend": lambda: _crypto(conn, today, "crypto_xs_trend"),
+        "crypto_xs_combo": lambda: _crypto(conn, today, "crypto_xs_combo"),
     }
     cards = []
     for key, build in builders.items():

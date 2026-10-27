@@ -51,6 +51,8 @@ SOURCES = {
     'risk_core': Source('risk_core_days', 'Portfolio', daily_only=True),
     'crypto_xs': Source('crypto_xs_daily', 'Portfolio', date_column='decision_date', currency='USD', daily_only=True),
     'crypto_xs_c': Source('crypto_xs_c_daily', 'Portfolio', date_column='decision_date', currency='USD', daily_only=True),
+    'crypto_xs_trend': Source('crypto_xs_trend_daily', 'Portfolio', date_column='decision_date', currency='USD', daily_only=True),
+    'crypto_xs_combo': Source('crypto_xs_combo_daily', 'Portfolio', date_column='decision_date', currency='USD', daily_only=True),
 }
 for _key in ('alpha_v211b', 'alpha_v212', 'alpha_v212b10', 'alpha_v214',
              'alpha_v214c', 'alpha_v214d', 'alpha_v214e', 'alpha_cpr'):
