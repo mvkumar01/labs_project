@@ -60,7 +60,9 @@ for _key in ('alpha_v211b', 'alpha_v212', 'alpha_v212b10', 'alpha_v214',
 for _key in ('proposer_px', 'proposer_v3', 'proposer_v3_dt35', 'proposer_v4',
              'proposer_v5', 'proposer_v5_dt25', 'proposer_v3_dt35_clock'):
     SOURCES[_key] = Source(_key + '_trades', 'SENSEX', 2000)
-SOURCES['proposer_nifty_v5'] = Source('proposer_nifty_v5_trades', 'NIFTY')
+NIFTY_SCALPER_KEYS = ('proposer_nifty_v5', 'proposer_nifty_v3', 'proposer_nifty_v3_pclock')
+for _key in NIFTY_SCALPER_KEYS:
+    SOURCES[_key] = Source(_key + '_trades', 'NIFTY')
 SOURCES['bn_alpha'] = Source('bn_alpha_trades', 'BANKNIFTY', 30)
 SOURCES['sx_pc400'] = Source('sx_pc400_trades', 'SENSEX', 20)
 SOURCES['sx_open1400'] = Source('sx_open1400_trades', 'SENSEX', 20)
@@ -140,13 +142,13 @@ def normalize(row, spec, key):
         xp = sum(number(row.get(x)) or 0 for x in ('call_bought', 'put_bought')) or None
     qty = number(row.get('qty'))
     gross = number(pick(row, 'gross_rs', 'gross_pnl', 'option_gross_rs'))
-    if qty is None and key == 'proposer_nifty_v5':
+    if qty is None and key in NIFTY_SCALPER_KEYS:
         from labs.services.capital_metrics import recorded_nifty_quantity
         qty = recorded_nifty_quantity(row)
     # Recover recorded execution quantity only where premium arithmetic reconciles exactly.
     if qty is None and ep is not None and xp is not None and gross is not None and xp != ep:
         implied = gross / ((ep - xp) if short else (xp - ep))
-        if implied > 0 and abs(implied - round(implied)) < .02 and (key != 'proposer_nifty_v5' or round(implied) % 65 == 0):
+        if implied > 0 and abs(implied - round(implied)) < .02 and (key not in NIFTY_SCALPER_KEYS or round(implied) % 65 == 0):
             qty = float(round(implied))
     qty = qty if qty is not None else spec.qty
     charges = number(pick(row, 'charges_rs', 'charges_total', 'costs_rs'))

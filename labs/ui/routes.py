@@ -387,6 +387,8 @@ LIVE_TABS = {
     "nna_v1": "Nifty New Alpha V1",
     "proposer_v5_dt25": "Sensex V5 2.5%",
     "proposer_nifty_v5": "Nifty Scalper V1",
+    "proposer_nifty_v3": "Nifty Scalper V3",
+    "proposer_nifty_v3_pclock": "Nifty Scalper V3 (Pramanaa timing)",
     "proposer_v3_dt35_clock": "Sensex V3 3.5% · Pramanaa timing",
     "nifty_expiry_sale": "NIFTY Expiry Straddle Sale",
     "expiry_strangle": "Expiry strangle · NIFTY + SENSEX",
@@ -434,6 +436,8 @@ def live_strategy():
     nna_rows, nna_trades, nna_stats = [], [], {}
     proposer_v5_dt25_rows, proposer_v5_dt25_trades, proposer_v5_dt25_stats = [], [], {}
     proposer_nifty_v5_rows, proposer_nifty_v5_trades, proposer_nifty_v5_stats = [], [], {}
+    proposer_nifty_v3_rows, proposer_nifty_v3_trades, proposer_nifty_v3_stats = [], [], {}
+    proposer_nifty_v3_pclock_rows, proposer_nifty_v3_pclock_trades, proposer_nifty_v3_pclock_stats = [], [], {}
     proposer_v3_dt35_clock_rows, proposer_v3_dt35_clock_trades, proposer_v3_dt35_clock_stats = [], [], {}
     nifty_expiry_sale_rows, nifty_expiry_sale_books, nifty_expiry_sale_stats = [], [], {}
     expiry_strangle_rows, expiry_strangle_all, expiry_strangle_stats = [], [], {}
@@ -1019,6 +1023,26 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_nifty_v5_stats = {"error": str(exc)}
 
+        # Nifty Scalper V3 (paper).
+        if active_live_tab == "proposer_nifty_v3":
+            try:
+                from labs.engine.proposer_nifty_v3_book import tab_data as proposer_nifty_v3_tab_data
+                proposer_nifty_v3_rows, proposer_nifty_v3_trades, proposer_nifty_v3_stats = (
+                    proposer_nifty_v3_tab_data(conn, date_clause, date_params))
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_nifty_v3_stats = {"error": str(exc)}
+
+        # Nifty Scalper V3 (Pramanaa timing) (paper).
+        if active_live_tab == "proposer_nifty_v3_pclock":
+            try:
+                from labs.engine.proposer_nifty_v3_pclock_book import tab_data as proposer_nifty_v3_pclock_tab_data
+                proposer_nifty_v3_pclock_rows, proposer_nifty_v3_pclock_trades, proposer_nifty_v3_pclock_stats = (
+                    proposer_nifty_v3_pclock_tab_data(conn, date_clause, date_params))
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_nifty_v3_pclock_stats = {"error": str(exc)}
+
         # Sensex V5 at 2.5% (paper).
         if active_live_tab == "proposer_v5_dt25":
             try:
@@ -1350,6 +1374,12 @@ def live_strategy():
         proposer_nifty_v5_rows=proposer_nifty_v5_rows,
         proposer_nifty_v5_trades=proposer_nifty_v5_trades,
         proposer_nifty_v5_stats=proposer_nifty_v5_stats,
+        proposer_nifty_v3_rows=proposer_nifty_v3_rows,
+        proposer_nifty_v3_trades=proposer_nifty_v3_trades,
+        proposer_nifty_v3_stats=proposer_nifty_v3_stats,
+        proposer_nifty_v3_pclock_rows=proposer_nifty_v3_pclock_rows,
+        proposer_nifty_v3_pclock_trades=proposer_nifty_v3_pclock_trades,
+        proposer_nifty_v3_pclock_stats=proposer_nifty_v3_pclock_stats,
         proposer_v3_dt35_clock_rows=proposer_v3_dt35_clock_rows,
         proposer_v3_dt35_clock_trades=proposer_v3_dt35_clock_trades,
         proposer_v3_dt35_clock_stats=proposer_v3_dt35_clock_stats,
@@ -1479,6 +1509,44 @@ def proposer_v3_dt35_clock_backfill():
 def proposer_nifty_v5_backfill():
     """Backfill bounded batches of the NIFTY on Sensex V5 signals paper book."""
     from labs.engine.proposer_nifty_v5_book import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/proposer_nifty_v3/backfill", methods=["POST"])
+def proposer_nifty_v3_backfill():
+    """Backfill bounded batches of the Nifty Scalper V3 paper book."""
+    from labs.engine.proposer_nifty_v3_book import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/proposer_nifty_v3_pclock/backfill", methods=["POST"])
+def proposer_nifty_v3_pclock_backfill():
+    """Backfill bounded batches of the Nifty Scalper V3 (Pramanaa timing) paper book."""
+    from labs.engine.proposer_nifty_v3_pclock_book import DEFAULT_START, run_backfill
     try:
         limit = min(max(int(request.args.get("limit", 5)), 1), 20)
     except (TypeError, ValueError):

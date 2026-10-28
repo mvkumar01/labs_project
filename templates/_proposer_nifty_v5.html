@@ -47,26 +47,6 @@
         <span class="muted">Latest {{ proposer_nifty_v5_stats.latest.trade_date }}: {{ proposer_nifty_v5_stats.latest.status }}, through {{ (proposer_nifty_v5_stats.latest.through_ts or '')[11:16] }}</span>
       </div>
 
-      {% set twins = proposer_nifty_v5_stats.get('twins') or [] %}
-      <h2 style="margin-top:24px">Nifty Scalper V3</h2>
-      <p class="muted">The same book with other print timings. <strong>Prints every 3 min</strong> is the live preset
-        Nifty Scalper V3 (first print 09:22, then every 3 minutes instead of 5). <strong>Pramanaa's timing</strong> is
-        paper only: the forming candle counted, first print 09:21:45, then one every 310.5 s (Pramanaa's scheduler).
-        Everything else is this book. On 1-min data a forming candle is priced at the last completed close.</p>
-      <table class="table"><thead><tr><th></th><th>Net</th><th>Green days</th><th>Trades</th><th>Worst day</th><th>Max drawdown</th></tr></thead><tbody>
-        <tr><td>Nifty Scalper V1 (every 5 min, this book)</td><td>&#8377;{{ "{:,.0f}".format(proposer_nifty_v5_stats.net_total) }}</td><td>{{ proposer_nifty_v5_stats.green_pct }}%</td><td>{{ proposer_nifty_v5_stats.trades }}</td><td>&#8377;{{ "{:,.0f}".format(proposer_nifty_v5_stats.worst_day) }}</td><td>&#8377;{{ "{:,.0f}".format(proposer_nifty_v5_stats.max_dd) }}</td></tr>
-        {% for t in twins %}{% set st = t.stats or {} %}
-        <tr><td>{{ t.label }}</td>
-          {% if st.get('error') %}<td colspan="5">unavailable ({{ st.error }})</td>
-          {% elif not st %}<td colspan="5">not filled yet: press Refresh backfill</td>
-          {% else %}<td>&#8377;{{ "{:,.0f}".format(st.net_total) }}</td><td>{{ st.green_pct }}%</td><td>{{ st.trades }}</td><td>&#8377;{{ "{:,.0f}".format(st.worst_day) }}</td><td>&#8377;{{ "{:,.0f}".format(st.max_dd) }}</td>{% endif %}</tr>
-        {% endfor %}
-      </tbody></table>
-      <details style="margin-top:8px"><summary>Day by day (latest 40)</summary>
-      <table class="table"><thead><tr><th>Date</th><th>V1 (5 min)</th>{% for t in twins %}<th>{{ t.label }}</th>{% endfor %}</tr></thead><tbody>
-      {% for d in proposer_nifty_v5_stats.get('twin_days') or [] %}<tr><td>{{ d.trade_date }}</td><td>{{ "{:,.0f}".format(d.v1 or 0) }}</td>{% for x in d.twins %}<td>{{ "{:,.0f}".format(x) if x is not none else '' }}</td>{% endfor %}</tr>{% endfor %}
-      </tbody></table></details>
-
       <h2 style="margin-top:24px">By month</h2>
       <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead><tbody>
       {% for m in proposer_nifty_v5_stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>
