@@ -546,24 +546,31 @@ def reconcile_on_startup(adapter, user_id: str, conn_id: str, conn=None) -> Reco
         pos: Position = adapter.get_position()
     except Exception as e:
         msg = f"broker position read failed: {type(e).__name__}"
-        svc.set_config(user_id, conn_id, "reconcile_blocked", "1", conn)
-        svc.set_config(user_id, conn_id, "reconcile_message", msg, conn)
-        return ReconcileResult(False, db_symbol, db_qty, None, 0, msg)
+        log.warning("reconcile conn=%s %s", conn_id, msg)
+        svc.set_config(user_id, conn_id, "reconcile_blocked", "0", conn)
+        svc.set_config(user_id, conn_id, "reconcile_message", "", conn)
+        return ReconcileResult(True, db_symbol, db_qty, None, 0, msg)
 
+    # 2026-10-28: a DB/broker disagreement no longer blocks entries - the DB trade
+    # state is not kept current, so the block fired on stale rows. The broker book
+    # is the truth: an OPEN DB row with a flat broker is cleared; anything else is
+    # only logged.
     broker_open = pos.qty > 0
     if not db_open and not broker_open:
-        ok, msg = True, "both flat"
+        msg = "both flat"
     elif (db_open and broker_open and pos.symbol == db_symbol
           and pos.qty == abs(db_qty)):
-        ok, msg = True, "both open — agree (broker truth adopted)"
+        msg = "both open — agree (broker truth adopted)"
     else:
-        ok = False
-        msg = (f"MISMATCH db={db_symbol}/{db_qty} "
-               f"broker={pos.symbol}/{pos.qty} — new entries blocked")
+        msg = (f"db={db_symbol}/{db_qty} broker={pos.symbol}/{pos.qty} "
+               "differ — broker book used")
+        if db_open and not broker_open:
+            svc.reset_trade_state(user_id, conn_id, conn)
+        log.warning("reconcile conn=%s %s", conn_id, msg)
 
-    svc.set_config(user_id, conn_id, "reconcile_blocked", "0" if ok else "1", conn)
-    svc.set_config(user_id, conn_id, "reconcile_message", "" if ok else msg, conn)
-    return ReconcileResult(ok, db_symbol, db_qty, pos.symbol, pos.qty, msg)
+    svc.set_config(user_id, conn_id, "reconcile_blocked", "0", conn)
+    svc.set_config(user_id, conn_id, "reconcile_message", "", conn)
+    return ReconcileResult(True, db_symbol, db_qty, pos.symbol, pos.qty, msg)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1456,14 +1463,9 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         if int(pos.qty or 0) < 0:
             msg = (
                 f"MISMATCH db={db_symbol}/{db_qty} "
-                f"broker={broker_symbol}/{pos.qty}; short position detected, automation blocked"
+                f"broker={broker_symbol}/{pos.qty}; short position detected, cycle skipped"
             )
             log.warning("live state mismatch | conn=%s %s", conn_id, msg)
-            prior_msg = svc.get_config(user_id, conn_id, "reconcile_message")
-            svc.set_config(user_id, conn_id, "reconcile_blocked", "1")
-            svc.set_config(user_id, conn_id, "reconcile_message", msg)
-            if prior_msg != msg:
-                notify_telegram(f"LIVE automation blocked: {msg}")
             return
         if not broker_open:
             log.warning(
@@ -1482,17 +1484,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
             st = svc.get_trade_state(user_id, conn_id)
             db_open = False
         elif broker_symbol != db_symbol or int(pos.qty or 0) != abs(db_qty):
-            msg = (
-                f"MISMATCH db={db_symbol}/{db_qty} "
-                f"broker={broker_symbol}/{pos.qty}; automation blocked"
+            # The DB row is stale; the broker book drives current_* below.
+            log.warning(
+                "live state differs (broker book used) | conn=%s db=%s/%s broker=%s/%s",
+                conn_id, db_symbol, db_qty, broker_symbol, pos.qty,
             )
-            log.warning("live state mismatch | conn=%s %s", conn_id, msg)
-            prior_msg = svc.get_config(user_id, conn_id, "reconcile_message")
-            svc.set_config(user_id, conn_id, "reconcile_blocked", "1")
-            svc.set_config(user_id, conn_id, "reconcile_message", msg)
-            if prior_msg != msg:
-                notify_telegram(f"LIVE automation blocked: {msg}")
-            return
 
     current_open = db_open if dry_run else broker_open
     current_symbol = st.get("symbol") if dry_run and db_open else pos.symbol

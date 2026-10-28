@@ -263,7 +263,7 @@
 
         var rec = document.getElementById("reconcile-banner");
         if (rec) {
-          if (!s.reconcile_ok) {
+          if (false && !s.reconcile_ok) {  // reconcile banner retired 2026-10-28
             rec.style.display = "block";
             rec.textContent = "Reconciliation mismatch: " + (s.reconcile_warning || "new entries blocked");
           } else {

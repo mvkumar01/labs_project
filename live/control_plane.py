@@ -110,8 +110,6 @@ def require_idle(c, user_id, conn_id):
     ).fetchone()
     if row and row["position"] == "OPEN":
         raise ControlError("Resolve the open position before changing settings")
-    if svc.get_config_int(user_id, conn_id, "reconcile_blocked", c):
-        raise ControlError("Resolve the broker reconciliation mismatch first")
     if c.execute(
         "SELECT 1 FROM live_orders WHERE user_id=? AND conn_id=? AND dry_run=0 AND lower(status) NOT IN ('complete','completed','filled','cancelled','canceled','rejected','failed','no_long_position','exit_qty_exceeds_position','blocked','skipped','gate_blocked') LIMIT 1",
         (user_id, conn_id),
@@ -410,10 +408,6 @@ def reserve(user_id, conn_id, operation, intent_key, *, broker=None, identity=No
             raise ControlError(
                 "This order intent was already acknowledged; reconcile before retrying"
             )
-        if operation == "entry" and svc.get_config_int(
-            user_id, conn_id, "reconcile_blocked", c
-        ):
-            raise ControlError("Resolve the broker reconciliation mismatch first")
         now = time.time()
         counts = usage(c, r["route_id"], now)
         reserve_amount = r["exit_reserve"] if operation in ("entry", "modify") else 0

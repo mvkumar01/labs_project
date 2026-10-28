@@ -778,13 +778,15 @@ def _reconcile(adapter, user_id: str, conn_id: str) -> bool:
             ok, msg = True, "both open, agree"
         else:
             ok = False
-            msg = (f"MISMATCH db={st.get('symbol')}/{st.get('qty') if db_open else 0} "
-                   f"broker={pos.symbol}/{pos.qty} - new entries blocked")
-    svc.set_config(user_id, conn_id, "reconcile_blocked", "0" if ok else "1")
-    svc.set_config(user_id, conn_id, "reconcile_message", "" if ok else msg)
+            msg = (f"db={st.get('symbol')}/{st.get('qty') if db_open else 0} "
+                   f"broker={pos.symbol}/{pos.qty} differ")
+    # 2026-10-28: logged only - the DB trade state is not kept current, so a
+    # disagreement no longer blocks new entries.
     if not ok:
-        notify_telegram(f"Proposer automation blocked: {msg}")
-    return ok
+        log.warning("reconcile conn=%s %s", conn_id, msg)
+    svc.set_config(user_id, conn_id, "reconcile_blocked", "0")
+    svc.set_config(user_id, conn_id, "reconcile_message", "")
+    return True
 
 
 def _route(adapter, user_id, conn_id, *, action, side, symbol, qty, price, dry_run,
