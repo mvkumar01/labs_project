@@ -71,7 +71,8 @@
           </select>
           <div class="hint">Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
           <div class="hint" id="gold-v2-help" {{ '' if strategy == 'gold_cci_v2' else 'hidden' }}>
-            Gold CCI V2: Zerodha MCX GOLD futures (1 kg per lot), short only, fixed lots.
+            Gold CCI V2: Angel One or Zerodha MCX GOLD futures (1 kg per lot), short only, fixed lots.
+            Market data comes from Zerodha; orders and margin quotes use your selected broker.
             The 3% daily net target uses the first filled trade's broker-quoted NRML margin,
             frozen for that day. It skips entries when completed 15-minute DI(14)+ exceeds DI(14)−
             or the latest completed 15-minute candle crosses above the middle Bollinger SMA20.

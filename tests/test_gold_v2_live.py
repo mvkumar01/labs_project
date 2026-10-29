@@ -212,14 +212,16 @@ def test_minute_decisions_use_completed_candles_and_both_filters():
         assert g.pending_fire(pd.concat([prefix, incomplete]), cutoff) == fire
 
 
-def test_process_end_to_end_dry_entry_target_halt_restart(tmp_path, monkeypatch):
+@pytest.mark.parametrize("broker", ["zerodha", "angel"])
+def test_process_end_to_end_dry_entry_target_halt_restart(tmp_path, monkeypatch, broker):
+    cid = USER + ":" + broker
     import pandas as pd
     from storage import live_db
     monkeypatch.setattr(live_db, "LIVE_DB_PATH", tmp_path / "live.db")
     svc.ensure_schema()
-    svc.upsert_connection(USER, CID, broker="zerodha", status="connected", account_ref="test")
+    svc.upsert_connection(USER, cid, broker=broker, status="connected", account_ref="test")
     for key, value in (("mode", "DRY_RUN"), ("strategy_version", gc.VERSION), ("lots", "1")):
-        svc.set_config(USER, CID, key, value)
+        svc.set_config(USER, cid, key, value)
     monkeypatch.setattr(svc, "load_credentials", lambda *a: {})
     price = [140000.0]
     a = SimpleNamespace(_creds={}, contract=lambda d: dict(tradingsymbol=SYMBOL),
@@ -227,23 +229,23 @@ def test_process_end_to_end_dry_entry_target_halt_restart(tmp_path, monkeypatch)
     series = SimpleNamespace(refresh=lambda now: None, front=lambda now: dict(tradingsymbol=SYMBOL),
         frame=lambda now: pd.DataFrame([dict(ts=pd.Timestamp(now).floor("min") - pd.Timedelta(minutes=1), close=price[0])]))
     monkeypatch.setattr(g, "pending_fire", lambda *a: "signal")
-    g._runtime.pop(CID, None)
-    adapters = {"gold:" + CID: a}
-    g.process(USER, CID, adapters=adapters, now=NOW, series=series)
+    g._runtime.pop(cid, None)
+    adapters = {"gold:" + cid: a}
+    g.process(USER, cid, adapters=adapters, now=NOW, series=series)
     with live_db.get_live_conn() as c:
-        s = g.load(c, USER, CID)
+        s = g.load(c, USER, cid)
         assert s["position"]["qty"] == 1
     price[0] = 139800
-    g.process(USER, CID, adapters=adapters, now=NOW + timedelta(seconds=2), series=series)
+    g.process(USER, cid, adapters=adapters, now=NOW + timedelta(seconds=2), series=series)
     # New minute with another signal: a filled daily target keeps the book flat.
-    g.process(USER, CID, adapters=adapters, now=NOW + timedelta(minutes=1), series=series)
+    g.process(USER, cid, adapters=adapters, now=NOW + timedelta(minutes=1), series=series)
     with live_db.get_live_conn() as c:
-        assert g.load(c, USER, CID)["position"] is None
+        assert g.load(c, USER, cid)["position"] is None
         assert c.execute("SELECT count(*) FROM live_trades").fetchone()[0] == 1
         assert c.execute("SELECT count(*) FROM live_orders").fetchone()[0] == 2
 
 
-def test_configure_selects_gold_without_arming_and_blocks_angel(tmp_path, monkeypatch):
+def test_configure_selects_gold_without_arming_and_supports_angel(tmp_path, monkeypatch):
     from pathlib import Path
     from flask import Flask
     from storage import live_db
@@ -273,4 +275,5 @@ def test_configure_selects_gold_without_arming_and_blocks_angel(tmp_path, monkey
     svc.set_config(USER, CID, "mode", "DISARMED")
     monkeypatch.setattr(routes, "_current_conn_id", lambda: (USER, "angel", CID))
     response = client.post("/live/configure", data=dict(csrf_token="test", strategy=gc.VERSION, lots="3"))
-    assert b'requires a Zerodha connection' in response.data and svc.get_lots(USER, CID) == 2
+    assert response.status_code == 302 and svc.get_lots(USER, CID) == 3
+    assert svc.get_mode(USER, CID) == "DISARMED"

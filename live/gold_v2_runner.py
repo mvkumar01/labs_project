@@ -21,6 +21,7 @@ from live import live_service as svc
 from live import live_executor as ex
 from live.engine import gold_cci_v2_engine as engine
 from live.brokers.gold_zerodha import GoldZerodhaAdapter
+from live.brokers.gold_angel import GoldAngelAdapter
 from labs.engine.charges import mcx_futures_round_trip_charges
 from storage.live_db import get_live_conn
 
@@ -236,13 +237,14 @@ def process(user, cid, *, adapters, now=None, series=None):
     if mode == ex.Mode.DISARMED:
         return
     row = svc.get_connection(user, cid)
-    if row.get("broker") != "zerodha":
+    if row.get("broker") not in ("zerodha", "angel"):
         return
     cache_key = "gold:" + cid
     adapter = adapters.get(cache_key)
     creds = svc.load_credentials(user, cid)
     if adapter is None or getattr(adapter, "_creds", None) != creds:
-        adapter = GoldZerodhaAdapter(user_id=user, conn_id=cid, creds=creds)
+        adapter_cls = GoldAngelAdapter if row["broker"] == "angel" else GoldZerodhaAdapter
+        adapter = adapter_cls(user_id=user, conn_id=cid, creds=creds)
         adapter.connect()
         adapters[cache_key] = adapter
     conn = get_live_conn()

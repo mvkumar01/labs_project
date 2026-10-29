@@ -1,9 +1,13 @@
 # Gold CCI V2 in live trading
 
-The `/live/configure` selector offers **Gold CCI V2** on Zerodha connections.
+The `/live/configure` selector offers **Gold CCI V2** on Angel One and Zerodha connections.
 Adding or selecting the strategy does not arm it. Save while disarmed and flat;
 use the existing dry-run and live arming controls. MCX trading must be enabled
-on the broker account. Angel is not supported by this futures implementation.
+on the selected broker account. Angel One is the requested execution broker;
+the shared Zerodha session supplies market data only when Angel is selected.
+Angel GOLD symbols are matched to Kite contracts by exact exchange expiry and
+validated MCX FUTCOM token, lot size and price tick. Orders use Angel's
+CARRYFORWARD product (equivalent to NRML); margin comes from Angel's margin API.
 
 This trades **GOLD futures, 1 kg per lot**, not the separate GOLDM dry runner.
 Broker quantity is whole contracts; P&L and displayed ledger quantity use 100

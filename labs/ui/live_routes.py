@@ -162,6 +162,9 @@ def _account_ref_from_creds(broker: str, creds: dict) -> str | None:
 def _adapter_for(broker: str, *, user_id: str, conn_id: str, creds: dict):
     """Build a broker adapter without importing SDKs outside live/brokers."""
     if broker == "angel":
+        if svc.get_config(user_id, conn_id, "strategy_version") == "gold_cci_v2":
+            from live.brokers.gold_angel import GoldAngelAdapter
+            return GoldAngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
         from live.brokers.angel import AngelAdapter
         return AngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
     if broker == "zerodha":
@@ -708,8 +711,8 @@ def configure():
                     cp.require_idle(c, user_id, conn_id)
             except cp.ControlError as exc:
                 return _render_configure(user_id, conn_id, error=str(exc))
-            if strat == "gold_cci_v2" and broker != "zerodha":
-                return _render_configure(user_id, conn_id, error="Gold CCI V2 requires a Zerodha connection with MCX enabled.")
+            if strat == "gold_cci_v2" and broker not in ("zerodha", "angel"):
+                return _render_configure(user_id, conn_id, error="Gold CCI V2 requires an Angel One or Zerodha connection with MCX enabled.")
         if strat == SENSEX_V45:
             floor = (request.form.get("loss_floor") or "").strip()
             if floor not in SENSEX_V45_FLOORS:
