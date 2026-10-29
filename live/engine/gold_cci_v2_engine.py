@@ -1,4 +1,4 @@
-"""Paper-only Gold CCI V2: V1 entries/exits plus a 3% daily NET margin target.
+"""Paper-only Gold CCI V2: 3% daily NET target and combined 15m entry veto.
 
 Pure replay: no I/O, broker or mutable V1 settings. The caller supplies the
 session's frozen estimated margin ratio. Historical margins are not invented.
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,30 @@ from live.engine import gold_cci_engine as v1
 DAILY_TARGET_PCT = 3.0
 QTY = v1.LOT_QTY
 SLIPPAGE_RS = 2 * v1.TICK_SIZE * QTY
+
+
+def entry_filter(g: dict) -> dict:
+    """Veto bullish DI14 OR a new middle-Bollinger SMA20 upcross on completed 15m bars.
+
+    An upcross remains the latest completed candle's reading until the next
+    15m close. Unknown warm-up readings do not veto, matching the research.
+    """
+    bars = v1.base.resample(g, 15)
+    idx = np.flatnonzero(bars["valid"])
+    di = v1.base._indicator("adx", *(np.ascontiguousarray(bars[k][idx]) for k in ("high", "low", "close")), n=14)
+    bullish = np.zeros(bars["n"], dtype=bool)
+    bullish[idx] = di["plus_di"] > di["minus_di"]
+    middle = v1._on_valid(bars, lambda h, l, c: v1.base.sma(c, 20))
+    up = np.zeros(bars["n"], dtype=bool)
+    for a, b in zip(idx, idx[1:]):
+        da = str(bars["close_ts"][a] - np.timedelta64(1, "m"))[:10]
+        db = str(bars["close_ts"][b] - np.timedelta64(1, "m"))[:10]
+        adjacent = b == a + 1 and (da == db or np.busday_count(da, db) == 1)
+        if adjacent and np.isfinite(middle[a]) and np.isfinite(middle[b]):
+            up[b] = bars["close"][a] <= middle[a] and bars["close"][b] > middle[b]
+    di15 = v1.base.broadcast(bullish, bars["map"])
+    bb15 = v1.base.broadcast(up, bars["map"])
+    return {"allow": ~(di15 | bb15), "bullish_di15": di15, "bb_upcross15": bb15}
 
 
 def net_pnl(entry: float, exit_: float) -> float:
@@ -52,12 +77,19 @@ def replay(frame: pd.DataFrame, start: date | str, *, margin_rate: float,
     eligible[-1] = False
     eligible[g["n_known"] - 1:] = False
     vals = v1.values(g)
+    filters = entry_filter(g)
+    states = v1.states(g, vals)
+    states["v2_entry_filter"] = filters["allow"]
+    rule = SimpleNamespace(triggers=v1.RULE.triggers, gates=v1.RULE.gates + ("v2_entry_filter",))
     readings = {k: v1.base.broadcast(v[0], v[1]) for k, v in vals.items()}
     trades, signals, days = [], [], {}
     busy_until = -1
-    for i, outcome in v1.base.member_events(v1.RULE, v1.states(g, vals), eligible):
+    for i, outcome in v1.base.member_events(rule, states, eligible):
         signal = {"signal_idx": i, "signal_ts": pd.Timestamp(g["ts"][i]), "outcome": outcome,
+                  "bullish_di15": int(filters["bullish_di15"][i]), "bb_upcross15": int(filters["bb_upcross15"][i]),
                   **{k: float(readings[k][i]) for k in ("cci", "rsi", "plus_di", "minus_di")}}
+        if outcome == "gate" and not filters["allow"][i] and all(states[k][i] for k in v1.RULE.gates):
+            signal["outcome"] = "bullish_filter"
         if outcome == "fire":
             key = g["days"][g["day_id"][i + 1]].isoformat()
             state = days.get(key)

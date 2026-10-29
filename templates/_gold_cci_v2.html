@@ -1,6 +1,8 @@
 <h1>Gold CCI V2 · 3% daily net target</h1>
-<p class="sub">Separate simulated book, one GOLD lot (1 kg). Original V1 CCI, RSI and DI entries;
-  0.25% hard stop, stop to entry after 1R, and the original 3R per-trade cap.
+<p class="sub">Separate simulated book, one GOLD lot (1 kg). V1 CCI, RSI and hourly DI signals,
+  with an entry veto when the latest completed 15-minute candle has DI(14)+ above DI(14)−
+  or crossed upward through the middle Bollinger band (SMA20).
+  Retain the 0.25% hard stop, stop to entry after 1R, and original 3R per-trade cap.
   Close and stop for the session when cumulative net P&amp;L reaches 3% of the first entry's estimated margin,
   including the current trade's exit charges and slippage. The margin basis is frozen for that session.</p>
 <p class="note">Simulated candle replay from 29 October 2026. Margin is an explicitly labelled broker-quote estimate,

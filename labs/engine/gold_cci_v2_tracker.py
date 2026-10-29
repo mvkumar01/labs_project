@@ -15,7 +15,7 @@ from storage.db import get_conn
 BASE_DIR = Path(__file__).resolve().parents[2]
 IST = v1.IST
 PAPER_START = "2026-10-29"
-STRATEGY_VERSION = "gold_cci_v2_original_entries_daily_net3_v1"
+STRATEGY_VERSION = "gold_cci_v2_di14_bb20_15m_daily_net3_v2"
 MARGIN_SOURCE = "estimated_nrml_quote"
 
 
@@ -44,9 +44,14 @@ def _ensure_tables(conn):
         );
         CREATE TABLE IF NOT EXISTS gold_cci_v2_signals (
             trade_date TEXT NOT NULL, signal_ts TEXT PRIMARY KEY, outcome TEXT NOT NULL,
-            cci REAL, rsi REAL, plus_di REAL, minus_di REAL
+            cci REAL, rsi REAL, plus_di REAL, minus_di REAL,
+            bullish_di15 INTEGER, bb_upcross15 INTEGER
         );
     """)
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(gold_cci_v2_signals)")}
+    for name in ("bullish_di15", "bb_upcross15"):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE gold_cci_v2_signals ADD COLUMN {name} INTEGER")
     conn.commit()
 
 
@@ -95,8 +100,9 @@ def _persist(conn, day, status, contract, summary, trades, signals, quote, error
                        margin_rs=round(t["entry_price"] * eng.QTY * quote["rate"], 2),
                        margin_source=MARGIN_SOURCE, margin_asof=quote["asof"], margin_contract=quote["contract"])
             conn.execute(f"INSERT INTO gold_cci_v2_trades ({','.join(row)}) VALUES ({','.join('?' for _ in row)})", tuple(row.values()))
-        conn.executemany("INSERT INTO gold_cci_v2_signals VALUES (?,?,?,?,?,?,?)",
-            [(day, str(s["signal_ts"]), s["outcome"], s.get("cci"), s.get("rsi"), s.get("plus_di"), s.get("minus_di")) for s in signals])
+        conn.executemany("INSERT INTO gold_cci_v2_signals (trade_date,signal_ts,outcome,cci,rsi,plus_di,minus_di,bullish_di15,bb_upcross15) VALUES (?,?,?,?,?,?,?,?,?)",
+            [(day, str(s["signal_ts"]), s["outcome"], s.get("cci"), s.get("rsi"), s.get("plus_di"), s.get("minus_di"),
+              s.get("bullish_di15"), s.get("bb_upcross15")) for s in signals])
         row = dict(trade_date=day, status=status, tradingsymbol=symbol or None, expiry=(contract or {}).get("expiry"),
             valid_bars=summary.get("valid_bars"), n_signals=len(signals), n_trades=len(trades),
             open_trades=len(trades)-len(closed), wins=sum(t["net_rs"] > 0 for t in closed),

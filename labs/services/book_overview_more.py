@@ -189,7 +189,7 @@ def _mcx(conn, key: str, today: str) -> dict:
 def _gold_v2(conn, today: str) -> dict:
     card = _mcx(conn, "gold_cci_v2", today)
     latest = _rows(conn, "SELECT status,error FROM gold_cci_v2_daily ORDER BY trade_date DESC LIMIT 1")
-    card["note"] = "3% daily net target on first-entry margin, frozen for the session"
+    card["note"] = "3% daily net target; skip bullish 15m DI14 or a middle-band upcross"
     if card.get("capital_estimated"):
         card["capital_basis"] = "Estimated peak margin from frozen session broker quotes"
     if not latest:

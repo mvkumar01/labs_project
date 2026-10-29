@@ -7,6 +7,12 @@ Implementation date: 29 October 2026. Separate Alpha Labs key `gold_cci_v2`.
 - One lot of GOLD futures (100 quoted units / 1 kg), short only.
 - Original V1 signal: CCI(14) on completed 5-minute candles turns above 100;
   RSI(5) on 15-minute candles is above 50; hourly DI− exceeds DI+ (length 7).
+- Additional entry veto, selected by Vipin on 29 October: skip a short when
+  either completed 15-minute DI(14)+ exceeds DI(14)−, OR the latest completed
+  15-minute candle crossed upward through its middle Bollinger band (SMA20).
+  The upcross means previous close <= previous SMA20 and current close > current
+  SMA20. Use completed candles only; do not bridge missing bars. Unknown warm-up
+  readings do not veto entries, matching the explored candidate.
 - Original next-minute entry, cooldown, 0.25% hard stop, stop to entry after
   one stop distance in favour (effective next bar), 3R per-trade cap and EOD flat.
 - At the first entry, freeze daily capital as estimated NRML SELL margin ratio
@@ -15,8 +21,8 @@ Implementation date: 29 October 2026. Separate Alpha Labs key `gold_cci_v2`.
   P&L reaches the daily target; take no further entries for the session.
 - Charges follow the existing paper ledger's buyback/sell-entry convention.
   Every round trip includes one tick of modeled slippage per side.
-- Original entries are retained. The exploratory DI/Bollinger entry vetoes and
-  Bollinger exit/re-entry overlays are not part of this version.
+- These are entry filters; there is no Bollinger exit or crossover re-entry.
+  V1 remains a separate, unchanged book.
 
 ## Margin and persistence
 
@@ -49,8 +55,9 @@ mean the production loop is already running V2.
 
 ## Validation
 
-The pure replay reproduces the explored original-entry 3% sample: 94 trades,
-51 winning / 20 losing days, net approximately ₹10,66,172 on one GOLD lot.
+The selected pure replay reproduces the combined-filter 3% sample: 62 trades,
+40 winning / 14 losing days, net approximately ₹10,46,234 on one GOLD lot;
+realized maximum drawdown about ₹1,29,579 under the conservative fill convention.
 That sample (March–September 2026) was used for rule research and is not forward
 validation. Tests cover net-cost target levels, daily halts, partial candles,
 frozen capital, restart determinism, missing margin and V1 ledger isolation.

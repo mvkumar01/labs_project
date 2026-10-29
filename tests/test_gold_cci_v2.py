@@ -27,21 +27,27 @@ def research_replay(frame):
     return engine.replay(frame, "2026-03-10", end="2026-09-25", margin_rate=RATE)
 
 
-def test_matches_researched_original_entry_3pct_variant(research_replay):
+def test_matches_selected_combined_filter_3pct_variant(research_replay):
     rows = v1._priced(research_replay["trades"])
-    assert len(rows) == 94
-    assert sum(t["net_rs"] for t in rows) == pytest.approx(1066172, abs=1)
+    assert len(rows) == 62
+    assert sum(t["net_rs"] for t in rows) == pytest.approx(1046234, abs=1)
     daily = defaultdict(float)
     for t in research_replay["trades"]:
         daily[t["trade_date"]] += engine.net_pnl(t["entry_price"], t["exit_price"])
-    assert len(daily) == 71
-    assert sum(n > 0 for n in daily.values()) == 51
-    assert sum(n < 0 for n in daily.values()) == 20
+    assert len(daily) == 54
+    assert sum(n > 0 for n in daily.values()) == 40
+    assert sum(n < 0 for n in daily.values()) == 14
+    equity = peak = drawdown = 0.0
+    for t in rows:
+        equity += t["net_rs"]
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak - equity)
+    assert drawdown == pytest.approx(129579, abs=1)
 
 
 def test_target_is_net_after_exit_costs_and_halts_remaining_signals(research_replay):
     hits = {day: state for day, state in research_replay["daily"].items() if state["target_hit"]}
-    assert len(hits) == 47
+    assert len(hits) == 37
     assert any(s["outcome"] == "daily_target" for s in research_replay["signals"])
     for day, state in hits.items():
         trades = [t for t in research_replay["trades"] if t["trade_date"] == day]
@@ -79,6 +85,41 @@ def test_invalid_margin_cannot_create_paper_trades(frame, rate):
 def test_empty_frame_is_safe(frame):
     out = engine.replay(frame.iloc[:0], "2026-06-01", margin_rate=.1)
     assert not out["trades"] and not out["daily"]
+
+
+def test_both_bullish_warnings_veto_before_cooldown(research_replay):
+    taken = [s for s in research_replay["signals"] if s["outcome"] == "taken"]
+    blocked = [s for s in research_replay["signals"] if s["outcome"] == "bullish_filter"]
+    assert taken and blocked
+    assert all(not s["bullish_di15"] and not s["bb_upcross15"] for s in taken)
+    assert any(s["bullish_di15"] and not s["bb_upcross15"] for s in blocked)
+    assert any(s["bb_upcross15"] and not s["bullish_di15"] for s in blocked)
+
+
+def test_filter_cannot_see_future_candles(frame, research_replay):
+    signals = research_replay["signals"]
+    probes = [next(s for s in signals if s["outcome"] == "taken"),
+              next(s for s in signals if s["outcome"] == "bullish_filter" and s["bullish_di15"]),
+              next(s for s in signals if s["outcome"] == "bullish_filter" and s["bb_upcross15"])]
+    flags = engine.entry_filter(research_replay["grid"])
+    for s in probes:
+        stamp = s["signal_ts"]
+        prefix = v1.eng.base.build_bars(frame[pd.to_datetime(frame.ts) <= stamp])
+        other = engine.entry_filter(prefix)
+        j = list(prefix["ts"]).index(stamp.to_datetime64())
+        for key in flags:
+            assert flags[key][s["signal_idx"]] == other[key][j]
+
+
+def test_legacy_signal_schema_migrates_without_losing_rows():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE gold_cci_v2_signals (trade_date TEXT,signal_ts TEXT PRIMARY KEY,outcome TEXT,cci REAL,rsi REAL,plus_di REAL,minus_di REAL)")
+    conn.execute("INSERT INTO gold_cci_v2_signals VALUES ('2026-10-29','old','gate',1,2,3,4)")
+    tracker._ensure_tables(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(gold_cci_v2_signals)")}
+    assert {"bullish_di15", "bb_upcross15"} <= columns
+    assert conn.execute("SELECT outcome FROM gold_cci_v2_signals WHERE signal_ts='old'").fetchone()[0] == "gate"
+    conn.close()
 
 
 @pytest.fixture
