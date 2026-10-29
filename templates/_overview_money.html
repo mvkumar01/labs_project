@@ -1,0 +1,5 @@
+{% macro money(v, signed=true, cur='&#8377;') -%}
+  {%- if v is none -%}&mdash;{%- else -%}
+  {{ ('+' if signed and v > 0 else ('-' if v < 0 else '')) }}{{ cur|safe }}{{ "{:,.0f}".format(v|abs) }}
+  {%- endif -%}
+{%- endmacro %}

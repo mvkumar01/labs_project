@@ -24,7 +24,8 @@ def test_tile_return_uses_planning_capital_for_selected_dates():
     card = dict(key='example',label='Example',size='1 lot',instrument='Options',status='Running',
                 today_net=0,position='Flat',open_net=0,win_pct=66.666666,win_days=2,active_days=3,
                 capital=126487,total_net=13000,return_pct=10.2777,trades=3,sessions=3,last_date='2026-10-22')
-    html = env.get_template('_overview.html').render(overview_cards=[card],
+    html = env.from_string('''{% from "_overview_card.html" import strategy_card %}
+        {% for c in overview_cards %}{{ strategy_card(c, date_from, date_to) }}{% endfor %}''').render(overview_cards=[card],
         active_live_tab='overview',live_tabs={'overview':'Overview'},date_from='2026-10-01',date_to='2026-10-22')
     from html import unescape
     text = unescape(html)

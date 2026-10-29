@@ -1314,8 +1314,11 @@ def live_strategy():
             report_error = f"Performance data unavailable: {type(exc).__name__}: {exc}"
         finally:
             report_conn.close()
+    from labs.services.overview_navigation import build_navigation
+    overview_navigation = build_navigation(overview_cards, request.args.get("asset"))
     return render_template(
         "live_strategy.html",
+        overview_navigation=overview_navigation,
         report_panels=report_panels,
         report_error=report_error,
         basket_defs=basket_defs,

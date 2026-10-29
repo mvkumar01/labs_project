@@ -191,7 +191,8 @@ def test_overview_keeps_individual_performance_tiles_and_filtered_detail_links()
                   last_date='2026-10-22')
              for key, label, net in [('proposer_nifty_v5', 'Nifty Scalper V1', 1234),
                                      ('proposer_v5_dt25', 'Sensex V5 2.5%', -567)]]
-    html = env.get_template('_overview.html').render(
+    html = env.from_string('''{% from "_overview_card.html" import strategy_card %}
+        {% for c in overview_cards %}{{ strategy_card(c, date_from, date_to) }}{% endfor %}''').render(
         overview_cards=cards, live_tabs={'overview': 'Overview'}, active_live_tab='overview',
         date_from='2026-10-09', date_to='2026-10-22')
     assert html.count('class="ov-card"') == 2

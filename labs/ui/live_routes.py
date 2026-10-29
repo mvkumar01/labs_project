@@ -983,3 +983,6 @@ def status():
 
 from labs.ui.live_admin_routes import register_routes
 register_routes(live_bp)
+
+from labs.ui.overview_preferences import register_routes as register_overview_preferences
+register_overview_preferences(live_bp)

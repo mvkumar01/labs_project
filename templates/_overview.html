@@ -1,15 +1,6 @@
-{# Overview: one card per running book (data from labs/services/book_overview.py). #}
-{% macro money(v, signed=true, cur='&#8377;') -%}
-  {%- if v is none -%}&mdash;{%- else -%}
-  {{ ('+' if signed and v > 0 else ('-' if v < 0 else '')) }}{{ cur|safe }}{{ "{:,.0f}".format(v|abs) }}
-  {%- endif -%}
-{%- endmacro %}
-{% set live_cards = overview_cards | rejectattr('error', 'defined') | list %}
-{# rupee totals: cards in dollars and status-only cards (real-money accounts) stay out #}
-{% set rupee_cards = live_cards | rejectattr('no_figures', 'defined') | rejectattr('usd', 'defined') | list %}
-{% set today_total = rupee_cards | sum(attribute='today_net') %}
-{% set grand_total = rupee_cards | sum(attribute='total_net') %}
-
+{# Asset navigation and personal Spotlight. Strategy metrics retain their existing scope. #}
+{% from "_overview_card.html" import strategy_card %}
+{% from "_overview_money.html" import money %}
 <style>
   .ov-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:4px 0 18px}
   .ov-head h1{margin:0}
@@ -39,56 +30,66 @@
   .ov-pos{color:var(--c-4ade80)}.ov-neg{color:var(--c-f87171)}
   .ov-foot{color:var(--c-94a3b8);font-size:12px;margin-top:18px}
 </style>
-
-<div class="ov-head">
-  <h1>{{ live_tabs[active_live_tab] }}</h1>
-  <div class="ov-kpis">
-    <div class="ov-kpi"><div class="k">Today, all books</div>
-      <div class="v {{ 'ov-pos' if today_total > 0 else ('ov-neg' if today_total < 0 else '') }}">{{ money(today_total) }}</div></div>
-    <div class="ov-kpi"><div class="k">{{ 'Selected-range' if date_from or date_to else 'Total' }} P&amp;L, all books</div>
-      <div class="v {{ 'ov-pos' if grand_total > 0 else ('ov-neg' if grand_total < 0 else '') }}">{{ money(grand_total) }}</div></div>
-    <div class="ov-kpi"><div class="k">Books running</div>
-      <div class="v">{{ live_cards | length }}</div></div>
+<link rel="stylesheet" href="{{ url_for('static', filename='overview.css') }}">
+{% set nav = overview_navigation %}
+<div id="strategy-overview" data-preferences-url="{{ url_for('live.overview_preferences') }}">
+{% if nav.asset %}
+  <nav class="ov-breadcrumb" aria-label="Asset navigation">
+    <a href="{{ url_for('labs.live_strategy', tab='overview', date_from=date_from, date_to=date_to) }}">Overview</a><span aria-hidden="true">/</span><span aria-current="page">{{ nav.label }}</span>
+  </nav>
+  <div class="ov-head"><h1>{{ nav.label }}</h1><span class="ov-meta">{{ nav.cards|length }} strategies</span></div>
+  <p class="ov-meta" data-spotlight-scope>Loading your selections…</p>
+  <div class="ov-grid" data-asset-strategies>
+    {% for c in nav.cards %}{{ strategy_card(c, date_from, date_to) }}{% endfor %}
   </div>
-</div>
-
-<div class="ov-grid">
-{% for c in overview_cards %}
-  <div class="ov-card" data-strategy-key="{{ c.key }}">
-    <div class="ov-top">
-      <div>
-        <div class="ov-title">{{ c.label }}</div>
-        <div class="ov-meta">{{ c.size }} &middot; {{ c.instrument }}</div>
+  {% if not nav.cards %}<p class="ov-empty">No strategies are available for this asset yet.</p>{% endif %}
+{% else %}
+  <section class="ov-spotlight" aria-labelledby="spotlight-title">
+    <div class="ov-head">
+      <div><h1 id="spotlight-title">Spotlight</h1><p class="ov-meta" data-spotlight-scope>Loading your selections…</p></div>
+      <button type="button" class="ov-manage" data-spotlight-manage disabled>Choose strategies</button>
+    </div>
+    <p class="ov-empty" data-spotlight-empty hidden>Highlight the strategies you want to follow. Choose strategies to add your first tile.</p>
+    <div class="ov-grid" data-spotlight-grid></div>
+  </section>
+  <section class="ov-assets" aria-labelledby="asset-title">
+    <h2 id="asset-title">Explore by asset</h2>
+    <div class="ov-asset-grid">
+    {% for group in nav.groups %}
+      <a class="ov-asset" data-asset="{{ group.key }}" href="{{ url_for('labs.live_strategy', tab='overview', asset=group.key, date_from=date_from, date_to=date_to) }}">
+        <span class="ov-asset-top"><strong>{{ group.label }}</strong><span aria-hidden="true">↗</span></span>
+        <span class="ov-asset-description">{{ group.description }}</span>
+        <span class="ov-asset-count">{{ group.count }} strategies</span>
+      </a>
+    {% endfor %}
+    </div>
+  </section>
+  <div hidden data-card-library>
+    {% for c in overview_cards %}<template data-card-template="{{ c.key }}">{{ strategy_card(c, date_from, date_to) }}</template>{% endfor %}
+  </div>
+  <dialog id="spotlight-chooser" aria-labelledby="spotlight-chooser-title">
+    <form data-spotlight-form>
+      <div class="ov-head"><h2 id="spotlight-chooser-title">Choose Spotlight strategies</h2><button type="button" class="ov-manage" data-spotlight-cancel>Cancel</button></div>
+      <label class="ov-search">Find a strategy<input type="search" data-spotlight-search placeholder="Name or asset" autocomplete="off"></label>
+      <div class="ov-choices">
+      {% for group in nav.groups %}{% if group.cards %}
+        <fieldset data-choice-group><legend>{{ group.label }}</legend>
+          {% for c in group.cards %}<label data-choice-label><input type="checkbox" name="strategy" value="{{ c.key }}"><span>{{ c.label }}<small>{{ c.instrument }}</small></span></label>{% endfor %}
+        </fieldset>
+      {% endif %}{% endfor %}
       </div>
-      <span style="white-space:nowrap"><span class="ov-pill kind {{ 'live' if c.kind == 'Live' else '' }}">{{ c.kind or 'Simulated' }}</span><span class="ov-pill {{ 'run' if c.status in ['Running', 'Armed'] else 'wait' }}">{{ c.status }}</span></span>
-    </div>
-
-    {% set cur = '$' if c.usd is defined else '&#8377;' %}
-    {% if c.error is defined %}
-      <div class="ov-row"><span class="l">No sessions recorded yet</span></div>
-    {% elif c.no_figures is defined %}
-      <div class="ov-note">{{ c.note }}</div>
-    {% else %}
-    <div style="margin-top:14px">
-      <div class="ov-row"><span class="l">Today</span>
-        <span class="r {{ 'ov-pos' if c.today_net > 0 else ('ov-neg' if c.today_net < 0 else '') }}">{% if c.today_unavailable is defined and c.today_unavailable %}&mdash;{% else %}{{ money(c.today_net, true, cur) }}{% endif %}</span></div>
-      <div class="ov-row"><span class="l">Position</span>
-        <span class="ov-pill pos {{ 'open' if c.position != 'Flat' else '' }}">{{ c.position }}{% if c.open_net %} &middot; {{ money(c.open_net, true, cur) }}{% endif %}</span></div>
-      <div class="ov-row"><span class="l">Win days</span>
-        <span class="r">{% if c.win_pct is not none %}{{ '%.1f'|format(c.win_pct) }}% <small>{{ c.win_days }}/{{ c.active_days }}</small>{% else %}&mdash;{% endif %}</span></div>
-    </div>
-    <div class="ov-sep"></div>
-    {% set capital_budget = c.capital|planning_capital %}
-    <div class="ov-row"><span class="l" title="Recorded maximum rounded up to two significant digits; return uses this planning amount">Capital deployed</span>
-      <span class="r">{{ '~' if c.capital_estimated else '' }}{{ money(capital_budget, false, cur) }}{% if c.capital %}<small class="capital-observed">{{ 'Estimated peak margin' if c.capital_estimated else 'Recorded peak at one time' }} {{ money(c.capital, false, cur) }}</small>{% if c.capital_estimated %}<small class="capital-observed" title="{{ c.capital_basis }}">Quote {{ c.capital_quote_asof }}</small>{% endif %}{% else %}<small class="capital-observed">Margin not recorded</small>{% endif %}</span></div>
-    <div class="ov-row"><span class="l">{{ 'Selected-range P&L' if date_from or date_to else 'Total P&L' }}</span>
-      <span class="r {{ 'ov-pos' if c.total_net > 0 else ('ov-neg' if c.total_net < 0 else '') }}">{{ money(c.total_net, true, cur) }}{% if capital_budget %} ({{ "%+.1f"|format(100 * c.total_net / capital_budget) }}%{{ ' est.' if c.capital_estimated else '' }}){% endif %}</span></div>
-    <div class="ov-meta" style="margin-top:2px">{% if c.trades is defined %}{{ c.trades }} trades &middot; {% endif %}{{ c.sessions }} sessions &middot; last {{ c.last_date or '&mdash;'|safe }}</div>
-    {% if c.note is defined %}<div class="ov-note">{{ c.note }}</div>{% endif %}
-    {% endif %}
-    <a class="ov-btn" href="{{ c.href if c.href is defined else url_for('labs.live_strategy', tab=(c.tab if c.tab is defined else c.key), date_from=date_from, date_to=date_to) }}">View Details</a>
-  </div>
-{% endfor %}
-</div>
+      <div class="ov-dialog-actions"><span data-spotlight-count></span><button type="submit">Save Spotlight</button></div>
+    </form>
+  </dialog>
+{% endif %}
+<p class="ov-feedback" data-spotlight-status role="status" aria-live="polite"></p>
+{% if nav.asset == 'commodities' %}
 <button type="button" data-margin-refresh>Refresh MCX margin estimates</button><span class="muted" data-margin-status role="status"></span>
-<p class="ov-foot">Net of charges. Recorded peak at one time is capital committed simultaneously; sequential trades reuse capital. A ~ marks an estimate: missing MCX margin is estimated using a current standalone broker NRML quote, scaled to the historical entry notional. The quote date is shown; this is not historical margin or a guarantee of funds required. Estimated return uses the rounded estimated capital. Other returns use recorded peak capital rounded up to two significant digits. Dollar books are separate; real-money accounts show status only, with their figures on Live Trading.</p>
+{% endif %}
+{% if nav.asset %}
+<p class="ov-foot">Net of charges. Recorded peak at one time is capital committed simultaneously; sequential trades reuse capital. A ~ marks a margin estimate from a current broker quote, scaled to historical entry notional. Returns use peak capital rounded up to two significant digits. Dollar books remain separate; real-money cards show status only.</p>
+{% endif %}
+<noscript><p class="ov-empty">Enable JavaScript to customize Spotlight. Asset pages and strategy details remain available.</p></noscript>
+</div>
+<script type="application/json" id="spotlight-catalog">{{ overview_cards|map(attribute='key')|list|tojson }}</script>
+<script src="{{ url_for('static', filename='overview.js') }}" defer></script>

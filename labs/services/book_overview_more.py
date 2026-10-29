@@ -297,9 +297,12 @@ def _real_money() -> list[dict]:
     for r in rows:
         conns.setdefault(r["conn_id"], {})[r["key"]] = r["value"]
     groups = {"live_proposer": ("SENSEX Proposer (real money)", "SENSEX options", []),
-              "live_nifty": ("NIFTY Alpha (real money)", "NIFTY options", [])}
+              "live_nifty": ("NIFTY trading (real money)", "NIFTY options", []),
+              "live_gold": ("Gold CCI V2 (real money)", "GOLD futures", [])}
     for c in conns.values():
-        which = "live_proposer" if str(c.get("strategy_version") or "").startswith("proposer") else "live_nifty"
+        version = str(c.get("strategy_version") or "")
+        which = ("live_gold" if version == "gold_cci_v2" else "live_nifty" if version.startswith("proposer_nifty")
+                 else "live_proposer" if version.startswith("proposer") else "live_nifty")
         groups[which][2].append(str(c.get("mode") or "DISARMED"))
     cards = []
     for key, (label, instrument, modes) in groups.items():

@@ -231,7 +231,10 @@ def test_overview_shows_the_new_books_and_keeps_real_money_to_status(book, tmp_p
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(Path(__file__).resolve().parents[1] / "templates")))
     env.globals["url_for"] = lambda *a, **k: "/labs/live?tab=" + str(k.get("tab"))
     usd = {**cards["nifty_expiry_sale_A"], "key": "crypto_xs", "usd": True}
-    html = env.get_template("_overview.html").render(overview_cards=list(cards.values()) + [usd],
+    from labs.services.display_format import planning_capital
+    env.filters['planning_capital'] = planning_capital
+    html = env.from_string('''{% from "_overview_card.html" import strategy_card %}
+        {% for c in overview_cards %}{{ strategy_card(c, none, none) }}{% endfor %}''').render(overview_cards=list(cards.values()) + [usd],
                                                      live_tabs={"overview": "Overview"}, active_live_tab="overview")
     assert "Expiry straddle sale A" in html and "Live Trading page (login)" in html and 'href="/live"' in html
     assert "/labs/live?tab=nifty_expiry_sale" in html and "$" in html

@@ -63,12 +63,13 @@
     {% if active_live_tab != 'archive' %}
     <form method="get" action="{{ url_for('labs.live_strategy') }}" class="date-filter">
       <input type="hidden" name="tab" value="{{ active_live_tab }}">
+      {% if active_live_tab == 'overview' and overview_navigation.asset %}<input type="hidden" name="asset" value="{{ overview_navigation.asset }}">{% endif %}
       <input type="hidden" name="report_size" value="{{ request.args.get('report_size', '100') }}">
       <strong>Date filter</strong>
       <label>From <input type="date" name="date_from" value="{{ date_from or '' }}"></label>
       <label>To <input type="date" name="date_to" value="{{ date_to or '' }}"></label>
       <button type="submit">Apply</button>
-      <a href="{{ url_for('labs.live_strategy', tab=active_live_tab) }}" class="btn-secondary">Reset</a>
+      <a href="{{ url_for('labs.live_strategy', tab=active_live_tab, asset=overview_navigation.asset if active_live_tab == 'overview' else none) }}" class="btn-secondary">Reset</a>
       {% if date_from or date_to %}<span class="muted">Summary and history use this range</span>{% endif %}
     </form>
     {% endif %}
