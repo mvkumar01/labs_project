@@ -70,6 +70,15 @@
             {% endfor %}
           </select>
           <div class="hint">Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
+          <div class="hint" id="gold-v2-help" {{ '' if strategy == 'gold_cci_v2' else 'hidden' }}>
+            Gold CCI V2: Zerodha MCX GOLD futures (1 kg per lot), short only, fixed lots.
+            The 3% daily net target uses the first filled trade's broker-quoted NRML margin,
+            frozen for that day. It skips entries when completed 15-minute DI(14)+ exceeds DI(14)−
+            or the latest completed 15-minute candle crosses above the middle Bollinger SMA20.
+            Stop 0.25%, move to entry after 1R, target up to 3R, flat at 23:29 IST.
+            Orders use IOC limits; slippage can change the achieved return. Missing margin or quotes skips entry.
+            Save while disarmed and flat, then use the normal dry-run and live arming controls.
+          </div>
         </div>
 
         <div class="field" id="v45-floor-field" {{ '' if strategy == v45_preset else 'hidden' }}>
@@ -105,6 +114,7 @@
             const lotsLabel = document.getElementById('lots-label');
             const proposerPresets = {{ proposer_presets|tojson }};
             const updateSizing = () => {
+              document.getElementById('gold-v2-help').hidden = s.value !== 'gold_cci_v2';
               const proposer = proposerPresets.includes(s.value);
               sizingField.hidden = !proposer;
               lotsLabel.textContent = proposer && sizingMode.value === 'dynamic' ? 'Maximum lots' : 'Number of lots';

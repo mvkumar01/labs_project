@@ -1059,6 +1059,9 @@ def _latest_option_ltp_from_csv(symbol: str, trade_date: str) -> dict:
 def open_position_mtm(user_id: str, conn_id: str,
                       conn: sqlite3.Connection = None) -> dict:
     """Estimated open-position MTM from shared 1-minute option data."""
+    if get_config(user_id, conn_id, "strategy_version", conn) == "gold_cci_v2":
+        from live.gold_v2_runner import open_mtm
+        return open_mtm(user_id, conn_id, conn)
     st = get_trade_state(user_id, conn_id, conn=conn)
     if (st.get("position") or "").upper() != "OPEN":
         return {"open": False}

@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from live.brokers.base import OrderResult
 from live import live_service as svc
 from live import control_plane as cp
+from live import gold_v2_contract as gold_v2
 
 log = logging.getLogger("live.executor")
 
@@ -86,6 +87,8 @@ def is_proposer_strategy(strategy_version) -> bool:
 
 def expected_decision_abi(strategy_version) -> str:
     """The decision contract the owning runner must have loaded for this strategy."""
+    if gold_v2.selected(strategy_version):
+        return gold_v2.ABI
     return PROPOSER_DECISION_ABI if is_proposer_strategy(strategy_version) else LIVE_DECISION_ABI
 
 
@@ -154,6 +157,10 @@ def arm_live(user_id: str, conn_id: str, conn=None) -> Mode:
     Caller (route) must have evaluated all 7 gates first. There is
     no DISARMED -> LIVE_ARMED edge — going live always passes through DRY_RUN.
     """
+    if gold_v2.selected(svc.get_config(user_id, conn_id, "strategy_version", conn)):
+        state = svc.get_trade_state(user_id, conn_id, conn)
+        if state.get("position") == "OPEN":
+            raise InvalidTransition("Close the Gold dry-run position before arming live")
     m = set_mode(user_id, conn_id, Mode.LIVE_ARMED, conn)
     return m
 
@@ -748,10 +755,20 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
                            avg_fill_price=None, raw={"failed_gates": failed})
 
     if action == "EXIT":
-        blocked = _verify_matching_long_before_exit(
-            adapter, symbol=symbol, qty=qty, conn_id=conn_id,
-            idem_key=idem_key, conn=conn,
-        )
+        if gold_v2.selected(strategy_version):
+            # A GOLD buyback must never create a new long futures position.
+            try:
+                pos = adapter.get_position()
+                matched = (getattr(adapter, "gold_short", False) and pos.symbol == symbol
+                           and pos.qty < 0 and 0 < qty <= -pos.qty)
+            except Exception:
+                matched = False
+            blocked = None if matched else _blocked_exit(idem_key, "NO_SHORT_POSITION", {}, conn)
+        else:
+            blocked = _verify_matching_long_before_exit(
+                adapter, symbol=symbol, qty=qty, conn_id=conn_id,
+                idem_key=idem_key, conn=conn,
+            )
         steps.mark("position")
         if blocked is not None:
             return blocked

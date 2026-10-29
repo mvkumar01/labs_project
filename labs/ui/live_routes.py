@@ -165,6 +165,9 @@ def _adapter_for(broker: str, *, user_id: str, conn_id: str, creds: dict):
         from live.brokers.angel import AngelAdapter
         return AngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
     if broker == "zerodha":
+        if svc.get_config(user_id, conn_id, "strategy_version") == "gold_cci_v2":
+            from live.brokers.gold_zerodha import GoldZerodhaAdapter
+            return GoldZerodhaAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
         from live.brokers.zerodha import ZerodhaAdapter
         return ZerodhaAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
     raise ValueError(f"unsupported broker: {broker}")
@@ -528,6 +531,7 @@ def select_broker(broker):
 # (decision_engine == "champion_replay" enables the champion replay; combined
 # with the strategy version it enables the corresponding overlay).
 STRATEGY_PRESETS = {
+    "gold_cci_v2": ("gold_cci", "gold_cci_v2"),
     "legacy_v211":   ("signal_engine",   "hybrid_alpha_v28"),
     "champion_v211": ("champion_replay", "v2.11"),
     "champion_v211b": ("champion_replay", "v2.11b"),
@@ -560,6 +564,7 @@ SENSEX_V45_FLOORS = {
     "spot_150": ("proposer_dt35_v5", "SENSEX 150 points against the entry (Sensex V5, no premium floor)"),
 }
 STRATEGY_LABELS = {
+    "gold_cci_v2": "Gold CCI V2 (GOLD futures short; 3% daily net target; bullish entry filter)",
     "legacy_v211":   "Alpha v2.11 (legacy)",
     "champion_v211": "Alpha v2.11",
     "champion_v211b": "Alpha 2.11 replay (B)",
@@ -610,6 +615,8 @@ def _strategy_label(user_id: str, conn_id: str) -> str:
 def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     de = svc.get_config(user_id, conn_id, "decision_engine")
     sv = svc.get_config(user_id, conn_id, "strategy_version")
+    if de == "gold_cci" and sv == "gold_cci_v2":
+        return "gold_cci_v2"
     if de == "proposer":
         if sv in {v for v, _ in SENSEX_V45_FLOORS.values()}:
             return SENSEX_V45
@@ -694,6 +701,15 @@ def configure():
     if request.method == "POST":
         strat = (request.form.get("strategy") or "").strip()
         target = STRATEGY_PRESETS.get(strat)
+        if strat == "gold_cci_v2" or _current_strategy_preset(user_id, conn_id) == "gold_cci_v2":
+            # This also protects committed, unresolved GOLD order intents mirrored as OPEN.
+            try:
+                with cp.transaction() as c:
+                    cp.require_idle(c, user_id, conn_id)
+            except cp.ControlError as exc:
+                return _render_configure(user_id, conn_id, error=str(exc))
+            if strat == "gold_cci_v2" and broker != "zerodha":
+                return _render_configure(user_id, conn_id, error="Gold CCI V2 requires a Zerodha connection with MCX enabled.")
         if strat == SENSEX_V45:
             floor = (request.form.get("loss_floor") or "").strip()
             if floor not in SENSEX_V45_FLOORS:

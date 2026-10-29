@@ -202,9 +202,8 @@ def publish_runner_heartbeat(user_id: str, conn_id: str, task_id: str,
         return False
     if not claim_runner_owner(user_id, conn_id, task_id, conn):
         return False
-    svc.set_config(
-        user_id, conn_id, "runner_decision_abi", ex.LIVE_DECISION_ABI, conn
-    )
+    svc.set_config(user_id, conn_id, "runner_decision_abi",
+                   ex.expected_decision_abi(svc.get_config(user_id, conn_id, "strategy_version", conn)), conn)
     svc.set_config(user_id, conn_id, "runner_decision_owner", task_id, conn)
     return True
 
@@ -1331,6 +1330,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if not publish_runner_heartbeat(user_id, conn_id, task_id):
         return
 
+    from live import gold_v2_contract as gold_v2
+    if gold_v2.selected(svc.get_config(user_id, conn_id, "strategy_version")):
+        from live.gold_v2_runner import process
+        process(user_id, conn_id, adapters=adapters)
+        return
+
     mode = ex.get_mode(user_id, conn_id)
     if mode == ex.Mode.DISARMED:
         # A kill/disarm followed by a manual broker exit must not leave a
@@ -1955,7 +1960,7 @@ def run(task_id: str = None, max_cycles: int = None,
     processing it independently. `adapter_factory` is injectable for tests."""
     task_id = task_id or f"live_runner:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     init_live_db()
-    log.info("live_runner boot | task=%s", task_id)
+    log.info("live_runner boot | task=%s | gold_abi=%s", task_id, ex.gold_v2.ABI)
 
     heartbeat_stop = threading.Event()
     heartbeat_thread = None
