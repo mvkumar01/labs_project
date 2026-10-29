@@ -66,6 +66,7 @@ def main() -> None:
     from labs.engine.crude_macd_st_tracker import run_live as run_crude_macd_st_live
     from labs.engine.crudem_combo_tracker import run_live as run_crudem_combo_live
     from labs.engine.gold_cci_tracker import run_live as run_gold_cci_live
+    from labs.engine.gold_cci_v2_tracker import run_live as run_gold_cci_v2_live
     from labs.engine.btc_rsi_roc_tracker import run_live as run_btc_rsi_roc_live
     from labs.engine.crypto_xs_tracker import run_live as run_crypto_xs_live
     from labs.engine.crypto_trend_tracker import run_live as run_crypto_trend_live
@@ -105,6 +106,7 @@ def main() -> None:
         "crude_macd_st": None,
         "crudem_combo": None,
         "gold_cci": None,
+        "gold_cci_v2": None,
         "btc_rsi_roc": None,
         "crypto_xs": None,
         "crypto_trend": None,
@@ -178,6 +180,14 @@ def main() -> None:
                     last_log["gold_cci"] = res
             except Exception as exc:
                 print(f"[paper-loop:gold_cci] error: {type(exc).__name__}: {exc}", flush=True)
+            # Independent V2 paper book, after V1, with isolated margin/data errors.
+            try:
+                res = run_gold_cci_v2_live(now)
+                if res != last_log["gold_cci_v2"]:
+                    print(f"[paper-loop:gold_cci_v2] {now.strftime('%H:%M')} {res}", flush=True)
+                    last_log["gold_cci_v2"] = res
+            except Exception as exc:
+                print(f"[paper-loop:gold_cci_v2] error: {type(exc).__name__}: {exc}", flush=True)
             # CRUDEOILM consistent combination (paper); isolated like the other MCX books.
             try:
                 res = run_crudem_combo_live(now)

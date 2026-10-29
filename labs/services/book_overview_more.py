@@ -43,6 +43,7 @@ MORE_BOOKS = {
                         "size": "1 lot a leg"},
     "crudem_combo": {"label": "CRUDEOILM Combo (6 rules)", "instrument": "CRUDEOILM futures", "size": "1 lot · 10 barrels"},
     "gold_cci": {"label": "GOLD CCI short", "instrument": "GOLD futures", "size": "1 lot"},
+    "gold_cci_v2": {"label": "Gold CCI V2 · 3%", "instrument": "GOLD futures", "size": "1 lot · 3% daily net target"},
     "infy_tcs_pair": {"label": "INFY / TCS pair", "instrument": "INFY and TCS shares", "size": "Rs 10 lakh a leg"},
     "risk_core": {"label": "Risk core · trend × vol", "instrument": "NIFTY, BANK NIFTY, BTC, ETH, crude",
                   "size": "Rs 10 lakh, five sleeves"},
@@ -185,6 +186,19 @@ def _mcx(conn, key: str, today: str) -> dict:
                  trades=sum(int(r["n_trades"] or 0) for r in rows) - int(is_open))
 
 
+def _gold_v2(conn, today: str) -> dict:
+    card = _mcx(conn, "gold_cci_v2", today)
+    latest = _rows(conn, "SELECT status,error FROM gold_cci_v2_daily ORDER BY trade_date DESC LIMIT 1")
+    card["note"] = "3% daily net target on first-entry margin, frozen for the session"
+    if card.get("capital_estimated"):
+        card["capital_basis"] = "Estimated peak margin from frozen session broker quotes"
+    if not latest:
+        card.update(status="Waiting", position="No V2 sessions yet")
+    elif latest[0]["status"] == "blocked_margin":
+        card.update(status="Blocked", position="Waiting for margin", note=latest[0]["error"])
+    return card
+
+
 def _pair(conn, today: str) -> dict:
     trades = _rows(conn, "SELECT entry_date, exit_date, long_leg, short_leg, net_rs, status, notional FROM infy_tcs_pair_trades")
     days = _rows(conn, "SELECT trade_date, mtm_rs FROM infy_tcs_pair_days ORDER BY trade_date")
@@ -322,6 +336,7 @@ def more_cards(conn: sqlite3.Connection, today: str) -> list[dict]:
         "expiry_strangle": lambda: _expiry_strangle(conn, today),
         "crudem_combo": lambda: _mcx(conn, "crudem_combo", today),
         "gold_cci": lambda: _mcx(conn, "gold_cci", today),
+        "gold_cci_v2": lambda: _gold_v2(conn, today),
         "infy_tcs_pair": lambda: _pair(conn, today),
         "risk_core": lambda: _risk_core(conn, today),
         "crypto_xs": lambda: _crypto(conn, today),

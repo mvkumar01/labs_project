@@ -1,0 +1,24 @@
+<h1>Gold CCI V2 · 3% daily net target</h1>
+<p class="sub">Separate simulated book, one GOLD lot (1 kg). Original V1 CCI, RSI and DI entries;
+  0.25% hard stop, stop to entry after 1R, and the original 3R per-trade cap.
+  Close and stop for the session when cumulative net P&amp;L reaches 3% of the first entry's estimated margin,
+  including the current trade's exit charges and slippage. The margin basis is frozen for that session.</p>
+<p class="note">Simulated candle replay from 29 October 2026. Margin is an explicitly labelled broker-quote estimate,
+  not contract notional or a recorded historical margin. Missing session margin blocks new simulated entries.
+  Every round trip includes MCX charges and one tick of slippage each side. V1 keeps its own ledger.</p>
+{% if gold_cci_v2_rows %}
+<h2>Daily target history</h2>
+<style>.gold-v2-history{table-layout:fixed}.gold-v2-history th,.gold-v2-history td{overflow-wrap:anywhere}.gold-v2-history small{display:block}@media(max-width:640px){table.gold-v2-history th,table.gold-v2-history td{padding:6px 4px}}</style>
+<table class="perf gold-v2-history">
+  <thead><tr><th>Date / status</th><th>Frozen capital / 3% net target</th><th>Trades / target hit</th><th>Net ₹</th></tr></thead>
+  <tbody>{% for r in gold_cci_v2_rows %}
+    <tr><td title="{{ r.error or '' }}">{{ r.trade_date }}<small class="muted">{{ r.status }} · {{ r.tradingsymbol or '—' }}</small></td>
+      <td title="Estimated NRML margin · {{ r.margin_contract or '' }} · {{ r.margin_asof or '' }}">{{ '₹{:,.0f}'.format(r.capital_rs) if r.capital_rs is not none else '—' }}<small class="muted">Target {{ '₹{:,.0f}'.format(r.daily_target_rs) if r.daily_target_rs is not none else '—' }}</small></td>
+      <td>{{ r.n_trades }}{% if r.open_trades %} ({{ r.open_trades }} open){% endif %}<small class="muted">{{ 'Target hit' if r.target_hit else '—' }}</small></td>
+      <td class="{{ 'green' if (r.net_rs or 0)>0 else 'red' if (r.net_rs or 0)<0 else '' }}">{{ '₹{:,.0f}'.format(r.net_rs or 0) }}</td></tr>
+    {% if r.error %}<tr><td colspan="4" class="amber">{{ r.error }}</td></tr>{% endif %}
+  {% endfor %}</tbody>
+</table>
+{% else %}
+<p class="empty">No V2 sessions recorded in this date range. The tracking loop records V2 independently during MCX sessions.</p>
+{% endif %}

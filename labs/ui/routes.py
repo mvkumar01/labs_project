@@ -401,6 +401,7 @@ LIVE_TABS = {
     "crypto_xs_combo": "Crypto taker + trend",
     "crudem_combo": "CRUDEOILM Combo (6 rules)",
     "gold_cci": "GOLD CCI short",
+    "gold_cci_v2": "Gold CCI V2 · 3%",
 }
 
 
@@ -426,6 +427,7 @@ def live_strategy():
     btc_rows, btc_trades, btc_stats = [], [], {}
     crudem_combo_rows, crudem_combo_trades, crudem_combo_stats = [], [], {}
     gold_cci_rows, gold_cci_trades, gold_cci_stats = [], [], {}
+    gold_cci_v2_rows = []
     proposer_px_rows, proposer_px_trades, proposer_px_stats = [], [], {}
     proposer_v3_rows, proposer_v3_trades, proposer_v3_stats = [], [], {}
     proposer_v3_dt35_rows, proposer_v3_dt35_trades, proposer_v3_dt35_stats = [], [], {}
@@ -1131,6 +1133,14 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_px_stats = {"error": str(exc)}
 
+        if active_live_tab == "gold_cci_v2":
+            try:
+                from labs.engine.gold_cci_v2_tracker import tab_data as gold_v2_tab_data
+                gold_cci_v2_rows = gold_v2_tab_data(conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    raise
+
         # MCX GOLD CCI short (paper): its own ledger and tab.
         if active_live_tab == "gold_cci":
             try:
@@ -1344,6 +1354,7 @@ def live_strategy():
         gold_cci_rows=gold_cci_rows,
         gold_cci_trades=gold_cci_trades,
         gold_cci_stats=gold_cci_stats,
+        gold_cci_v2_rows=gold_cci_v2_rows,
         proposer_px_rows=proposer_px_rows,
         proposer_px_trades=proposer_px_trades,
         proposer_px_stats=proposer_px_stats,

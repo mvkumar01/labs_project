@@ -40,6 +40,7 @@ SOURCES = {
     'crudeoilm_ma20': Source('crudeoilm_ma20_trades', 'CRUDEOILM', 10),
     'crudeoilm_keltner': Source('crudeoilm_keltner_trades', 'CRUDEOILM', 10),
     'gold_cci': Source('gold_cci_trades', 'GOLD', 100, short=True),
+    'gold_cci_v2': Source('gold_cci_v2_trades', 'GOLD', 100, short=True),
     'crudem_combo': Source('crudem_combo_trades', 'CRUDEOILM', 10),
     'btc_rsi_roc': Source('btc_rsi_roc_trades', 'BTCUSDT', .01, short=True),
     'nifty_expiry_sale': Source('nifty_expiry_sale_trades', qty=65, short=True, group='book'),
@@ -169,6 +170,9 @@ def normalize(row, spec, key):
     capital = number(pick(row, 'allocated_capital_rs', 'capital_required_rs', 'margin_rs', 'notional'))
     basis = 'Recorded capital / margin' if capital is not None else 'Not recorded'
     estimated, quote_asof = False, None
+    if capital is not None and row.get('margin_source') == 'estimated_nrml_quote':
+        estimated, quote_asof = True, row.get('margin_asof')
+        basis = f"Estimated NRML margin; frozen {row.get('margin_contract') or 'GOLD'} quote {quote_asof or 'time unavailable'}"
     if spec.underlying in ('CRUDEOILM','GOLD','GOLDM') and (capital is None or row.get('margin_source') == 'notional_proxy'):
         from labs.services.margin_estimates import estimate_margin
         estimate = estimate_margin(spec.underlying,ep,qty,direction)
