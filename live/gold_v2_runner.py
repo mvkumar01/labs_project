@@ -114,6 +114,13 @@ def day_key(now, dry):
     return now.date().isoformat() + (":dry" if dry else ":live")
 
 
+def entry_limit(adapter, intent, now=None):
+    """Recheck the signal deadline after slow entry gates, immediately before send."""
+    current = pd.Timestamp(now if now is not None else market.now_ist()).tz_localize(None)
+    deadline = pd.Timestamp(intent["created"]).tz_localize(None).floor("min") + pd.Timedelta(seconds=20)
+    return adapter.limit(intent["symbol"]) if current <= deadline else None
+
+
 def reason_for(p, day, price, now):
     if p.get("exit_reason"):
         return p["exit_reason"]
@@ -176,12 +183,17 @@ def settle(conn, user, cid, s, adapter, now):
     intent = s["pending"]
     row = svc.get_order_ledger(intent["key"], conn)
     if not row:
+        if intent["action"] == "ENTER":
+            deadline = pd.Timestamp(intent["created"]).tz_localize(None).floor("min") + pd.Timedelta(seconds=20)
+            if pd.Timestamp(now) > deadline:
+                apply_fill(conn, user, cid, s, intent, 0, None, now)
+                return
         # Reuses the committed intent after a crash before ledger insertion.
         ex.place_idempotent(adapter, user_id=user, conn_id=cid, idem_key=intent["key"],
             side="SHORT", symbol=intent["symbol"], qty=intent["qty"], price=intent["price"],
             action=intent["action"], dry_run=intent["dry"], trade_date=now.date().isoformat(),
             strategy_version=contract.VERSION, bar_timestamp=intent["created"],
-            entry_rule=contract.VERSION, price_fn=(lambda: adapter.limit(intent["symbol"]))
+            entry_rule=contract.VERSION, price_fn=(lambda: entry_limit(adapter, intent))
             if intent["action"] == "ENTER" else None, conn=conn)
         row = svc.get_order_ledger(intent["key"], conn)
     if intent["dry"] and row.get("status") == "DRY_RUN":
@@ -216,6 +228,7 @@ def queue(conn, user, cid, s, *, action, symbol, qty, price, dry, now, margin=0,
 
 
 def process(user, cid, *, adapters, now=None, series=None):
+    live_clock = now is None
     now = now or market.now_ist()
     # The MCX runner uses naive IST for candle boundaries throughout.
     now = pd.Timestamp(now).tz_localize(None).to_pydatetime()
@@ -306,7 +319,9 @@ def process(user, cid, *, adapters, now=None, series=None):
         s["last_minute"] = cutoff.isoformat()
         save(conn, user, cid, s)
         conn.commit()
-        if not signal or now.second > 20:
+        if live_clock:
+            now = pd.Timestamp(market.now_ist()).tz_localize(None).to_pydatetime()
+        if not signal or now.replace(second=0, microsecond=0) != cutoff or now.second > 20:
             return  # Never enter on a stale boot/minute signal.
         if not dry and adapter.get_position().qty:
             return

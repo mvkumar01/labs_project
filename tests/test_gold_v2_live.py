@@ -158,6 +158,22 @@ def test_arming_real_while_gold_virtual_open_rejected(conn):
         ex.arm_live(USER, CID, conn)
 
 
+def test_entry_deadline_is_rechecked_after_slow_gates():
+    a = SimpleNamespace(limit=lambda symbol: 140000)
+    intent = dict(symbol=SYMBOL, created=g.stamp(NOW))
+    assert g.entry_limit(a, intent, NOW + timedelta(seconds=5)) == 140000
+    assert g.entry_limit(a, intent, NOW + timedelta(seconds=20)) is None
+
+
+def test_expired_unsent_intent_after_restart_is_skipped(conn, monkeypatch):
+    s = g.load(conn, USER, CID)
+    g.queue(conn, USER, CID, s, action="ENTER", symbol=SYMBOL, qty=1, price=140000,
+            dry=False, now=NOW, margin=300000)
+    monkeypatch.setattr(ex, "place_idempotent", lambda *a, **k: pytest.fail("sent stale signal"))
+    g.settle(conn, USER, CID, s, object(), NOW + timedelta(minutes=1))
+    assert s["pending"] is None and s["position"] is None
+
+
 @pytest.mark.parametrize("symbol", ["GOLDM26DECFUT", "NIFTY26DECFUT", "GOLD26DEC140000CE"])
 def test_adapter_rejects_wrong_instruments(symbol):
     assert not GoldZerodhaAdapter.valid_symbol(symbol)
