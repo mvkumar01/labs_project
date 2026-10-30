@@ -646,28 +646,6 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 # CONFIGURE — lots + decision strategy + daily-loss (this user's conn)
 # ══════════════════════════════════════════════════════════════════════════
-def _runner_not_ready_for(user_id: str, conn_id: str, preset: str, version: str | None = None) -> str | None:
-    """A NIFTY strategy the running runner has not loaded must not be selected: a runner
-    process from an earlier release trades a version it does not know as plain v2.11. The
-    runner publishes the decision contract it loaded with every heartbeat. The same holds for
-    the Proposer runner (an unknown version would trade on the base preset's rules)."""
-    decision_engine, preset_version = STRATEGY_PRESETS[preset]
-    version = version or preset_version
-    if decision_engine == "proposer":
-        loaded = svc.get_config(user_id, conn_id, "runner_decision_abi") or ""
-        if loaded.startswith("proposer-") and loaded != ex.expected_decision_abi(version):
-            return ("The SENSEX runner is still running an earlier release and has not loaded this "
-                    "strategy. It has to be restarted first; the strategy was not changed.")
-        return None
-    if decision_engine != "champion_replay":
-        return None
-    loaded = svc.get_config(user_id, conn_id, "runner_decision_abi") or ""
-    if loaded.startswith("alpha-") and loaded != ex.expected_decision_abi(version):
-        return ("The NIFTY runner is still running an earlier release and has not loaded this "
-                "strategy. It has to be restarted first; the strategy was not changed.")
-    return None
-
-
 def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
     return render_template(
         "live_configure.html",
@@ -768,14 +746,9 @@ def configure():
                         cp.require_idle(c, user_id, conn_id, broker_clear=broker_clear)
                 except cp.ControlError as exc:
                     return _render_configure(user_id, conn_id, error=str(exc))
-        if strategy_changed or sizing_changed:
-            not_ready = _runner_not_ready_for(user_id, conn_id, strat, target[1])
-            if not_ready:
-                return _render_configure(user_id, conn_id, error=not_ready)
-        if is_proposer and sizing_mode == sizing.DYNAMIC:
-            if svc.get_config(user_id, conn_id, "runner_decision_abi") != ex.PROPOSER_DECISION_ABI:
-                return _render_configure(user_id, conn_id, error=(
-                    "Dynamic sizing requires the updated Proposer runner. Restart it first; nothing was changed."))
+        # The selected runner publishes its contract after this strategy is saved.
+        # The executor checks its version and fresh ownership before placing orders;
+        # a previous strategy's heartbeat must not prevent saving the new selection.
 
         try:
             lots = int(request.form.get("lots", "1"))

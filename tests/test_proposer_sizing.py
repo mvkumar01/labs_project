@@ -264,16 +264,23 @@ def test_configure_modes_default_and_dynamic_round_trip(client):  # noqa: F811
     assert svc.get_config(USER_ID, CONN_ID, "proposer_sizing_mode") == sz.DYNAMIC
 
 
-@pytest.mark.parametrize("loaded", ["", "proposer-dt25-live-v11"])
-def test_configure_rejects_dynamic_until_runner_loaded_v12(client, loaded):  # noqa: F811
+@pytest.mark.parametrize("loaded", ["", "proposer-dt25-live-v11", "alpha-live-old", "gold-cci-v2-old"])
+def test_configure_saves_dynamic_without_previous_runner_heartbeat_block(client, loaded):  # noqa: F811
     _set_strategy("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V1)
     svc.set_config(USER_ID, CONN_ID, "runner_decision_abi", loaded)
-    assert post(client, sz.DYNAMIC).status_code == 200
-    assert svc.get_config(USER_ID, CONN_ID, "proposer_sizing_mode") in (None, "", sz.FIXED)
-    assert svc.get_lots(USER_ID, CONN_ID) == 1  # rejected form made no partial writes
+    assert post(client, sz.DYNAMIC).status_code == 302
+    assert svc.get_config(USER_ID, CONN_ID, "proposer_sizing_mode") == sz.DYNAMIC
+    assert svc.get_lots(USER_ID, CONN_ID) == 4
+    assert svc.get_config(USER_ID, CONN_ID, "runner_decision_abi") == loaded
+    assert not ex.gate_runner_decision_abi(USER_ID, CONN_ID).passed
 
 
-def test_configure_invalid_and_open_position_make_no_changes(client):  # noqa: F811
+def test_configure_invalid_and_open_position_make_no_changes(client, monkeypatch):  # noqa: F811
+    from types import SimpleNamespace
+    from labs.ui import live_routes as routes
+    monkeypatch.setattr(routes, '_adapter_for', lambda *a, **k: SimpleNamespace(
+        connect=lambda: None, is_connected=lambda: True,
+        account_ref=lambda: 'angel:strategy-test', configuration_is_clear=lambda: False))
     _set_strategy("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V1)
     assert "Select Fixed or Dynamic" in post(client, "bogus").get_data(as_text=True)
     state = svc.get_trade_state(USER_ID, CONN_ID)
