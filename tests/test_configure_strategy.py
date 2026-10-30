@@ -89,7 +89,7 @@ def test_configure_renders_one_strategy_select_without_bot_variant(client):
     assert "Alpha v2.12" in page
     assert "Alpha v2.12 (close-confirmed)" in page
     assert "Alpha v2.13" in page
-    assert "Switch only while FLAT" in page
+    assert "checked with the broker" in page
 
 
 def test_flat_strategy_change_updates_config_and_clears_v212_latches(client):
@@ -118,7 +118,12 @@ def test_flat_strategy_change_updates_config_and_clears_v212_latches(client):
     assert state["champion_closed_count"] == 4
 
 
-def test_open_position_rejects_strategy_change_without_mutating_config(client):
+def test_broker_open_rejects_strategy_change_without_mutating_config(client, monkeypatch):
+    from types import SimpleNamespace
+    from labs.ui import live_routes as routes
+    monkeypatch.setattr(routes, "_adapter_for", lambda *a, **k: SimpleNamespace(
+        connect=lambda: None, is_connected=lambda: True,
+        account_ref=lambda: "angel:strategy-test", configuration_is_clear=lambda: False))
     _set_strategy("champion_replay", "v2.11")
     svc.set_config(USER_ID, CONN_ID, "lots", 1)
     state = svc.get_trade_state(USER_ID, CONN_ID)
@@ -128,9 +133,87 @@ def test_open_position_rejects_strategy_change_without_mutating_config(client):
     response = _configure(client, "champion_v212", lots=2)
 
     assert response.status_code == 200
-    assert "cannot change while this connection has an open position" in response.get_data(as_text=True)
+    assert "broker currently reports an open position or working order" in response.get_data(as_text=True)
     assert _strategy_pair() == ("champion_replay", "v2.11")
     assert svc.get_lots(USER_ID, CONN_ID) == 1
+
+
+def test_broker_flat_allows_switch_and_clears_stale_local_position(client, monkeypatch):
+    from types import SimpleNamespace
+    from labs.ui import live_routes as routes
+    _set_strategy("champion_replay", "v2.11")
+    state = svc.get_trade_state(USER_ID, CONN_ID)
+    state.update(position="OPEN", symbol="STALE", qty=65)
+    svc.save_trade_state(USER_ID, CONN_ID, state)
+    monkeypatch.setattr(routes, "_adapter_for", lambda *a, **k: SimpleNamespace(
+        connect=lambda: None, is_connected=lambda: True,
+        account_ref=lambda: "angel:strategy-test", configuration_is_clear=lambda: True))
+    response = _configure(client, "champion_v212", lots=2)
+    assert response.status_code == 302
+    assert _strategy_pair() == ("champion_replay", "v2.12")
+    assert svc.get_trade_state(USER_ID, CONN_ID)["position"] == "NONE"
+
+
+def test_broker_read_failure_never_clears_stale_position(client, monkeypatch):
+    from labs.ui import live_routes as routes
+    _set_strategy("champion_replay", "v2.11")
+    state = svc.get_trade_state(USER_ID, CONN_ID)
+    state["position"] = "OPEN"
+    svc.save_trade_state(USER_ID, CONN_ID, state)
+    def unavailable(*a, **k):
+        raise RuntimeError("unavailable")
+    monkeypatch.setattr(routes, "_adapter_for", unavailable)
+    response = _configure(client, "champion_v212")
+    assert b"Could not refresh the broker" in response.data
+    assert _strategy_pair() == ("champion_replay", "v2.11")
+    assert svc.get_trade_state(USER_ID, CONN_ID)["position"] == "OPEN"
+
+
+def test_stale_uncertain_request_and_gold_mirror_are_archived_on_broker_flat(client, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from labs.ui import live_routes as routes
+    # The actual Gold engine key is supplied by the registry.
+    engine, version = routes.STRATEGY_PRESETS['gold_cci_v2']
+    _set_strategy(engine, version)
+    with routes.cp.transaction() as c:
+        c.execute("INSERT INTO live_order_requests VALUES('req','route',1,?,?,'entry','intent',1,'uncertain')",
+                  (USER_ID, CONN_ID))
+        c.execute("CREATE TABLE live_gold_v2_state(user_id TEXT,conn_id TEXT,payload TEXT,PRIMARY KEY(user_id,conn_id))")
+        c.execute("INSERT INTO live_gold_v2_state VALUES(?,?,?)", (USER_ID, CONN_ID, json.dumps({
+            'position': {'symbol': 'GOLD', 'qty': 1}, 'pending': {'key': 'stale'}, 'days': {'retained': 1}, 'seq': 2})))
+    monkeypatch.setattr(routes, "_adapter_for", lambda *a, **k: SimpleNamespace(
+        connect=lambda: None, is_connected=lambda: True,
+        account_ref=lambda: "angel:strategy-test", configuration_is_clear=lambda: True))
+    response = _configure(client, "champion_v212")
+    assert response.status_code == 302
+    with routes.cp.transaction() as c:
+        gold = json.loads(c.execute('SELECT payload FROM live_gold_v2_state').fetchone()[0])
+        assert gold['position'] is None and gold['pending'] is None and gold['days'] == {'retained': 1}
+        audit = json.loads(c.execute("SELECT detail FROM live_admin_audit WHERE action='broker_flat_configuration_refresh'").fetchone()[0])
+        assert audit['gold_state']['pending'] == {'key': 'stale'}
+        assert c.execute("SELECT outcome FROM live_order_requests WHERE request_id='req'").fetchone()[0] == 'uncertain'
+
+
+def test_concurrent_order_state_change_during_broker_refresh_does_not_switch(client, monkeypatch):
+    from types import SimpleNamespace
+    from labs.ui import live_routes as routes
+    _set_strategy("champion_replay", "v2.11")
+    state = svc.get_trade_state(USER_ID, CONN_ID)
+    state['position'] = 'OPEN'
+    svc.save_trade_state(USER_ID, CONN_ID, state)
+    def refresh():
+        changed = svc.get_trade_state(USER_ID, CONN_ID)
+        changed['symbol'] = 'NEW_BROKER_ORDER'
+        svc.save_trade_state(USER_ID, CONN_ID, changed)
+        return True
+    monkeypatch.setattr(routes, '_adapter_for', lambda *a, **k: SimpleNamespace(
+        connect=lambda: None, is_connected=lambda: True,
+        account_ref=lambda: 'angel:strategy-test', configuration_is_clear=refresh))
+    response = _configure(client, 'champion_v212')
+    assert b'Account state changed during the broker refresh' in response.data
+    assert _strategy_pair() == ('champion_replay', 'v2.11')
+    assert svc.get_trade_state(USER_ID, CONN_ID)['symbol'] == 'NEW_BROKER_ORDER'
 
 
 def test_flat_strategy_change_supports_v213(client):

@@ -175,6 +175,18 @@ class ZerodhaAdapter(BrokerAdapter):
                 return o
         return {}
 
+    def configuration_is_clear(self) -> bool:
+        """Fresh account-wide exposure check; do not use get_position's fallback."""
+        positions = self._kite.positions()
+        orders = self._kite.orders()
+        if (not isinstance(positions, dict) or not isinstance(positions.get("net"), list)
+                or not isinstance(orders, list)):
+            raise RuntimeError("Invalid broker exposure response")
+        if any(int(row["quantity"] or 0) != 0 for row in positions["net"]):
+            return False
+        terminal = {"complete", "completed", "filled", "cancelled", "canceled", "rejected"}
+        return all(str(row.get("status") or "").strip().lower() in terminal for row in orders)
+
     # ── THE GUARDED CALLS ─────────────────────────────────────────────────
     def place_order(self, *, side: str, symbol: str, qty: int,
                     price: float, idempotency_key: str) -> OrderResult:

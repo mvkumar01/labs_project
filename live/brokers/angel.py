@@ -394,6 +394,21 @@ class AngelAdapter(BrokerAdapter):
                 return row
         return {}
 
+    def configuration_is_clear(self) -> bool:
+        """Fresh account-wide exposure check; API failures never mean flat."""
+        positions = self._smart.position()
+        orders = self._smart.orderBook()
+        for response in (positions, orders):
+            if not isinstance(response, dict) or response.get("status") is not True:
+                raise RuntimeError("Broker exposure read failed")
+            if response.get("data") is not None and not isinstance(response["data"], list):
+                raise RuntimeError("Invalid broker exposure response")
+        if any(int(row["netqty"] or 0) != 0 for row in positions.get("data") or []):
+            return False
+        terminal = {"complete", "completed", "filled", "cancelled", "canceled", "rejected"}
+        return all(str(row.get("orderstatus") or row.get("status") or "").strip().lower() in terminal
+                   for row in orders.get("data") or [])
+
     def _ensure_instrument_master(self) -> list:
         age = _instrument_file_age_days()
         if age is None or age < 0 or age > INSTRUMENT_MAX_AGE_DAYS:

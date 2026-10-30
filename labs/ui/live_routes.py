@@ -704,15 +704,10 @@ def configure():
     if request.method == "POST":
         strat = (request.form.get("strategy") or "").strip()
         target = STRATEGY_PRESETS.get(strat)
-        if strat == "gold_cci_v2" or _current_strategy_preset(user_id, conn_id) == "gold_cci_v2":
-            # This also protects committed, unresolved GOLD order intents mirrored as OPEN.
-            try:
-                with cp.transaction() as c:
-                    cp.require_idle(c, user_id, conn_id)
-            except cp.ControlError as exc:
-                return _render_configure(user_id, conn_id, error=str(exc))
-            if strat == "gold_cci_v2" and broker not in ("zerodha", "angel"):
-                return _render_configure(user_id, conn_id, error="Gold CCI V2 requires an Angel One or Zerodha connection with MCX enabled.")
+        broker_clear = False
+        gold_config = strat == "gold_cci_v2" or _current_strategy_preset(user_id, conn_id) == "gold_cci_v2"
+        if strat == "gold_cci_v2" and broker not in ("zerodha", "angel"):
+            return _render_configure(user_id, conn_id, error="Gold CCI V2 requires an Angel One or Zerodha connection with MCX enabled.")
         if strat == SENSEX_V45:
             floor = (request.form.get("loss_floor") or "").strip()
             if floor not in SENSEX_V45_FLOORS:
@@ -748,18 +743,32 @@ def configure():
             if sizing_mode not in sizing.MODES:
                 return _render_configure(user_id, conn_id, error="Select Fixed or Dynamic lot sizing. Nothing was changed.")
         sizing_changed = is_proposer and sizing_mode != current_sizing
+        if strategy_changed or sizing_changed or gold_config:
+            from live.configuration_reconcile import local_exposure_pending, confirm_broker_clear, configuration_revision
+            with cp.transaction() as c:
+                pending_exposure = local_exposure_pending(c, user_id, conn_id)
+                before_refresh = configuration_revision(c, user_id, conn_id)
+            # A saved broker connection is checked even when the local book says flat.
+            # An unconfigured account can still select its initial strategy.
+            credentials = svc.load_credentials(user_id, conn_id)
+            if pending_exposure or credentials:
+                try:
+                    adapter = _adapter_for(broker, user_id=user_id, conn_id=conn_id, creds=credentials)
+                    connection = svc.get_connection(user_id, conn_id)
+                    broker_clear = confirm_broker_clear(adapter, connection.get("account_ref"))
+                except Exception:
+                    return _render_configure(user_id, conn_id, error=(
+                        "Could not refresh the broker position and order book. Reconnect the broker and save again."))
+                if not broker_clear:
+                    return _render_configure(user_id, conn_id, error=(
+                        "The broker currently reports an open position or working order. Configuration was not changed."))
+            if gold_config:
+                try:
+                    with cp.transaction() as c:
+                        cp.require_idle(c, user_id, conn_id, broker_clear=broker_clear)
+                except cp.ControlError as exc:
+                    return _render_configure(user_id, conn_id, error=str(exc))
         if strategy_changed or sizing_changed:
-            state = svc.get_trade_state(user_id, conn_id)
-            if (state.get("position") or "NONE").upper() == "OPEN":
-                return _render_configure(
-                    user_id,
-                    conn_id,
-                    error=(
-                        ("Decision strategy cannot change while this connection " if strategy_changed else
-                         "Lot sizing cannot change while this connection ") +
-                        "has an open position. Close it first, then save."
-                    ),
-                )
             not_ready = _runner_not_ready_for(user_id, conn_id, strat, target[1])
             if not_ready:
                 return _render_configure(user_id, conn_id, error=not_ready)
@@ -773,25 +782,32 @@ def configure():
         except ValueError:
             lots = 1
         lots = max(1, lots)
-        svc.set_config(user_id, conn_id, "lots", lots)
 
         try:
             cap = float(request.form.get("daily_loss_cap", "3000"))
         except ValueError:
             cap = 3000.0
-        svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap))
-        if sizing_changed:
-            svc.set_config(user_id, conn_id, "proposer_sizing_mode", sizing_mode)
-
-        # Strategy preset -> decision_engine + strategy_version. Only applied when
-        # a known preset is submitted, so an unrelated POST never clobbers it.
-        if strategy_changed:
-            decision_engine, strat_version = target
-            svc.set_config(user_id, conn_id, "decision_engine", decision_engine)
-            svc.set_config(user_id, conn_id, "strategy_version", strat_version)
-            if day_target is not None:
-                svc.set_config(user_id, conn_id, "proposer_day_target_pct", day_target)
-            svc.clear_v212_latches(user_id, conn_id)
+        with cp.transaction() as c:
+            if broker_clear and configuration_revision(c, user_id, conn_id) != before_refresh:
+                return _render_configure(user_id, conn_id, error=(
+                    "Account state changed during the broker refresh. Save again to use its latest state."))
+            from live.configuration_reconcile import TransactionConnection
+            c = TransactionConnection(c)
+            svc.set_config(user_id, conn_id, "lots", lots, c)
+            svc.set_config(user_id, conn_id, "daily_loss_cap", abs(cap), c)
+            if sizing_changed:
+                svc.set_config(user_id, conn_id, "proposer_sizing_mode", sizing_mode, c)
+            if broker_clear:
+                from live.configuration_reconcile import clear_stale_state
+                clear_stale_state(c, user_id, conn_id)
+            # Only a known preset changes the strategy; mirrors and settings commit together.
+            if strategy_changed:
+                decision_engine, strat_version = target
+                svc.set_config(user_id, conn_id, "decision_engine", decision_engine, c)
+                svc.set_config(user_id, conn_id, "strategy_version", strat_version, c)
+                if day_target is not None:
+                    svc.set_config(user_id, conn_id, "proposer_day_target_pct", day_target, c)
+                svc.clear_v212_latches(user_id, conn_id, c)
 
         return redirect(url_for("live.dashboard"))
 

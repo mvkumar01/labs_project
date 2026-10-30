@@ -95,7 +95,7 @@ def require_admin(actor, c):
         raise ControlError("Administrator access required")
 
 
-def require_idle(c, user_id, conn_id):
+def require_idle(c, user_id, conn_id, *, broker_clear=False):
     if not c.execute(
         "SELECT 1 FROM live_broker_connections WHERE user_id=? AND conn_id=?",
         (user_id, conn_id),
@@ -104,6 +104,10 @@ def require_idle(c, user_id, conn_id):
     mode = svc.get_mode(user_id, conn_id, c)
     if mode != "DISARMED" or svc.is_armed(user_id, conn_id, c):
         raise ControlError("Disarm this connection before changing its settings")
+    if broker_clear:
+        # Caller has just confirmed the entire broker position/order book is clear.
+        # Historical local order statuses must not override that broker snapshot.
+        return
     row = c.execute(
         "SELECT position FROM live_trade_state WHERE user_id=? AND conn_id=?",
         (user_id, conn_id),

@@ -69,7 +69,7 @@
             <option value="{{ key }}" {{ 'selected' if strategy == key else '' }}>{{ label }}</option>
             {% endfor %}
           </select>
-          <div class="hint">Every trade is tagged with the selected strategy so PnL can be filtered by it. Switch only while FLAT (ideally outside market hours) — changing mid-position can trigger an immediate reconcile exit.</div>
+          <div class="hint">Every trade is tagged with the selected strategy so PnL can be filtered by it. Position and order status are checked with the broker when local records need refreshing.</div>
           <div class="hint" id="gold-v2-help" {{ '' if strategy == 'gold_cci_v2' else 'hidden' }}>
             Gold CCI V2: Angel One or Zerodha MCX GOLD futures (1 kg per lot), short only, fixed lots.
             Market data comes from Zerodha; orders and margin quotes use your selected broker.
