@@ -68,6 +68,8 @@ SOURCES['bn_alpha'] = Source('bn_alpha_trades', 'BANKNIFTY', 30)
 SOURCES['sx_pc400'] = Source('sx_pc400_trades', 'SENSEX', 20)
 SOURCES['sx_open1400'] = Source('sx_open1400_trades', 'SENSEX', 20)
 SOURCES['nna_v1'] = Source('nna_v1_trades', 'NIFTY', 65)
+SOURCES['oi_unwind_nifty'] = Source('oi_unwind_nifty_trades', 'NIFTY', 65)
+SOURCES['oi_unwind_sensex'] = Source('oi_unwind_sensex_trades', 'SENSEX', 20)
 PAGE_SIZES = (10, 20, 25, 50, 100, 150, 200)
 
 def page_size(value):

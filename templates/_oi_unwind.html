@@ -1,0 +1,73 @@
+{# Paper books: OI Unwind NIFTY / SENSEX (labs.engine.oi_unwind_tracker; one template, oiu_stats carries the book) #}
+    {% set st = oiu_stats %}
+    <h1>{{ st.label or 'OI Unwind' }} (paper)</h1>
+    <p class="sub">The dashboard's OI wall at each 5-minute mark, unwinding when its OI falls meaningfully. <strong>CALL</strong> when a
+      5-minute candle closes above an unwinding resistance wall, the previous candle closing at or below it; <strong>PUT</strong> when
+      one closes below an unwinding support. Stop {{ "%.0f"|format(st.stop_pts or 0) }} points against the entry, target the next CPR
+      level beyond the wall, otherwise 15:25. No entry after 15:00, one open trade per side. Paper leg: the ATM strike of the nearest
+      expiry after today, {{ st.lots }} lot of {{ st.lot_size }}, bought at the ask and sold at the bid, exchange charges.</p>
+
+    <div class="formula">
+      Evidence status: <strong>in-sample</strong> &mdash; 1 Jul &ndash; 27 Oct 2026, NIFTY and SENSEX together: about
+      {{ st.reference.trades }} trades, {{ "{:+,.0f}".format(st.reference.rs) }} rupees per lot before charges. The stop is an assumption
+      and the unwinding gates are the dashboard's calibrated ones, frozen in this book. Sessions from
+      <strong>{{ st.first_unseen or '2026-10-28' }}</strong> were not part of the test. Paper only: it never calls a broker order API.
+    </div>
+
+    {% if st.get('error') %}
+      <p class="empty">{{ st.label }} book unavailable ({{ st.error }}).</p>
+    {% elif not oiu_rows %}
+      <p class="empty">No sessions recorded in this date range.</p>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Option leg, net</div>
+          <div class="v {{ 'green' if st.net_rs>0 else ('red' if st.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(st.net_rs) }}</div>
+          <div class="sub-k">after &#8377;{{ "{:,.0f}".format(st.charges_rs) }} charges{% if st.unpriced %}; {{ st.unpriced }} trades without quotes{% endif %}</div></div>
+        <div class="card"><div class="k">Spot points</div>
+          <div class="v {{ 'green' if st.spot_pts>0 else ('red' if st.spot_pts<0 else '') }}">{{ "%+.1f"|format(st.spot_pts) }}</div>
+          <div class="sub-k">{{ st.trades }} trades; {{ st.green_pts_days }} of {{ st.traded_days }} traded days ahead</div></div>
+        <div class="card"><div class="k">Since {{ st.first_unseen }} (not seen)</div>
+          <div class="v {{ 'green' if st.unseen_net>0 else ('red' if st.unseen_net<0 else '') }}">&#8377;{{ "{:,.0f}".format(st.unseen_net) }}</div>
+          <div class="sub-k">{{ st.unseen_trades }} trades, {{ "%+.1f"|format(st.unseen_pts) }} points</div></div>
+        <div class="card"><div class="k">Worst day / drawdown</div>
+          <div class="v red">&#8377;{{ "{:,.0f}".format(st.worst_day_rs) }}</div>
+          <div class="sub-k">largest fall &#8377;{{ "{:,.0f}".format(st.max_dd_rs) }}, option leg</div></div>
+      </div>
+
+      {% set lt = st.latest %}
+      <p class="note">Latest {{ lt.trade_date }}: {{ lt.status }}{% if lt.error %} &middot; <span class="amber">{{ lt.error }}</span>{% endif %}{% if lt.latest_mark %},
+        last mark {{ lt.latest_mark[11:16] }}, support {{ "%.0f"|format(lt.support or 0) }}{% if lt.support_unwinding %} (unwinding){% endif %},
+        resistance {{ "%.0f"|format(lt.resistance or 0) }}{% if lt.resistance_unwinding %} (unwinding){% endif %},
+        CPR {{ "%.1f"|format(lt.bc or 0) }}&ndash;{{ "%.1f"|format(lt.tc or 0) }}{% endif %}.
+        Exits so far: target {{ st.exit_reasons.TARGET }}, stop {{ st.exit_reasons.STOP }}, end of day {{ st.exit_reasons.EOD }}.</p>
+      {% for t in st.open_trades %}
+        <p class="note"><span class="amber">Open</span> {{ t.side }} since {{ t.entry_ts[11:16] }} at spot {{ "%.1f"|format(t.entry_spot) }}
+          ({{ t.tradingsymbol or t.strike }}), wall {{ "%.0f"|format(t.wall) }}, stop {{ "%.1f"|format(t.stop) }}, target {{ "%.1f"|format(t.target) }}.</p>
+      {% endfor %}
+
+      <h2 style="margin-top:24px">Trades</h2>
+      <table class="perf"><thead><tr><th>Date</th><th>Side</th><th>Entry &rarr; exit</th><th>Wall</th><th>Spot in / out</th>
+        <th>Target</th><th>Points</th><th>Contract</th><th>Ask in / bid out</th><th>Net &#8377;</th><th>Exit</th></tr></thead><tbody>
+      {% for t in oiu_trades %}<tr>
+        <td>{{ t.trade_date }}{% if t.trade_date >= st.first_unseen %} <span class="muted">&bull;</span>{% endif %}</td><td>{{ t.side }}</td>
+        <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+        <td class="muted">{{ "%.0f"|format(t.wall) }}</td>
+        <td class="muted">{{ "%.1f"|format(t.entry_spot) }} / {{ "%.1f"|format(t.exit_spot) if t.exit_spot else '&mdash;'|safe }}</td>
+        <td class="muted">{{ "%.1f"|format(t.target) }}</td>
+        <td class="{{ 'green' if (t.spot_pnl_pts or 0)>0 else ('red' if (t.spot_pnl_pts or 0)<0 else '') }}">{{ "%+.1f"|format(t.spot_pnl_pts or 0) }}</td>
+        <td class="muted">{{ t.tradingsymbol or t.strike }}</td>
+        <td class="muted">{{ "%.2f"|format(t.entry_ask) if t.entry_ask else '&mdash;'|safe }} / {{ "%.2f"|format(t.exit_bid) if t.exit_bid else '&mdash;'|safe }}</td>
+        <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">{{ "{:,.0f}".format(t.net_rs) if t.net_rs is not none else t.quote_status }}</td>
+        <td>{{ t.exit_reason }}</td></tr>{% endfor %}
+      </tbody></table>
+
+      <h2 style="margin-top:24px">Day by day</h2>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>CPR</th><th>Expiry</th><th>Trades</th><th>Points</th><th>Net &#8377;</th></tr></thead><tbody>
+      {% for r in oiu_rows %}<tr><td>{{ r.trade_date }}</td>
+        <td class="{{ 'amber' if r.status in ['live', 'unavailable', 'partial_quotes'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+        <td class="muted">{% if r.bc %}{{ "%.1f"|format(r.bc) }}&ndash;{{ "%.1f"|format(r.tc) }}{% endif %}</td><td class="muted">{{ r.expiry_code or '' }}</td><td>{{ r.n_trades }}</td>
+        <td class="{{ 'green' if (r.spot_pnl_pts or 0)>0 else ('red' if (r.spot_pnl_pts or 0)<0 else '') }}">{{ "%+.1f"|format(r.spot_pnl_pts or 0) }}</td>
+        <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="note">&bull; = after the research data ended. Paper only; this book never calls a broker order API.</p>
+    {% endif %}

@@ -53,6 +53,7 @@ def main() -> None:
     from labs.engine.bn_alpha_tracker import run_paper_day as run_bn_alpha_day
     from labs.engine.sx_alpha_tracker import run_paper_day as run_sx_alpha_day
     from labs.engine.nna_tracker import run_paper_day as run_nna_day
+    from labs.engine.oi_unwind_tracker import run_paper_day as run_oi_unwind_day
     from labs.engine.proposer_v5_dt25_book import run_day as run_proposer_v5_dt25_day
     from labs.engine.proposer_nifty_v5_book import run_day as run_proposer_nifty_v5_day
     from labs.engine.proposer_nifty_v3_book import run_day as run_proposer_nifty_v3_day
@@ -93,6 +94,7 @@ def main() -> None:
         "bn_alpha": None,
         "sx_alpha": None,
         "nna_v1": None,
+        "oi_unwind": None,
         "proposer_v5_dt25": None,
         "proposer_nifty_v5": None,
         "proposer_nifty_v3": None,
@@ -135,6 +137,7 @@ def main() -> None:
                 ("bn_alpha", run_bn_alpha_day),
                 ("sx_alpha", run_sx_alpha_day),
                 ("nna_v1", run_nna_day),
+                ("oi_unwind", run_oi_unwind_day),
                 ("proposer_v5_dt25", run_proposer_v5_dt25_day),
                 ("proposer_nifty_v5", run_proposer_nifty_v5_day),
                 ("proposer_nifty_v3", run_proposer_nifty_v3_day),

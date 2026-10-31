@@ -208,6 +208,8 @@
     {% include '_proposer_nifty_v3_pclock.html' %}
     {% elif active_live_tab == 'proposer_v5_dt25' %}
     {% include '_proposer_v5_dt25.html' %}
+    {% elif active_live_tab in ['oi_unwind_nifty', 'oi_unwind_sensex'] %}
+    {% include '_oi_unwind.html' %}
     {% elif active_live_tab == 'nna_v1' %}
     {% include '_nna_alpha.html' %}
     {% elif active_live_tab in ['sx_pc400', 'sx_open1400'] %}
