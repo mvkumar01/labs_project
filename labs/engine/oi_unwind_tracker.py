@@ -436,30 +436,48 @@ def sessions_with_quotes(start: str, end: str, book: Book) -> list[str]:
     return sorted(days)
 
 
-def run_backfill(start: str = PAPER_START, end: str | None = None) -> dict:
+def run_backfill(start: str = PAPER_START, end: str | None = None, *, books=None, limit: int | None = None,
+                 rebuild: bool = False) -> dict:
+    """Replay the sessions not recorded yet, `limit` per book at most; `remaining` says how many are left. Web
+    requests are short, so the route calls this in batches. `rebuild` replays recorded days as well."""
     end = end or (datetime.now(IST).date() - timedelta(days=1)).isoformat()
     report = {}
-    for book in BOOKS.values():
+    for book in books or BOOKS.values():
+        conn = get_conn()
+        try:
+            _ensure_tables(conn, book.key)
+            recorded = {r[0] for r in conn.execute(f"SELECT trade_date FROM {book.key}_daily WHERE status != 'live'")}
+        finally:
+            conn.close()
+        days = [d for d in sessions_with_quotes(start, end, book) if rebuild or d not in recorded]
+        todo = days[:limit] if limit else days
         done, failed = 0, {}
-        for day in sessions_with_quotes(start, end, book):
+        for day in todo:
             out = run_day(day, book)
             if out.get("error"):
                 failed[day] = out["error"]
             else:
                 done += 1
-        report[book.key] = {"done": done, "failed": failed}
+        report[book.key] = {"done": done, "failed": failed, "remaining": len(days) - len(todo)}
     return report
 
 
 def tab_data(conn: sqlite3.Connection, key: str, date_clause: str = "", date_params=()) -> tuple:
     book = BOOKS[key]
-    rows, trades, stats = core.tab_data(conn, date_clause, date_params, prefix=key, first_unseen=FIRST_UNSEEN,
-                                        extra={"label": book.label, "symbol": book.symbol, "key": key,
-                                               "lot_size": book.lot_size, "lots": 1, "reference": REFERENCE,
-                                               "paper_start": PAPER_START, "stop_pts": STOP_PTS * book.scale})
-    if stats:
-        closed = [t for t in trades if t["status"] == "closed"]
-        stats["exit_reasons"] = {k: sum(1 for t in closed if t["exit_reason"] == k) for k in ("TARGET", "STOP", "EOD")}
+    extra = {"label": book.label, "symbol": book.symbol, "key": key, "lot_size": book.lot_size, "lots": 1,
+             "reference": REFERENCE, "first_unseen": FIRST_UNSEEN, "paper_start": PAPER_START,
+             "stop_pts": STOP_PTS * book.scale}
+    try:
+        rows, trades, stats = core.tab_data(conn, date_clause, date_params, prefix=key, first_unseen=FIRST_UNSEEN,
+                                            extra=extra)
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc):
+            raise
+        return [], [], extra                                # nothing recorded yet
+    if not stats:
+        return rows, trades, extra                          # no session in the selected dates
+    closed = [t for t in trades if t["status"] == "closed"]
+    stats["exit_reasons"] = {k: sum(1 for t in closed if t["exit_reason"] == k) for k in ("TARGET", "STOP", "EOD")}
     return rows, trades, stats
 
 

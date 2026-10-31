@@ -106,6 +106,41 @@ def test_saved_and_rendered(monkeypatch, tmp_path):
     assert "OI Unwind NIFTY" in html and "SENSEX" not in html.split("Evidence status")[0]
 
 
+def _render(rows, trades, stats):
+    import jinja2
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(ROOT / "templates")))
+    return env.get_template("_oi_unwind.html").render(oiu_rows=rows, oiu_trades=trades, oiu_stats=stats)
+
+
+def test_tab_renders_before_any_session_is_recorded(tmp_path):
+    conn = sqlite3.connect(tmp_path / "labs.db")
+    html = _render(*U.tab_data(conn, "oi_unwind_sensex"))                # no tables yet
+    assert "OI Unwind SENSEX" in html and "No sessions recorded" in html
+    U._ensure_tables(conn, "oi_unwind_sensex")
+    assert "No sessions recorded" in _render(*U.tab_data(conn, "oi_unwind_sensex"))   # no rows in the dates
+    assert "book unavailable" in _render([], [], {"error": "boom"})      # what the route passes on a failed read
+
+
+def test_backfill_runs_in_batches_and_skips_recorded_days(monkeypatch, tmp_path):
+    days = ["2026-10-20", "2026-10-21", "2026-10-22"]
+    db = tmp_path / "labs.db"
+
+    def fake_run_day(day, book):
+        conn = sqlite3.connect(db)
+        U._save(conn, day, book, {}, error="no quotes")      # a recorded day, even when unavailable
+        conn.close()
+        return {"trade_date": day}
+
+    monkeypatch.setattr(U, "get_conn", lambda: sqlite3.connect(db))
+    monkeypatch.setattr(U, "sessions_with_quotes", lambda start, end, book: days)
+    monkeypatch.setattr(U, "run_day", fake_run_day)
+    run = lambda **kw: U.run_backfill(end="2026-10-30", books=[U.NIFTY], limit=2, **kw)["oi_unwind_nifty"]   # noqa: E731
+    assert run() == {"done": 2, "failed": {}, "remaining": 1}
+    assert run() == {"done": 1, "failed": {}, "remaining": 0}
+    assert run()["done"] == 0
+    assert run(rebuild=True)["done"] == 2
+
+
 def test_ui_patch_is_idempotent_on_its_own_output(tmp_path):
     files = ("labs/ui/routes.py", "templates/live_strategy.html", "pa_paper_tracker_loop.py",
              "labs/services/book_overview_more.py", "labs/services/strategy_report.py")
@@ -118,7 +153,8 @@ def test_ui_patch_is_idempotent_on_its_own_output(tmp_path):
                              capture_output=True, text=True)
         assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.count(": 0 edits applied") == 5, run.stdout
-    assert 'oi_unwind_sensex' in (tmp_path / "labs/ui/routes.py").read_text(encoding="utf-8")
+    routes = (tmp_path / "labs/ui/routes.py").read_text(encoding="utf-8")
+    assert 'oi_unwind_sensex' in routes and "def oi_unwind_backfill(key):" in routes
 
 
 @pytest.mark.parametrize("name", ["place_order", "modify_order", "cancel_order"])

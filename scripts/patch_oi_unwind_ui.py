@@ -24,6 +24,28 @@ ROUTES_QUERY = '''        # OI Unwind (paper): two books, one template.
 
 '''
 
+ROUTES_BACKFILL = '''@labs_bp.route("/api/<any(oi_unwind_nifty, oi_unwind_sensex):key>/backfill", methods=["POST"])
+def oi_unwind_backfill(key):
+    """Replay bounded batches of sessions for one paper-only OI Unwind book."""
+    from labs.engine.oi_unwind_tracker import BOOKS, PAPER_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 3)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 3
+    try:
+        return jsonify(run_backfill(
+            request.args.get("start", PAPER_START),
+            request.args.get("end"),
+            books=[BOOKS[key]],
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+'''
+
 TEMPLATE_PANEL = """    {% elif active_live_tab in ['oi_unwind_nifty', 'oi_unwind_sensex'] %}
     {% include '_oi_unwind.html' %}
 """
@@ -34,11 +56,13 @@ def main() -> int:
     vars_line = "    nna_rows, nna_trades, nna_stats = [], [], {}\n"
     comment = "        # Nifty New Alpha V1 (paper).\n"
     kwargs_line = "        nna_stats=nna_stats,\n"
+    backfill_route = '@labs_bp.route("/api/nifty_tuesday_put/backfill", methods=["POST"])\n'
     n = patch(ROOT / "labs" / "ui" / "routes.py", [
         (tabs, tabs + '    "oi_unwind_nifty": "OI Unwind NIFTY",\n    "oi_unwind_sensex": "OI Unwind SENSEX",\n'),
         (vars_line, vars_line + "    oiu_rows, oiu_trades, oiu_stats = [], [], {}\n"),
         (comment, ROUTES_QUERY + comment),
         (kwargs_line, kwargs_line + "        oiu_rows=oiu_rows,\n        oiu_trades=oiu_trades,\n        oiu_stats=oiu_stats,\n"),
+        (backfill_route, ROUTES_BACKFILL + backfill_route),
     ])
     print(f"routes.py: {n} edits applied")
 

@@ -7,12 +7,12 @@
       level beyond the wall, otherwise 15:25. No entry after 15:00, one open trade per side. Paper leg: the ATM strike of the nearest
       expiry after today, {{ st.lots }} lot of {{ st.lot_size }}, bought at the ask and sold at the bid, exchange charges.</p>
 
-    <div class="formula">
+    {% if st.reference %}<div class="formula">
       Evidence status: <strong>in-sample</strong> &mdash; 1 Jul &ndash; 27 Oct 2026, NIFTY and SENSEX together: about
       {{ st.reference.trades }} trades, {{ "{:+,.0f}".format(st.reference.rs) }} rupees per lot before charges. The stop is an assumption
       and the unwinding gates are the dashboard's calibrated ones, frozen in this book. Sessions from
       <strong>{{ st.first_unseen or '2026-10-28' }}</strong> were not part of the test. Paper only: it never calls a broker order API.
-    </div>
+    </div>{% endif %}
 
     {% if st.get('error') %}
       <p class="empty">{{ st.label }} book unavailable ({{ st.error }}).</p>

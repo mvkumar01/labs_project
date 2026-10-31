@@ -1463,6 +1463,26 @@ def infy_tcs_pair_refresh():
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
+@labs_bp.route("/api/<any(oi_unwind_nifty, oi_unwind_sensex):key>/backfill", methods=["POST"])
+def oi_unwind_backfill(key):
+    """Replay bounded batches of sessions for one paper-only OI Unwind book."""
+    from labs.engine.oi_unwind_tracker import BOOKS, PAPER_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 3)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 3
+    try:
+        return jsonify(run_backfill(
+            request.args.get("start", PAPER_START),
+            request.args.get("end"),
+            books=[BOOKS[key]],
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
 @labs_bp.route("/api/nifty_tuesday_put/backfill", methods=["POST"])
 def nifty_tuesday_put_backfill():
     """Replay bounded batches of Tuesdays for the paper-only NIFTY Tuesday put."""
