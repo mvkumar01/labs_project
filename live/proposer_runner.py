@@ -38,6 +38,7 @@ from live import live_executor as ex
 from live import live_runner as lr
 from live import live_service as svc
 from live import proposer_sizing as sizing
+from live.engine import oi_unwind_engine as oi
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
 from live.engine import proposer_strike as ps
@@ -64,7 +65,7 @@ NIFTY_I = Instrument("NIFTY", "NFO", int(UNDERLYINGS["NIFTY"]["lot_size"]), "NSE
 
 
 def instrument_for(strategy_version) -> Instrument:
-    return NIFTY_I if strategy_version in pe.NIFTY_SCALPER_VERSIONS else SENSEX_I
+    return NIFTY_I if strategy_version in pe.NIFTY_VERSIONS else SENSEX_I
 
 
 POLL_OPEN_S, POLL_FLAT_S = 1.0, 2.0
@@ -404,8 +405,9 @@ def entry_bar_index(bars: list[tuple[datetime, float]], entry_time_utc: str | No
     return next((i for i, b in enumerate(bars) if b[0] >= t), len(bars))
 
 
-def option_chain(day: date, profile: Instrument = SENSEX_I) -> pd.DataFrame:
-    """Latest minute of today's collector SENSEX option chain (nearest expiry rows only)."""
+def option_chain(day: date, profile: Instrument = SENSEX_I, next_expiry: bool = False) -> pd.DataFrame:
+    """Latest minute of today's collector SENSEX option chain (nearest expiry rows only).
+    `next_expiry` takes the nearest one strictly after today, on every index."""
     path = SHARED_LIVE_DIR / day.isoformat() / f"{profile.underlying}_options_1min.csv"
     if not path.is_file():
         return pd.DataFrame()
@@ -415,8 +417,11 @@ def option_chain(day: date, profile: Instrument = SENSEX_I) -> pd.DataFrame:
         return f
     f = f[f["timestamp"] == f["timestamp"].max()].copy()
     f["expiry"] = f["expiry"].astype(str).str.upper()
-    code = (ps.nifty_expiry_code(f["expiry"].unique(), day) if profile == NIFTY_I
-            else select_expiry_code(f["expiry"].unique(), day, "nearest_weekly"))
+    if next_expiry:
+        code = oi.next_expiry_code(f["expiry"].unique(), day, profile.underlying)
+    else:
+        code = (ps.nifty_expiry_code(f["expiry"].unique(), day) if profile == NIFTY_I
+                else select_expiry_code(f["expiry"].unique(), day, "nearest_weekly"))
     return f[f["expiry"] == code] if code else pd.DataFrame()
 
 
@@ -824,6 +829,42 @@ def _entry_price_fn(market: KiteMarket, symbol: str, cap: float, sent: dict,
     return fn
 
 
+def _oi_unwind_signal(user_id: str, conn_id: str, ctx: dict, book, st: dict, is_open: bool, spot: float | None,
+                      now: datetime) -> tuple[pe.Signal, dict | None]:
+    """OI Unwind's decision for this cycle: (signal, the entry's levels when it is an ENTER)."""
+    bars = ctx.setdefault("oi_bars", {}).get(book.key)
+    if bars is None:
+        bars = ctx["oi_bars"][book.key] = SessionBars(oi.close_bars(book))
+    walls = ctx.setdefault("oi_walls", {}).get(book.key)
+    if walls is None:
+        walls = ctx["oi_walls"][book.key] = oi.WallFeed(book)
+    bars.note(now, spot)
+    walls.step(now)
+    if is_open:
+        side = st.get("side")
+        levels = oi.load_levels(svc.get_config(user_id, conn_id, oi.LEVELS_KEY), st.get("symbol"))
+        if levels is None:
+            log.error("OI Unwind position without its levels, exiting | conn=%s %s", conn_id, st.get("symbol"))
+            return pe.Signal("EXIT", side, "oi_levels_missing"), None
+        reason = oi.exit_reason(side, spot, levels) if spot else None
+        return (pe.Signal("EXIT", side, reason) if reason else pe.Signal("HOLD")), None
+    label = oi.candle_label(now)
+    decided = ctx.setdefault("oi_decided", {})
+    if label is None or decided.get(conn_id) == label:
+        return pe.Signal("HOLD"), None
+    signal, why = oi.decide(label, bars.completed(now), walls)
+    if why != "ok":
+        if now.second >= oi.SIGNAL_WINDOW_S - 3:
+            log.warning("OI Unwind candle %s undecided: %s | conn=%s", label.time(), why, conn_id)
+        return pe.Signal("HOLD"), None
+    decided[conn_id] = label
+    if signal is None:
+        return pe.Signal("HOLD"), None
+    log.info("OI Unwind %s %s through wall %s at %s | stop %s target %s | conn=%s", book.symbol, signal["side"],
+             signal["wall"], signal["entry_spot"], signal["stop"], signal["target"], conn_id)
+    return pe.Signal("ENTER", signal["side"], oi.ENTRY_REASON), signal
+
+
 def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: PredictorFeed,
                        market: KiteMarket, now: datetime, adapter_factory=None,
                        feeds: dict | None = None) -> bool:
@@ -890,8 +931,11 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
     trade_date = now.date().isoformat()
     strategy = svc.get_config(user_id, conn_id, "strategy_version")
     profile = instrument_for(strategy)
+    oi_book = oi.book_for(strategy)
+    oi_signal = None
+    scaled = strategy in pe.NIFTY_SCALPER_VERSIONS
     ratio = None
-    if profile == NIFTY_I:
+    if scaled:
         ratio = opening_ratio(now, ctx.setdefault("opening_ratios", {}))
         # Persist only a resolved session ratio so a restart with temporarily unavailable data
         # can still manage a held NIFTY position with the original, correctly scaled exits.
@@ -914,7 +958,7 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             user_id, conn_id, strategy=strategy, day_target=day_target, ratio=ratio, print_clock=print_clock)
         if ratio is not None:
             svc.set_config(user_id, conn_id, "proposer_nifty_ratio_" + trade_date, str(ratio))
-        elif profile == NIFTY_I:
+        elif scaled:
             log.warning("NIFTY entries held: 09:15 opening ratio is unavailable conn=%s day=%s", conn_id, trade_date)
         log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
                  "loss_floor=%s spot_floor_pts=%s day_target=%s print_clock=%s", conn_id,
@@ -978,7 +1022,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
 
     if is_open and now.time() >= EOD_FLAT:
         sig = pe.Signal("EXIT", st.get("side"), "eod")
-    elif snap and spot and (profile != NIFTY_I or ratio is not None):
+    elif oi_book is not None:
+        sig, oi_signal = _oi_unwind_signal(user_id, conn_id, ctx, oi_book, st, is_open, spot, now)
+    elif snap and spot and (not scaled or ratio is not None):
         closes = entry_idx = move = None
         if is_open and pc.engine.params.bar_exit:
             bars = session_bars.completed(now)
@@ -1026,20 +1072,27 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
 
     if (sig.action == "ENTER" and not is_open and not blocked and spot
             and now.time() < ENTRY_CUTOFF and lr.check_daily_loss(user_id, conn_id)):
-        if profile == NIFTY_I:
-            from labs.engine.expiry_strangle_tracker import expiry_date_of
-            chain = option_chain(now.date(), profile)
-            expiry = expiry_date_of(chain["expiry"].iloc[0], "NIFTY") if not chain.empty else None
-            symbol, strike, typ, picked = ps.delta_itm_symbol_nifty(chain, sig.side, spot, now.date(), expiry)
+        if oi_signal is not None:
+            chain = option_chain(now.date(), profile, next_expiry=True)
+            symbol, strike, typ = oi.atm_symbol(chain, sig.side, oi_signal["entry_spot"], oi_book)
+            if not symbol:
+                log.warning("OI Unwind: no quoted %s %s in the next expiry; entry skipped", strike, typ)
+                return False
         else:
-            chain = option_chain(now.date())
-            symbol, strike, typ, picked = ps.delta_itm_symbol(chain, sig.side, spot, now.date())
-        if not symbol:
-            log.warning("no %s strike by delta (%s, spot %.0f); entry skipped", typ, picked.get("reason"), spot)
-            return False
-        log.info("strike (|delta|>=%.2f): %s -> %s%s |delta|=%s ltp=%s depth=%s (spot %.0f, atm %s; seen %s)",
-                 ps.MIN_ENTRY_DELTA, sig.side, strike, typ, picked.get("delta"), picked.get("ltp"),
-                 picked.get("depth"), spot, picked.get("atm"), picked.get("candidates"))
+            if profile == NIFTY_I:
+                from labs.engine.expiry_strangle_tracker import expiry_date_of
+                chain = option_chain(now.date(), profile)
+                expiry = expiry_date_of(chain["expiry"].iloc[0], "NIFTY") if not chain.empty else None
+                symbol, strike, typ, picked = ps.delta_itm_symbol_nifty(chain, sig.side, spot, now.date(), expiry)
+            else:
+                chain = option_chain(now.date())
+                symbol, strike, typ, picked = ps.delta_itm_symbol(chain, sig.side, spot, now.date())
+            if not symbol:
+                log.warning("no %s strike by delta (%s, spot %.0f); entry skipped", typ, picked.get("reason"), spot)
+                return False
+            log.info("strike (|delta|>=%.2f): %s -> %s%s |delta|=%s ltp=%s depth=%s (spot %.0f, atm %s; seen %s)",
+                     ps.MIN_ENTRY_DELTA, sig.side, strike, typ, picked.get("delta"), picked.get("ltp"),
+                     picked.get("depth"), spot, picked.get("atm"), picked.get("candidates"))
         broker_sym = adapter.broker_symbol(symbol) if hasattr(adapter, "broker_symbol") else symbol
         clock.mark("contract")
         configured = svc.get_lots(user_id, conn_id)
@@ -1072,7 +1125,11 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         sent: dict = {}
         price_fn = None if dry_run else _entry_price_fn(
             market, symbol, price_cap, sent, profile)
-        key_ts = snap.get("x5_asof") or "none"
+        if oi_signal is not None:
+            key_ts = f"{oi_signal['bar'].isoformat(timespec='minutes')}|{sig.side}"
+            svc.set_config(user_id, conn_id, oi.LEVELS_KEY, oi.dump_levels(oi_signal, broker_sym))
+        else:
+            key_ts = snap.get("x5_asof") or "none"
         step_downs = 0
         if funds_cache is not None:
             funds_cache.invalidate(funds_key)
@@ -1113,7 +1170,8 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                        "entry_time": datetime.now(timezone.utc).isoformat(), "qty": qty,
                        "virtual": 1 if dry_run else 0, "entry_rule": sig.reason, "entry_spot": spot})
             svc.save_trade_state(user_id, conn_id, st)
-            pc.engine.mark_entry(snap)
+            if oi_signal is None:
+                pc.engine.mark_entry(snap)
             if pc.engine.entry_decisive:   # the once-per-day regime licence was just used
                 svc.set_config(user_id, conn_id,
                                "proposer_regime_entry_date_" + ("dry" if dry_run else "live"), trade_date)

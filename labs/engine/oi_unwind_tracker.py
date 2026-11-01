@@ -139,38 +139,50 @@ def wall_marks(frame: pd.DataFrame, book: Book) -> list[tuple]:
 
 
 # ------------------------------------------------------------------- rule ---
+def _view(s: int, bars: list[tuple], cpr: dict) -> dict:
+    """Prices and levels as side s reads them: s = -1 flips them, so a PUT reads as a CALL."""
+    t = [b[0] for b in bars]
+    return {"t": t, "o": [s * b[1] for b in bars], "hi": [max(s * b[2], s * b[3]) for b in bars],
+            "lo": [min(s * b[2], s * b[3]) for b in bars], "c": [s * b[4] for b in bars],
+            "index": {x: i for i, x in enumerate(t)}, "levels": [s * float(cpr[x]) for x in CPR_KEYS],
+            "start": datetime.combine(t[0].date(), SESSION_OPEN)}
+
+
+def _break(v: dict, s: int, i: int, marks: list[tuple], times: list, book: Book):
+    """(wall, entry, stop, target) in side s's prices if bar i closes a 5-minute candle through an unwinding wall."""
+    t, c, k = v["t"], v["c"], book.scale
+    if int((t[i] - v["start"]).total_seconds() // 60) % 5 != 4:
+        return None
+    j = bisect.bisect_right(times, t[i] - timedelta(seconds=60)) - 1
+    wall = (marks[j][2] if s > 0 else marks[j][1]) if j >= 0 else None
+    prev = v["index"].get(t[i] - timedelta(minutes=5))
+    if wall is None or prev is None or not wall[1]:
+        return None
+    x = s * wall[0]
+    if not c[prev] <= x < c[i]:
+        return None
+    beyond = [level for level in v["levels"] if level > x + MIN_GAP_PTS * k]
+    target = min(beyond) if beyond else None
+    entry, stop = c[i], c[i] - STOP_PTS * k
+    if target is None or target <= entry:
+        return None
+    return wall[0], entry, stop, target
+
+
 def _side(s: int, bars: list[tuple], marks: list[tuple], cpr: dict, book: Book, session_done: bool) -> list[dict]:
     """s = +1 reads the session as it is (CALL); s = -1 flips prices and walls, so a PUT reads as a CALL."""
-    k, n = book.scale, len(bars)
-    t = [b[0] for b in bars]
-    o = [s * b[1] for b in bars]
-    hi = [max(s * b[2], s * b[3]) for b in bars]
-    lo = [min(s * b[2], s * b[3]) for b in bars]
-    c = [s * b[4] for b in bars]
-    index = {x: i for i, x in enumerate(t)}
-    levels = [s * float(cpr[x]) for x in CPR_KEYS]
+    v, n = _view(s, bars, cpr), len(bars)
+    t, o, hi, lo, c = v["t"], v["o"], v["hi"], v["lo"], v["c"]
     times = [m[0] for m in marks]
-    start = datetime.combine(t[0].date(), SESSION_OPEN)
     trades, busy = [], -1
     for i in range(FIRST_DECISION, n):
         if t[i].time() >= LAST_ENTRY:
             break
-        if int((t[i] - start).total_seconds() // 60) % 5 != 4:
+        hit = None if busy >= i else _break(v, s, i, marks, times, book)
+        if hit is None:
             continue
-        j = bisect.bisect_right(times, t[i] - timedelta(seconds=60)) - 1
-        wall = (marks[j][2] if s > 0 else marks[j][1]) if j >= 0 else None
-        prev = index.get(t[i] - timedelta(minutes=5))
-        if wall is None or prev is None or not wall[1]:
-            continue
-        x = s * wall[0]
-        if not c[prev] <= x < c[i] or busy >= i:
-            continue
-        beyond = [v for v in levels if v > x + MIN_GAP_PTS * k]
-        target = min(beyond) if beyond else None
-        entry, stop = c[i], c[i] - STOP_PTS * k
-        if target is None or target <= entry:
-            continue
-        trade = {"side": "CALL" if s > 0 else "PUT", "entry_t": t[i], "entry_spot": s * entry, "wall": wall[0],
+        wall, entry, stop, target = hit
+        trade = {"side": "CALL" if s > 0 else "PUT", "entry_t": t[i], "entry_spot": s * entry, "wall": wall,
                  "target": s * target, "stop": s * stop, "exit_t": None, "exit_spot": None, "reason": None}
         for e in range(i + 1, n):
             if t[e].time() >= FLAT:
@@ -200,6 +212,22 @@ def simulate(bars: list[tuple], marks: list[tuple], cpr: dict, book: Book, sessi
         return []
     return sorted(_side(1, bars, marks, cpr, book, session_done) + _side(-1, bars, marks, cpr, book, session_done),
                   key=lambda x: x["entry_t"])
+
+
+def entry_signal(bars: list[tuple], marks: list[tuple], cpr: dict, book: Book) -> dict | None:
+    """The break completed by the last bar, for the live runner: simulate's entry rule, without the paper book's
+    memory of its own open trades (live/proposer_runner.py knows what the account holds)."""
+    i = len(bars) - 1
+    if i < FIRST_DECISION or bars[i][0].time() >= LAST_ENTRY:
+        return None
+    times = [m[0] for m in marks]
+    for s, side in ((1, "CALL"), (-1, "PUT")):
+        hit = _break(_view(s, bars, cpr), s, i, marks, times, book)
+        if hit is not None:
+            wall, entry, stop, target = hit
+            return {"side": side, "bar": bars[i][0], "wall": wall, "entry_spot": s * entry, "stop": s * stop,
+                    "target": s * target}
+    return None
 
 
 # ----------------------------------------------------------------- option ---

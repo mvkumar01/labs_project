@@ -75,6 +75,12 @@ STRATEGY_VERSION_NIFTY_SCALPER_V1 = "proposer_nifty_scalper_v1"
 # -0.33L - one day decides it (alphaIMB print_gap_test.py; Vipin, 2026-10-28).
 STRATEGY_VERSION_NIFTY_SCALPER_V3 = "proposer_nifty_scalper_v3"
 NIFTY_SCALPER_VERSIONS = frozenset({STRATEGY_VERSION_NIFTY_SCALPER_V1, STRATEGY_VERSION_NIFTY_SCALPER_V3})
+# OI Unwind: the paper books' rule, one index per connection (live/engine/oi_unwind_engine.py). This engine's
+# parameters do not apply; the versions start with "proposer" so that this runner owns them and live_runner skips them.
+STRATEGY_VERSION_OI_UNWIND_NIFTY = "proposer_oi_unwind_nifty_v1"
+STRATEGY_VERSION_OI_UNWIND_SENSEX = "proposer_oi_unwind_sensex_v1"
+OI_UNWIND_VERSIONS = frozenset({STRATEGY_VERSION_OI_UNWIND_NIFTY, STRATEGY_VERSION_OI_UNWIND_SENSEX})
+NIFTY_VERSIONS = NIFTY_SCALPER_VERSIONS | {STRATEGY_VERSION_OI_UNWIND_NIFTY}
 V5_SPOT_FLOOR_PTS = 150.0
 NO_PREMIUM_FLOOR_PCT = -0.999
 
@@ -171,7 +177,7 @@ def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
 # to the base preset's rules).
 KNOWN_VERSIONS = frozenset({STRATEGY_VERSION, STRATEGY_VERSION_PX, STRATEGY_VERSION_V3, STRATEGY_VERSION_V3_DT35,
                             STRATEGY_VERSION_V5, STRATEGY_VERSION_NIFTY_SCALPER_V1,
-                            STRATEGY_VERSION_NIFTY_SCALPER_V3})
+                            STRATEGY_VERSION_NIFTY_SCALPER_V3}) | OI_UNWIND_VERSIONS
 
 
 def scaled_for_nifty(params: ProposerParams, ratio: float) -> ProposerParams:

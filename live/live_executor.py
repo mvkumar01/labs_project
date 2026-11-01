@@ -77,7 +77,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 #   position open, exits are checked on every tick (no sooner than 0.25 s) instead of once a second.
 # v15 (2026-10-28): Nifty Scalper V3 (proposer_nifty_scalper_v3) - V1's rules with prints every 3 minutes
 #   (the print clock follows the version; its prints in live_proposer_prints_3min).
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v15"
+# v16 (2026-11-02): OI Unwind NIFTY and SENSEX (proposer_oi_unwind_*_v1) - the paper books' break of an unwinding
+#   wall, stop and next-CPR target on ticks, ATM of the next expiry; a v15 runner holds these versions' entries.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v16"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 
