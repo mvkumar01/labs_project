@@ -55,6 +55,7 @@ def main() -> None:
     from labs.engine.nna_tracker import run_paper_day as run_nna_day
     from labs.engine.oi_unwind_tracker import run_paper_day as run_oi_unwind_day
     from labs.engine.proposer_v5_dt25_book import run_day as run_proposer_v5_dt25_day
+    from labs.engine.proposer_v6_dt25_book import run_day as run_proposer_v6_dt25_day
     from labs.engine.proposer_nifty_v5_book import run_day as run_proposer_nifty_v5_day
     from labs.engine.proposer_nifty_v3_book import run_day as run_proposer_nifty_v3_day
     from labs.engine.proposer_nifty_v3_pclock_book import run_day as run_proposer_nifty_v3_pclock_day
@@ -97,6 +98,7 @@ def main() -> None:
         "nna_v1": None,
         "oi_unwind": None,
         "proposer_v5_dt25": None,
+        "proposer_v6_dt25": None,
         "proposer_nifty_v5": None,
         "proposer_nifty_v3": None,
         "proposer_nifty_v3_pclock": None,
@@ -141,6 +143,7 @@ def main() -> None:
                 ("nna_v1", run_nna_day),
                 ("oi_unwind", run_oi_unwind_day),
                 ("proposer_v5_dt25", run_proposer_v5_dt25_day),
+                ("proposer_v6_dt25", run_proposer_v6_dt25_day),
                 ("proposer_nifty_v5", run_proposer_nifty_v5_day),
                 ("proposer_nifty_v3", run_proposer_nifty_v3_day),
                 ("proposer_nifty_v3_pclock", run_proposer_nifty_v3_pclock_day),

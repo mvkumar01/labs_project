@@ -50,6 +50,7 @@ import pandas as pd
 
 from config.labs_config import ARCHIVE_DIR, DATA_DIR, SHARED_ARCHIVE_DIR, SHARED_LIVE_DIR, UNDERLYINGS
 from labs.engine.charges import sensex_round_trip_charges
+from live.engine import entry_blocks
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
 from live.engine import proposer_strike as ps
@@ -122,6 +123,10 @@ V5 = Book("proposer_v5", pe.STRATEGY_VERSION_V3_DT35)
 # Sensex V5 at 2.5%: the live preset proposer_dt35_v5 (V5, the 150-point floor inside the engine) with the
 # day target at 2.5% instead of 3.5% (DAY_TARGET_PCT; Vipin, 2026-10-19).
 V5_DT25 = Book("proposer_v5_dt25", pe.STRATEGY_VERSION_V5)
+# Sensex 2.5% V6: Sensex V5 2.5% with no entry while SENSEX is inside the previous session's CPR (TC..BC), paper only
+# (alphaIMB REBUILD sec. 57; Vipin, 2026-11-02).
+V6_DT25 = Book("proposer_v6_dt25", pe.STRATEGY_VERSION_V5)
+NO_INSIDE_CPR_BOOKS = frozenset({V6_DT25.key})
 # NIFTY on Sensex V5 signals: the same SENSEX prints and engine, positions in NIFTY options with NIFTY's
 # own exits (labs.engine.proposer_nifty_tracker; Vipin, 2026-10-21).
 NIFTY_V5 = Book("proposer_nifty_v5", pe.STRATEGY_VERSION_V5)
@@ -256,11 +261,11 @@ DELTA_STRIKE_FROM = "2026-10-19"
 # next session. The shadows copy Pramanaa's simulated bot, which waits 300 s.
 COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
-SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01",
+SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01", "proposer_v6_dt25": "2026-07-01",
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
                  "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01"}
 # Books whose day target differs from their live preset's.
-DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
+DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
                   "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
@@ -299,7 +304,7 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
-                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_nifty_v5",
+                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_nifty_v5",
                                 "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4"})
 
 
@@ -481,6 +486,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)
 
+    cpr = entry_blocks.previous_cpr(date.fromisoformat(day), spot_ohlc) if book.key in NO_INSIDE_CPR_BOOKS else None
     eng = pe.ProposerEngine(params_on(day, book))
     pos, trades, realized, snap, hist = None, [], 0.0, {}, []
 
@@ -549,6 +555,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot)
             elif fresh and snap:
                 sig = eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot, day_move=move)
+                if cpr and sig.action == "ENTER" and entry_blocks.inside_cpr(spot, cpr):
+                    sig = pe.Signal("HOLD")
                 if sig.action == "ENTER" and now_.time() < ENTRY_CUTOFF:
                     strike, typ = _entry_strike(day, near, now_, spot, sig.side, book.key)
                     quotes = quote_book.get((typ, strike))

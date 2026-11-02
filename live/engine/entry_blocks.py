@@ -69,6 +69,13 @@ def cpr_room_blocked(side: str, spot: float, cpr: Optional[dict], pts: float = C
     return level is not None and abs(level - spot) <= pts
 
 
+def inside_cpr(spot: float, cpr: Optional[dict]) -> bool:
+    """Sensex 2.5% V6's block: spot inside the central range, min(TC, BC) <= spot <= max(TC, BC). No CPR: False."""
+    if not cpr:
+        return False
+    return min(cpr["TC"], cpr["BC"]) <= spot <= max(cpr["TC"], cpr["BC"])
+
+
 def last_finished(bars: Sequence[tuple], now: datetime) -> Optional[tuple]:
     """(o, h, l, c) of the last 1-min bar (t, o, h, l, c) that ended at or before `now`, bars from 09:15."""
     bars = [b for b in bars if b[0].time() >= SESSION_OPEN]
