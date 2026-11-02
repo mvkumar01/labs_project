@@ -39,7 +39,8 @@ def local_exposure_pending(conn, user_id, conn_id):
     if conn.execute(
         "SELECT 1 FROM live_orders WHERE user_id=? AND conn_id=? AND dry_run=0 "
         "AND lower(status) NOT IN ('complete','completed','filled','cancelled','canceled',"
-        "'rejected','failed','no_long_position','exit_qty_exceeds_position','blocked','skipped','gate_blocked') LIMIT 1",
+        "'rejected','failed','no_long_position','no_position','exit_qty_exceeds_position','blocked','skipped',"
+        "'gate_blocked') LIMIT 1",
         (user_id, conn_id),
     ).fetchone():
         return True
@@ -73,6 +74,16 @@ def clear_stale_state(conn, user_id, conn_id):
                 gold['position'] = gold['pending'] = None
                 conn.execute('UPDATE live_gold_v2_state SET payload=? WHERE user_id=? AND conn_id=?',
                              (json.dumps(gold), user_id, conn_id))
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_crudem_live_state'").fetchone():
+        row = conn.execute('SELECT payload FROM live_crudem_live_state WHERE user_id=? AND conn_id=?',
+                           (user_id, conn_id)).fetchone()
+        if row:
+            crude = json.loads(row['payload'])
+            if crude.get('position') or crude.get('pending'):
+                detail['crude_state'] = json.loads(row['payload'])
+                crude['position'] = crude['pending'] = None
+                conn.execute('UPDATE live_crudem_live_state SET payload=? WHERE user_id=? AND conn_id=?',
+                             (json.dumps(crude), user_id, conn_id))
     audit(conn, user_id, 'broker_flat_configuration_refresh', conn_id, detail)
     svc.reset_trade_state(user_id, conn_id, conn)
     svc.set_config(user_id, conn_id, 'reconcile_blocked', '0', conn)

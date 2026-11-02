@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from live.brokers.base import OrderResult
 from live import live_service as svc
 from live import control_plane as cp
+from live import crudem_contract as crudem
 from live import gold_v2_contract as gold_v2
 
 log = logging.getLogger("live.executor")
@@ -91,6 +92,8 @@ def expected_decision_abi(strategy_version) -> str:
     """The decision contract the owning runner must have loaded for this strategy."""
     if gold_v2.selected(strategy_version):
         return gold_v2.ABI
+    if crudem.selected(strategy_version):
+        return crudem.ABI
     return PROPOSER_DECISION_ABI if is_proposer_strategy(strategy_version) else LIVE_DECISION_ABI
 
 
@@ -163,6 +166,10 @@ def arm_live(user_id: str, conn_id: str, conn=None) -> Mode:
         state = svc.get_trade_state(user_id, conn_id, conn)
         if state.get("position") == "OPEN":
             raise InvalidTransition("Close the Gold dry-run position before arming live")
+    if crudem.selected(svc.get_config(user_id, conn_id, "strategy_version", conn)):
+        state = svc.get_trade_state(user_id, conn_id, conn)
+        if state.get("position") == "OPEN":
+            raise InvalidTransition("Close the crude dry-run position before arming live")
     m = set_mode(user_id, conn_id, Mode.LIVE_ARMED, conn)
     return m
 
@@ -731,8 +738,9 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
     # ── LIVE real path — gate (entry only), then call the (guarded) adapter ──
     # Exits bypass entry gates 5/6 (daily-loss / lots) but still require
     # mode-armed, kill-clear, broker-connected, account-isolation (spec §6).
+    # A resting STOP (crude futures) is an exit that has not traded yet.
     steps.mark("ledger")
-    if action == "EXIT":
+    if action in ("EXIT", "STOP"):
         gates = [
             gate_mode_armed(user_id, conn_id, conn),
             gate_kill_switch_clear(user_id, conn_id, conn),
@@ -756,8 +764,11 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         return OrderResult(broker_order_id=None, status="GATE_BLOCKED",
                            avg_fill_price=None, raw={"failed_gates": failed})
 
-    if action == "EXIT":
-        if gold_v2.selected(strategy_version):
+    if action in ("EXIT", "STOP"):
+        if crudem.selected(strategy_version):
+            # Crude trades both ways: `side` is the held side, and closing must never reverse it.
+            blocked = None if adapter.holds(symbol, side, qty) else _blocked_exit(idem_key, "NO_POSITION", {}, conn)
+        elif gold_v2.selected(strategy_version):
             # A GOLD buyback must never create a new long futures position.
             try:
                 pos = adapter.get_position()
@@ -787,7 +798,10 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         steps.mark("price")
 
     try:
-        if action == "EXIT":
+        if action == "STOP":
+            result = adapter.place_stop(side=side, symbol=symbol, qty=qty, trigger=price,
+                                        idempotency_key=idem_key)
+        elif action == "EXIT":
             result = adapter.exit_all(symbol=symbol, qty=qty, reason="exit",
                                       idempotency_key=idem_key, price=price)
         else:
@@ -808,7 +822,8 @@ def place_idempotent(adapter, *, user_id: str, conn_id: str, idem_key: str,
         )
     steps.mark("send")
     acked_at = _now_iso()
-    result = _refresh_order_result(adapter, result)
+    if action != "STOP":        # a resting stop has no fill to wait for
+        result = _refresh_order_result(adapter, result)
     steps.mark("confirm")
 
     svc.update_order_ledger(idem_key, status=result.status,

@@ -1335,6 +1335,11 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
         from live.gold_v2_runner import process
         process(user_id, conn_id, adapters=adapters)
         return
+    from live import crudem_contract as crudem
+    if crudem.selected(svc.get_config(user_id, conn_id, "strategy_version")):
+        from live.crudem_live_runner import process
+        process(user_id, conn_id, adapters=adapters)
+        return
 
     mode = ex.get_mode(user_id, conn_id)
     if mode == ex.Mode.DISARMED:
@@ -1960,7 +1965,7 @@ def run(task_id: str = None, max_cycles: int = None,
     processing it independently. `adapter_factory` is injectable for tests."""
     task_id = task_id or f"live_runner:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     init_live_db()
-    log.info("live_runner boot | task=%s | gold_abi=%s", task_id, ex.gold_v2.ABI)
+    log.info("live_runner boot | task=%s | gold_abi=%s | crudem_abi=%s", task_id, ex.gold_v2.ABI, ex.crudem.ABI)
 
     heartbeat_stop = threading.Event()
     heartbeat_thread = None

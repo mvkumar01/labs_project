@@ -165,6 +165,9 @@ def _adapter_for(broker: str, *, user_id: str, conn_id: str, creds: dict):
         if svc.get_config(user_id, conn_id, "strategy_version") == "gold_cci_v2":
             from live.brokers.gold_angel import GoldAngelAdapter
             return GoldAngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
+        if svc.get_config(user_id, conn_id, "strategy_version") == "crudem_combo_v1":
+            from live.brokers.crudem_angel import CrudemAngelAdapter
+            return CrudemAngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
         from live.brokers.angel import AngelAdapter
         return AngelAdapter(user_id=user_id, conn_id=conn_id, creds=creds)
     if broker == "zerodha":
@@ -535,6 +538,7 @@ def select_broker(broker):
 # with the strategy version it enables the corresponding overlay).
 STRATEGY_PRESETS = {
     "gold_cci_v2": ("gold_cci", "gold_cci_v2"),
+    "crudem_combo_v1": ("crudem_combo", "crudem_combo_v1"),
     "legacy_v211":   ("signal_engine",   "hybrid_alpha_v28"),
     "champion_v211": ("champion_replay", "v2.11"),
     "champion_v211b": ("champion_replay", "v2.11b"),
@@ -571,6 +575,7 @@ SENSEX_V45_FLOORS = {
 }
 STRATEGY_LABELS = {
     "gold_cci_v2": "Gold CCI V2 (GOLD futures short; 3% daily net target; bullish entry filter)",
+    "crudem_combo_v1": "CRUDEOILM Combo (six rules, long and short; stop at Angel One, flat 23:29)",
     "legacy_v211":   "Alpha v2.11 (legacy)",
     "champion_v211": "Alpha v2.11",
     "champion_v211b": "Alpha 2.11 replay (B)",
@@ -625,6 +630,8 @@ def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     sv = svc.get_config(user_id, conn_id, "strategy_version")
     if de == "gold_cci" and sv == "gold_cci_v2":
         return "gold_cci_v2"
+    if de == "crudem_combo" and sv == "crudem_combo_v1":
+        return "crudem_combo_v1"
     if de == "proposer":
         if sv in {v for v, _ in SENSEX_V45_FLOORS.values()}:
             return SENSEX_V45
@@ -688,7 +695,10 @@ def configure():
         strat = (request.form.get("strategy") or "").strip()
         target = STRATEGY_PRESETS.get(strat)
         broker_clear = False
-        gold_config = strat == "gold_cci_v2" or _current_strategy_preset(user_id, conn_id) == "gold_cci_v2"
+        gold_config = (strat in ("gold_cci_v2", "crudem_combo_v1")
+                       or _current_strategy_preset(user_id, conn_id) in ("gold_cci_v2", "crudem_combo_v1"))
+        if strat == "crudem_combo_v1" and broker != "angel":
+            return _render_configure(user_id, conn_id, error="CRUDEOILM Combo requires an Angel One connection with MCX enabled.")
         if strat == "gold_cci_v2" and broker not in ("zerodha", "angel"):
             return _render_configure(user_id, conn_id, error="Gold CCI V2 requires an Angel One or Zerodha connection with MCX enabled.")
         if strat == SENSEX_V45:

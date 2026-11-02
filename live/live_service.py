@@ -1062,6 +1062,9 @@ def open_position_mtm(user_id: str, conn_id: str,
     if get_config(user_id, conn_id, "strategy_version", conn) == "gold_cci_v2":
         from live.gold_v2_runner import open_mtm
         return open_mtm(user_id, conn_id, conn)
+    if get_config(user_id, conn_id, "strategy_version", conn) == "crudem_combo_v1":
+        from live.crudem_live_runner import open_mtm
+        return open_mtm(user_id, conn_id, conn)
     st = get_trade_state(user_id, conn_id, conn=conn)
     if (st.get("position") or "").upper() != "OPEN":
         return {"open": False}
