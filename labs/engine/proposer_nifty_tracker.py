@@ -36,6 +36,7 @@ from config.labs_config import ARCHIVE_DIR, DATA_DIR, SHARED_ARCHIVE_DIR, SHARED
 from labs.engine import proposer_px_tracker as tr
 from labs.engine.charges import round_trip_charges
 from labs.engine.expiry_strangle_tracker import expiry_date_of
+from live.engine import entry_blocks
 from live.engine import proposer_strike as ps
 from market_data.shared_store import load_options_frame
 
@@ -148,6 +149,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     for p in prints:
         by_min.setdefault(p["t"], []).append(p)
 
+    blocks = book.key in tr.ENTRY_BLOCK_BOOKS
+    cpr = entry_blocks.previous_cpr(dday, nifty_bars) if blocks else None
     ratio = nbars[0][1] / sbars[0][1]
     eng = pe.ProposerEngine(_params(day, book, ratio))
     pos, trades, realized, snap, shist = None, [], 0.0, {}, []
@@ -215,6 +218,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot)
             elif fresh and snap:
                 sig = eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot, day_move=move)
+                if blocks and sig.action == "ENTER" and entry_blocks.block_reason(sig.side, spot, now_, cpr, nbars):
+                    sig = pe.Signal("HOLD")
                 if sig.action == "ENTER" and now_.time() < tr.ENTRY_CUTOFF:
                     typ = "CE" if sig.side == "CALL" else "PE"
                     seen = chain[chain["timestamp"] <= t]

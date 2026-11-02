@@ -80,7 +80,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 #   (the print clock follows the version; its prints in live_proposer_prints_3min).
 # v16 (2026-11-02): OI Unwind NIFTY and SENSEX (proposer_oi_unwind_*_v1) - the paper books' break of an unwinding
 #   wall, stop and next-CPR target on ticks, ATM of the next expiry; a v15 runner holds these versions' entries.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v16"
+# v17 (2026-11-02): Nifty Scalper V4 (proposer_nifty_scalper_v4) - V3 with two entry blocks (CPR level within 15 NIFTY
+#   points on the way, doji / hammer / inverted hammer last 1-min candle); a v16 runner holds V4's entries.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v17"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

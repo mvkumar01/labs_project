@@ -38,6 +38,7 @@ from live import live_executor as ex
 from live import live_runner as lr
 from live import live_service as svc
 from live import proposer_sizing as sizing
+from live.engine import entry_blocks as eb
 from live.engine import oi_unwind_engine as oi
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
@@ -88,7 +89,8 @@ SLOW_CYCLE_S = 5.0             # a cycle this long is logged with the time each 
 PRINT_CLOCK_5MIN, PRINT_CLOCK_3MIN = "5min", "3min"
 PRINT_GAP_S = {PRINT_CLOCK_5MIN: PRINT_EVERY_MIN * 60.0, PRINT_CLOCK_3MIN: 180.0}
 PRINTS_TABLE = {PRINT_CLOCK_5MIN: "live_proposer_prints", PRINT_CLOCK_3MIN: "live_proposer_prints_3min"}
-PRINT_CLOCK_BY_VERSION = {pe.STRATEGY_VERSION_NIFTY_SCALPER_V3: PRINT_CLOCK_3MIN}
+PRINT_CLOCK_BY_VERSION = {pe.STRATEGY_VERSION_NIFTY_SCALPER_V3: PRINT_CLOCK_3MIN,
+                          pe.STRATEGY_VERSION_NIFTY_SCALPER_V4: PRINT_CLOCK_3MIN}
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -403,6 +405,60 @@ def entry_bar_index(bars: list[tuple[datetime, float]], entry_time_utc: str | No
         t = t.astimezone(IST).replace(tzinfo=None)
     t = t.replace(second=0, microsecond=0)
     return next((i for i, b in enumerate(bars) if b[0] >= t), len(bars))
+
+
+def nifty_bars(day: str) -> list[tuple]:
+    """Collector NIFTY 1-min bars (t, o, h, l, c) - the paper book's source."""
+    from labs.engine.proposer_nifty_tracker import nifty_bars as read
+    return read(day)
+
+
+def broker_candle(minute: datetime, token: int = NIFTY_I.kite_token) -> tuple | None:
+    """The broker's finished 1-min candle starting at `minute` (o, h, l, c) - the collector's own source - or None."""
+    from auth.session_manager import get_kite
+    try:
+        rows = get_kite().historical_data(token, minute, minute + timedelta(minutes=1), "minute")
+    except Exception as e:
+        log.warning("%s candle read failed: %s", minute.time(), type(e).__name__)
+        return None
+    for c in rows or []:
+        ts = c.get("date")
+        if getattr(ts, "tzinfo", None) is not None:
+            ts = ts.astimezone(IST).replace(tzinfo=None)
+        if ts == minute and float(c.get("close") or 0) > 0:
+            return tuple(float(c[k]) for k in ("open", "high", "low", "close"))
+    return None
+
+
+def entry_block(now: datetime, side: str, spot: float, cache: dict, bars_fn=None, candle_fn=None) -> str | None:
+    """Nifty Scalper V4: why a fresh ENTER is held (live/engine/entry_blocks.py), or None. CPR from the previous
+    session's collector bars (none found: that block passes). The candle is the one that finished at the start of
+    this minute, from the collector's file as the paper book reads it, else the broker's own candle; when neither
+    has it yet the entry is held ("candle_unknown") rather than judged on an older candle."""
+    bars_fn, candle_fn = bars_fn or nifty_bars, candle_fn or broker_candle
+    day = now.date()
+    cpr = cache.get(day)
+    if cpr is None:
+        cpr = eb.previous_cpr(day, bars_fn)
+        if cpr:
+            cache.clear()
+            cache[day] = cpr
+    if eb.cpr_room_blocked(side, spot, cpr):
+        return eb.REASON_CPR
+    minute = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+    if minute.time() < OPEN_BAR:
+        return None
+    try:
+        bars = bars_fn(day.isoformat())
+    except Exception as e:
+        log.warning("NIFTY bars read failed: %s", type(e).__name__)
+        bars = []
+    candle = next((tuple(b[1:5]) for b in bars if b[0].replace(second=0, microsecond=0) == minute), None)
+    if candle is None:
+        candle = candle_fn(minute)
+    if candle is None:
+        return "candle_unknown"
+    return eb.REASON_CANDLE if eb.small_body(*candle) else None
 
 
 def option_chain(day: date, profile: Instrument = SENSEX_I, next_expiry: bool = False) -> pd.DataFrame:
@@ -1033,6 +1089,12 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             move = day_move(session_bars.completed(now), getattr(feed, "open_ref", None))
         sig = pc.engine.evaluate(now, snap, pos, option_ltp=ltp, spot=spot,
                                  closes=closes, entry_idx=entry_idx, day_move=move)
+        if sig.action == "ENTER" and not is_open and strategy in pe.ENTRY_BLOCK_VERSIONS:
+            why = entry_block(now, sig.side, spot, ctx.setdefault("entry_block_cpr", {}))
+            if why:
+                log.info("entry held (%s): print %s %s %s, NIFTY %.2f | conn=%s", why, snap.get("x5_asof"),
+                         snap.get("x5"), sig.side, spot, conn_id)
+                sig = pe.Signal("HOLD", reason=why)
         if sig.reason in ("against_the_day", "day_move_unknown"):
             log.info("entry held (%s): print %s %s, day move %s pts, needs %s with the trade", sig.reason,
                      snap.get("x5_asof"), snap.get("x5"), None if move is None else round(move, 1),

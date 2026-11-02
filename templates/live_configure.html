@@ -98,7 +98,7 @@
           </select>
           <div class="hint">Only for Sensex V4 / V5. Everything else is the same: entries only with the day, Sentinel's strike, 270 s wait after an exit. The 150-point floor exits once SENSEX is 150 points against the entry spot and has no premium floor; 150 was picked in-sample (paper books Sensex V4 and V5).</div>
         </div>
-        <div class="field" id="v45-target-field" {{ '' if strategy in (v45_preset, 'nifty_scalper_v1', 'nifty_scalper_v3') else 'hidden' }}>
+        <div class="field" id="v45-target-field" {{ '' if strategy in (v45_preset, 'nifty_scalper_v1', 'nifty_scalper_v3', 'nifty_scalper_v4') else 'hidden' }}>
           <label for="day_target">Day target (Sensex V4 / V5 or Nifty Scalper V1 / V3)</label>
           {% set preset_target = v45_day_target in v45_day_targets %}
           <select id="day_target" name="day_target">
@@ -132,8 +132,8 @@
             sizingMode.addEventListener('change', updateSizing);
             s.addEventListener('change', () => {
               f.hidden = s.value !== '{{ v45_preset }}';
-              g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1', 'nifty_scalper_v3'].includes(s.value);
-              d.value = ['nifty_scalper_v1', 'nifty_scalper_v3'].includes(s.value) ? '1.5' : '3.5';
+              g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1', 'nifty_scalper_v3', 'nifty_scalper_v4'].includes(s.value);
+              d.value = ['nifty_scalper_v1', 'nifty_scalper_v3', 'nifty_scalper_v4'].includes(s.value) ? '1.5' : '3.5';
               c.hidden = true;
               updateSizing();
             });

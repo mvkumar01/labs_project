@@ -564,6 +564,7 @@ STRATEGY_PRESETS = {
     "proposer_sensex_v45": ("proposer", "proposer_dt35_v3"),
     "nifty_scalper_v1": ("proposer", "proposer_nifty_scalper_v1"),
     "nifty_scalper_v3": ("proposer", "proposer_nifty_scalper_v3"),
+    "nifty_scalper_v4": ("proposer", "proposer_nifty_scalper_v4"),
     # One index per connection (live/engine/oi_unwind_engine.py).
     "oi_unwind_nifty": ("proposer", pe.STRATEGY_VERSION_OI_UNWIND_NIFTY),
     "oi_unwind_sensex": ("proposer", pe.STRATEGY_VERSION_OI_UNWIND_SENSEX),
@@ -592,10 +593,11 @@ STRATEGY_LABELS = {
                            "loss floor and day target chosen below)",
     "nifty_scalper_v1": "Nifty Scalper V1 (Sensex V5 signals on NIFTY options; 1.5% day target)",
     "nifty_scalper_v3": "Nifty Scalper V3 (V1 with the predictor printing every 3 min; 1.5% day target)",
+    "nifty_scalper_v4": "Nifty Scalper V4 (V3 with no entry near a CPR level or after a doji / hammer candle; 1.5% day target)",
     "oi_unwind_nifty": "OI Unwind NIFTY (5-min close through an unwinding wall; stop 30, next CPR; ATM next expiry)",
     "oi_unwind_sensex": "OI Unwind SENSEX (5-min close through an unwinding wall; stop 97.2, next CPR; ATM next expiry)",
 }
-NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3")
+NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3", "nifty_scalper_v4")
 
 
 # Day-target choices for Sensex V4 / V5 (percent; "other" = typed in). Stored per connection in
