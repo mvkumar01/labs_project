@@ -256,6 +256,7 @@ def register():
     # Fails closed: with no code configured, registration is disabled entirely.
     open_reg = registration_open()
     if request.method == "GET":
+        session.permanent = True        # the token's cookie survives the phone closing the browser (30 min)
         return render_template("live_register.html", csrf_token=issue_csrf(),
                                registration_open=open_reg,
                                error=request.args.get("error"))
@@ -304,6 +305,7 @@ def register():
 def login():
     svc.ensure_schema()
     if request.method == "GET":
+        session.permanent = True        # the token's cookie survives the phone closing the browser (30 min)
         return render_template("live_login.html", csrf_token=issue_csrf(),
                                error=request.args.get("error"))
     if not _csrf_ok():

@@ -36,5 +36,9 @@
   </div>
 </div>
 <div style="position:fixed;top:12px;right:12px">{{ theme_toggle() }}</div>
+<script>
+  // A page restored from the back/forward cache carries an old CSRF token: load it afresh.
+  window.addEventListener('pageshow', function (e) { if (e.persisted) window.location.reload(); });
+</script>
 </body>
 </html>

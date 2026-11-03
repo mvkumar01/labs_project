@@ -126,6 +126,14 @@ def register_auth_gate(app) -> None:
         app.config["SESSION_COOKIE_SECURE"] = True
     app.permanent_session_lifetime = timedelta(minutes=30)
 
+    @app.after_request
+    def _no_store_auth_pages(response):
+        # A phone restores a closed tab from its cache with the old CSRF token while its cookie is gone, so the
+        # login failed with "Session expired" (2026-11-03). no-store makes the restore fetch a fresh page.
+        if (request.path or "").startswith(("/live/login", "/live/register")):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.before_request
     def _live_auth_gate():
         path = request.path or ""
