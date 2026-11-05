@@ -126,7 +126,7 @@
     if (!tb) return;
     tb.innerHTML = "";
     if (!orders || !orders.length) {
-      tb.innerHTML = '<tr><td colspan="7" style="color:var(--c-64748b)">No orders yet.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="8" style="color:var(--c-64748b)">No orders yet.</td></tr>';
       return;
     }
     orders.forEach(function (o) {
@@ -146,7 +146,9 @@
         "<td>" + (o.qty || 0) + "</td>" +
         "<td>" + (o.status || "") + "</td>" +
         pnlCell +
+        '<td class="strategy-cell"></td>' +
         "<td>" + tag + "</td>";
+      tr.querySelector(".strategy-cell").textContent = o.strategy_name || o.strategy_version || "";
       tb.appendChild(tr);
     });
   }
@@ -172,7 +174,7 @@
       addCell(tr, t.charges_total === null || t.charges_total === undefined ? "--" : fmtMoney(t.charges_total));
       addCell(tr, fmtRs(t.pnl), Number(t.pnl || 0) >= 0 ? "pos" : "neg");
       addCell(tr, t.reason || "");
-      addCell(tr, t.strategy || "");
+      addCell(tr, t.strategy_name || t.strategy || "");
 
       var td = document.createElement("td");
       td.innerHTML = t.dry_run

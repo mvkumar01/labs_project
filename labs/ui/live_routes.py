@@ -602,6 +602,27 @@ STRATEGY_LABELS = {
 NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3", "nifty_scalper_v4")
 
 
+def _short_label(label: str) -> str:
+    """"Nifty Scalper V4 (V3 with ...)" -> "Nifty Scalper V4"; a short qualifier such as "(legacy)" stays."""
+    head, _, rest = label.partition(" (")
+    return label if rest and len(rest) <= 16 else head
+
+
+# Stored strategy version -> the name shown in the order and trade tables (Vipin, 2026-11-05).
+STRATEGY_NAMES = {version: _short_label(STRATEGY_LABELS.get(preset, preset))
+                  for preset, (_, version) in STRATEGY_PRESETS.items()}
+STRATEGY_NAMES.update({"proposer_dt35_v3": "Sensex V4", "proposer_dt35_v5": "Sensex V5"})
+
+
+def strategy_name(version) -> str:
+    """Display name of a stored strategy version; the version itself when no preset names it."""
+    return STRATEGY_NAMES.get(str(version or ""), str(version or ""))
+
+
+def _named(rows: list, key: str) -> list:
+    return [dict(r, strategy_name=strategy_name(r.get(key))) for r in rows]
+
+
 # Day-target choices for Sensex V4 / V5 (percent; "other" = typed in). Stored per connection in
 # proposer_day_target_pct; blank = the preset's 3.5%.
 V45_DAY_TARGETS = {"3.5": "3.5% (Sensex preset)", "2.5": "2.5% (as Pramanaa's 2.5% accounts)",
@@ -972,7 +993,7 @@ def status():
         "funds_available": connection.get("funds_available"),
         "funds_updated_at": connection.get("funds_updated_at"),
         "funds_error": connection.get("funds_error"),
-        "last_orders": svc.recent_orders(user_id, conn_id, limit=20),
+        "last_orders": _named(svc.recent_orders(user_id, conn_id, limit=20), "strategy_version"),
         "trade_date": trades.get("trade_date"),
         "date_from": trades["date_from"],
         "date_to": trades["date_to"],
@@ -982,7 +1003,7 @@ def status():
         "live_count": trades["live_count"],
         "dry_pnl": trades["dry_pnl"],
         "dry_count": trades["dry_count"],
-        "trades": trades["trades"],
+        "trades": _named(trades["trades"], "strategy"),
         "by_strategy": trades["by_strategy"],
         "strategy": _current_strategy_preset(user_id, conn_id),
         "open_mtm": open_mtm,
