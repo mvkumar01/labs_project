@@ -84,7 +84,7 @@ def test_v4_is_v3_with_the_blocks_and_no_recovery_mode():
     assert pr.print_clock_for(V4) == pr.PRINT_CLOCK_3MIN and ex.is_proposer_strategy(V4)
     assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v17"
     assert tr.NIFTY_V4.key in tr.NIFTY_BOOKS and tr.NIFTY_V4.key in tr.DELTA_STRIKE_BOOKS
-    assert tr.ENTRY_BLOCK_BOOKS == {tr.NIFTY_V4.key} and tr.NIFTY_V4.print_gap_s == tr.NIFTY_V3.print_gap_s
+    assert tr.NIFTY_V4.key in tr.ENTRY_BLOCK_BOOKS and tr.NIFTY_V4.print_gap_s == tr.NIFTY_V3.print_gap_s
     assert tr.params_on("2026-10-20", tr.NIFTY_V4) == replace(tr.params_on("2026-10-20", tr.NIFTY_V3),
                                                               bank_regardless_of_book=True)
 

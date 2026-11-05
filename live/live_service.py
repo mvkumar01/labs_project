@@ -1009,6 +1009,23 @@ def trade_history(user_id: str, conn_id: str, trade_date: str = None,
             conn.close()
 
 
+def proposer_day_trades(user_id: str, conn_id: str, trade_date: str, dry_run: bool,
+                        conn: sqlite3.Connection = None) -> list:
+    """One connection's closed Proposer trades whose exit falls on `trade_date` (IST), oldest first - the day book
+    the Proposer runner banks on (proposer_runner._today_trades)."""
+    own = conn is None
+    if own:
+        conn = get_live_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM live_trades WHERE user_id=? AND conn_id=? AND dry_run=? "
+            "AND strategy LIKE 'proposer%' ORDER BY exit_time", (user_id, conn_id, int(dry_run))).fetchall()
+        return [dict(r) for r in rows if _parse_iso_to_ist_date(dict(r).get("exit_time")) == trade_date]
+    finally:
+        if own:
+            conn.close()
+
+
 def _parse_iso_to_ist_date(value: str | None) -> str | None:
     if not value:
         return None

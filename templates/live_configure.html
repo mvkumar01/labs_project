@@ -99,10 +99,11 @@
           <div class="hint">Only for Sensex V4 / V5. Everything else is the same: entries only with the day, Sentinel's strike, 270 s wait after an exit. The 150-point floor exits once SENSEX is 150 points against the entry spot and has no premium floor; 150 was picked in-sample (paper books Sensex V4 and V5).</div>
         </div>
         <div class="field" id="v45-target-field" {{ '' if strategy in (v45_preset, 'nifty_scalper_v1', 'nifty_scalper_v3', 'nifty_scalper_v4') else 'hidden' }}>
-          <label for="day_target">Day target (Sensex V4 / V5 or Nifty Scalper V1 / V3)</label>
-          {% set preset_target = v45_day_target in v45_day_targets %}
+          <label for="day_target">Day target (Sensex V4 / V5 or Nifty Scalper V1 / V3 / V4)</label>
+          {% set target_choices = v4_day_targets if strategy == 'nifty_scalper_v4' else v45_day_targets %}
+          {% set preset_target = v45_day_target in target_choices %}
           <select id="day_target" name="day_target">
-            {% for key, label in v45_day_targets.items() %}
+            {% for key, label in target_choices.items() %}
             <option value="{{ key }}" {{ 'selected' if v45_day_target == key else '' }}>{{ label }}</option>
             {% endfor %}
             <option value="other" {{ '' if preset_target else 'selected' }}>Other (type it in)</option>
@@ -110,7 +111,7 @@
           <input type="number" id="day_target_custom" name="day_target_custom" step="0.1"
                  min="{{ v45_day_target_bounds[0] }}" max="{{ v45_day_target_bounds[1] }}" placeholder="e.g. 3.0"
                  value="{{ '' if preset_target else v45_day_target }}" {{ '' if not preset_target else 'hidden' }}>
-          <div class="hint">The bot stops for the day once today's realized profit plus the open trade reaches this share of the trade's entry capital (premium x quantity). Typed values: a percent between {{ v45_day_target_bounds[0] }} and {{ v45_day_target_bounds[1] }}. Nifty Scalper V1 defaults to 1.5%; only 1.5% has been backtested on NIFTY. Sensex 2.5% and 3.5% have paper books. Change it only while flat.</div>
+          <div class="hint">The bot stops for the day once today's realized profit plus the open trade reaches this share of the trade's entry capital (premium x quantity). Typed values: a percent between {{ v45_day_target_bounds[0] }} and {{ v45_day_target_bounds[1] }}. Nifty Scalper V1 / V3 default to 1.5%; only 1.5% has been backtested on them. Nifty Scalper V4 defaults to 1.5% and banks at the chosen target whatever the running book; 1.5% and 2.5% have V4 paper books, 2% and 3% were only backtested (in-sample). Sensex 2.5% and 3.5% have paper books. Change it only while flat.</div>
         </div>
         <script>
           (function () {
@@ -132,11 +133,22 @@
             sizingMode.addEventListener('change', updateSizing);
             s.addEventListener('change', () => {
               f.hidden = s.value !== '{{ v45_preset }}';
+              fillTargets(s.value === 'nifty_scalper_v4');
               g.hidden = !['{{ v45_preset }}', 'nifty_scalper_v1', 'nifty_scalper_v3', 'nifty_scalper_v4'].includes(s.value);
               d.value = ['nifty_scalper_v1', 'nifty_scalper_v3', 'nifty_scalper_v4'].includes(s.value) ? '1.5' : '3.5';
               c.hidden = true;
               updateSizing();
             });
+            const choices = {v4: {{ v4_day_targets|tojson }}, other: {{ v45_day_targets|tojson }}};
+            const fillTargets = (v4) => {
+              const keep = d.querySelector('option[value="other"]');
+              d.querySelectorAll('option:not([value="other"])').forEach((o) => o.remove());
+              Object.entries(v4 ? choices.v4 : choices.other).forEach(([key, label]) => {
+                const o = document.createElement('option');
+                o.value = key; o.textContent = label;
+                d.insertBefore(o, keep);
+              });
+            };
             d.addEventListener('change', () => { c.hidden = d.value !== 'other'; if (!c.hidden) c.focus(); });
           })();
         </script>

@@ -137,10 +137,13 @@ NIFTY_V3_PCLOCK = Book("proposer_nifty_v3_pclock", pe.STRATEGY_VERSION_V5, PRAMA
 # Nifty Scalper V4: V3 with the entry blocks of live/engine/entry_blocks.py - the live preset proposer_nifty_scalper_v4
 # (Vipin, 2026-11-02).
 NIFTY_V4 = Book("proposer_nifty_v4", pe.STRATEGY_VERSION_V5, 180.0)
-NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key})
-ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key})
+# Nifty Scalper V4 2.5%: the same book with the day target at 2.5% - the live preset with 2.5% chosen on the
+# configure page (alphaIMB v4_tail_risk.py round 4; Vipin, 2026-11-05).
+NIFTY_V4_DT25 = Book("proposer_nifty_v4_dt25", pe.STRATEGY_VERSION_V5, 180.0)
+NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key, NIFTY_V4_DT25.key})
+ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
 # Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
-BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key})
+BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
 
 
 # ------------------------------------------------------------------ schema ---
@@ -265,10 +268,12 @@ COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
 SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01", "proposer_v6_dt25": "2026-07-01",
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
-                 "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01"}
+                 "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01",
+                 "proposer_nifty_v4_dt25": "2026-07-01"}
 # Books whose day target differs from their live preset's.
 DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
-                  "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015}
+                  "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015,
+                  "proposer_nifty_v4_dt25": 0.025}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
 # switched off (as in the research run: -99.9%).
@@ -309,7 +314,8 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
                                 "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_nifty_v5",
-                                "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4"})
+                                "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4",
+                                "proposer_nifty_v4_dt25"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,

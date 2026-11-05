@@ -64,6 +64,7 @@ for _key in ('proposer_px', 'proposer_v3', 'proposer_v3_dt35', 'proposer_v4',
 SOURCES['proposer_v6_dt25'] = Source('proposer_v6_dt25_trades', 'SENSEX', 2000)
 NIFTY_SCALPER_KEYS = ('proposer_nifty_v5', 'proposer_nifty_v3', 'proposer_nifty_v3_pclock')
 NIFTY_SCALPER_KEYS += ('proposer_nifty_v4',)
+NIFTY_SCALPER_KEYS += ('proposer_nifty_v4_dt25',)
 for _key in NIFTY_SCALPER_KEYS:
     SOURCES[_key] = Source(_key + '_trades', 'NIFTY')
 SOURCES['bn_alpha'] = Source('bn_alpha_trades', 'BANKNIFTY', 30)

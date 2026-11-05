@@ -253,6 +253,23 @@
     setText("open-mtm-updated", mtm.latest_time ? "updated " + fmtTime(mtm.latest_time) : "");
   }
 
+  function applyDayTarget(s) {
+    var card = document.getElementById("day-target-card");
+    var t = s.day_target;
+    if (!card) return;
+    card.hidden = !t;
+    if (!t) return;
+    setText("day-target-sub", t.strategy + " (" + t.mode + ")" +
+      (t.bank_regardless_of_book ? " - banks at the target whatever the running book" : ""));
+    setText("day-target-pct", t.pct + "%");
+    setText("day-target-rs", t.target_rs === null ? "set at the first entry" : fmtRs(t.target_rs));
+    setText("day-target-capital", t.capital_rs === null ? "--" : fmtMoney(t.capital_rs));
+    setText("day-target-realized", fmtRs(t.realized_rs), Number(t.realized_rs || 0) >= 0 ? "pos" : "neg");
+    setText("day-target-trades", String(t.trades || 0));
+    setText("day-target-state", t.banked ? "Banked" : "Not banked", "v " + (t.banked ? "pos" : ""));
+    setText("day-target-note", t.banked ? "no new entries today" : "trading");
+  }
+
   function refreshStatus() {
     fetch(statusUrl(), { headers: { "Accept": "application/json" } })
       .then(function (r) { return r.json(); })
@@ -290,6 +307,7 @@
         renderOrders(s.last_orders);
         applyTradeHistory(s);
         applyOpenMtm(s);
+        applyDayTarget(s);
       })
       .catch(function () { /* transient; next poll retries */ });
   }

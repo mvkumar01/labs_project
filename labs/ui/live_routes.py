@@ -619,6 +619,29 @@ def strategy_name(version) -> str:
     return STRATEGY_NAMES.get(str(version or ""), str(version or ""))
 
 
+def _day_target_status(user_id: str, conn_id: str) -> dict | None:
+    """The Proposer day target as the runner sees it, for presets with a day-target choice: today's share and rupee
+    target (on the latest entry's capital, as the engine measures it), today's realized gross and whether the day has
+    banked. None for other strategies."""
+    version = svc.get_config(user_id, conn_id, "strategy_version")
+    if version not in pe.DAY_TARGET_VERSIONS:
+        return None
+    params = pe.params_for(version, pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct")))
+    dry = svc.get_mode(user_id, conn_id) == "DRY_RUN"
+    today = svc._parse_iso_to_ist_date(datetime.now(timezone.utc).isoformat())
+    trades = svc.proposer_day_trades(user_id, conn_id, today, dry)
+    st = svc.get_trade_state(user_id, conn_id)
+    if (st.get("position") or "").upper() == "OPEN" and bool(int(st.get("virtual") or 0)) == dry:
+        capital = float(st.get("entry_price") or 0) * int(st.get("qty") or 0)
+    else:
+        capital = float(trades[-1].get("entry_price") or 0) * int(trades[-1].get("qty") or 0) if trades else 0.0
+    return {"strategy": strategy_name(version), "pct": round(params.daily_target_pct * 100, 4),
+            "capital_rs": capital or None, "target_rs": params.daily_target_pct * capital if capital else None,
+            "realized_rs": sum(float(t.get("gross_pnl") or 0) for t in trades), "trades": len(trades),
+            "banked": any(t.get("reason") == "daily_target" for t in trades),
+            "bank_regardless_of_book": params.bank_regardless_of_book, "mode": "DRY" if dry else "LIVE"}
+
+
 def _named(rows: list, key: str) -> list:
     return [dict(r, strategy_name=strategy_name(r.get(key))) for r in rows]
 
@@ -628,6 +651,10 @@ def _named(rows: list, key: str) -> list:
 V45_DAY_TARGETS = {"3.5": "3.5% (Sensex preset)", "2.5": "2.5% (as Pramanaa's 2.5% accounts)",
                    "1.5": "1.5% (tested on NIFTY)"}
 V45_DEFAULT_DAY_TARGET = "3.5"
+# Nifty Scalper V4's choices (default 1.5%); the day banks whatever the book at each of them. Research 1 Jul - 30 Oct,
+# 1-min simulator: 1.5% +10.90L, 2% +10.37L, 2.5% +14.82L, 3% +8.65L (alphaIMB v4_tail_risk.py round 4; Vipin, 2026-11-05).
+V4_DAY_TARGETS = {"1.5": "1.5% (V4 preset; paper book Nifty Scalper V4)", "2": "2%",
+                  "2.5": "2.5% (paper book Nifty Scalper V4 2.5%)", "3": "3%"}
 
 
 def _v45_day_target(user_id: str, conn_id: str) -> str:
@@ -699,6 +726,7 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         v45_floors={k: label for k, (_, label) in SENSEX_V45_FLOORS.items()},
         v45_floor=_v45_floor(svc.get_config(user_id, conn_id, "strategy_version")),
         v45_day_targets=V45_DAY_TARGETS,
+        v4_day_targets=V4_DAY_TARGETS,
         v45_day_target=_v45_day_target(user_id, conn_id),
         v45_day_target_bounds=(pe.DAY_TARGET_MIN_PCT, pe.DAY_TARGET_MAX_PCT),
         proposer_presets=[k for k, pair in STRATEGY_PRESETS.items() if pair[0] == "proposer"],
@@ -742,7 +770,7 @@ def configure():
                         f"Day target {str(typed or '').strip() or '(blank)'} is not a percent between "
                         f"{pe.DAY_TARGET_MIN_PCT:g} and {pe.DAY_TARGET_MAX_PCT:g}. Nothing was changed."))
                 day_target = f"{parsed * 100:g}"
-            elif choice in V45_DAY_TARGETS:
+            elif choice in V45_DAY_TARGETS or choice in V4_DAY_TARGETS:
                 day_target = choice
             else:
                 day_target = ("1.5" if strat in NIFTY_SCALPER_PRESETS and
@@ -994,6 +1022,7 @@ def status():
         "funds_updated_at": connection.get("funds_updated_at"),
         "funds_error": connection.get("funds_error"),
         "last_orders": _named(svc.recent_orders(user_id, conn_id, limit=20), "strategy_version"),
+        "day_target": _day_target_status(user_id, conn_id),
         "trade_date": trades.get("trade_date"),
         "date_from": trades["date_from"],
         "date_to": trades["date_to"],

@@ -60,6 +60,7 @@ def main() -> None:
     from labs.engine.proposer_nifty_v3_book import run_day as run_proposer_nifty_v3_day
     from labs.engine.proposer_nifty_v3_pclock_book import run_day as run_proposer_nifty_v3_pclock_day
     from labs.engine.proposer_nifty_v4_book import run_day as run_proposer_nifty_v4_day
+    from labs.engine.proposer_nifty_v4_dt25_book import run_day as run_proposer_nifty_v4_dt25_day
     from labs.engine.proposer_v3_dt35_clock_book import run_day as run_proposer_v3_dt35_clock_day
     from labs.engine.nifty_expiry_sale_tracker import run_day as run_nifty_expiry_sale_day
     from labs.engine.expiry_strangle_tracker import run_day as run_expiry_strangle_day
@@ -103,6 +104,7 @@ def main() -> None:
         "proposer_nifty_v3": None,
         "proposer_nifty_v3_pclock": None,
         "proposer_nifty_v4": None,
+        "proposer_nifty_v4_dt25": None,
         "proposer_v3_dt35_clock": None,
         "nifty_expiry_sale": None,
         "expiry_strangle": None,
@@ -148,6 +150,7 @@ def main() -> None:
                 ("proposer_nifty_v3", run_proposer_nifty_v3_day),
                 ("proposer_nifty_v3_pclock", run_proposer_nifty_v3_pclock_day),
                 ("proposer_nifty_v4", run_proposer_nifty_v4_day),
+                ("proposer_nifty_v4_dt25", run_proposer_nifty_v4_dt25_day),
                 ("proposer_v3_dt35_clock", run_proposer_v3_dt35_clock_day),
                 ("nifty_expiry_sale", run_nifty_expiry_sale_day),
                 ("expiry_strangle", run_expiry_strangle_day),
