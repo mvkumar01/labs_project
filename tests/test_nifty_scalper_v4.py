@@ -3,6 +3,7 @@ or DRY_RUN."""
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -74,15 +75,18 @@ def test_previous_cpr_is_the_last_session_before_the_day():
     assert eb.previous_cpr(date(2026, 11, 2), lambda d: []) is None
 
 
-def test_v4_is_v3_with_the_blocks():
-    assert pe.params_for(V4) == pe.params_for(V3) and pe.params_for(V4, .02) == pe.params_for(V3, .02)
+def test_v4_is_v3_with_the_blocks_and_no_recovery_mode():
+    assert pe.params_for(V4) == replace(pe.params_for(V3), bank_regardless_of_book=True)
+    assert pe.params_for(V4, .02) == replace(pe.params_for(V3, .02), bank_regardless_of_book=True)
+    assert pe.params_for(V4).bank_regardless_of_book and not pe.params_for(V3).bank_regardless_of_book
     assert V4 in pe.KNOWN_VERSIONS and V4 in pe.DAY_TARGET_VERSIONS and V4 in pe.NIFTY_SCALPER_VERSIONS
     assert pe.ENTRY_BLOCK_VERSIONS == {V4} and pr.instrument_for(V4) is pr.NIFTY_I
     assert pr.print_clock_for(V4) == pr.PRINT_CLOCK_3MIN and ex.is_proposer_strategy(V4)
     assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v17"
     assert tr.NIFTY_V4.key in tr.NIFTY_BOOKS and tr.NIFTY_V4.key in tr.DELTA_STRIKE_BOOKS
     assert tr.ENTRY_BLOCK_BOOKS == {tr.NIFTY_V4.key} and tr.NIFTY_V4.print_gap_s == tr.NIFTY_V3.print_gap_s
-    assert tr.params_on("2026-10-20", tr.NIFTY_V4) == tr.params_on("2026-10-20", tr.NIFTY_V3)
+    assert tr.params_on("2026-10-20", tr.NIFTY_V4) == replace(tr.params_on("2026-10-20", tr.NIFTY_V3),
+                                                              bank_regardless_of_book=True)
 
 
 def _v4(monkeypatch, candle=PLAIN, file_has_it=True, broker=None, cpr=None):
@@ -166,3 +170,42 @@ def test_configure_offers_v4_and_its_orders_need_a_v17_runner(client):       # n
     assert _strategy_pair() == ("proposer", V4)
     assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "1.5"
     assert ex.expected_decision_abi(V4) == "proposer-dt25-live-v17"      # a v16 runner's heartbeat does not match
+
+
+# ─────────────────────────────────────── V4 banks the day target whatever the book (2026-11-05) ──
+T_BANK = datetime(2026, 11, 5, 10, 0)
+
+
+def _print(asof, x5="strong_bull"):
+    return {"regime": "neutral", "x5": x5, "x5_conf": 0.6, "x5_asof": asof.isoformat()}
+
+
+@pytest.mark.parametrize("bank_regardless,banks", [(True, True), (False, False)])
+def test_day_target_with_the_book_under_water(bank_regardless, banks):
+    e = pe.ProposerEngine(pe.ProposerParams(daily_target_pct=0.025, bank_regardless_of_book=bank_regardless))
+    held = pe.Position(side="CE", entry_price=400, qty=20, entry_spot=74000)     # target 2.5% of 8,000 = Rs 200
+    e.set_book(day_realized=0.0, book_net=-200_000.0)
+    sig = e.evaluate(T_BANK, _print(T_BANK), held, option_ltp=410, spot=74010)   # +Rs 200 unrealised
+    assert (sig.reason == "daily_target") is banks
+    e.set_book(day_realized=200.0, book_net=-199_800.0)                         # the exit booked the target
+    e.evaluate(T_BANK + timedelta(seconds=2), _print(T_BANK), pe.Position(), option_ltp=None, spot=1)
+    assert e.banked() is banks
+    t1 = T_BANK + timedelta(minutes=10)
+    nxt = e.evaluate(t1, _print(t1), pe.Position(), option_ltp=None, spot=1)
+    assert (nxt.reason == "day_target_banked") is banks and (nxt.action == "ENTER") is not banks
+
+
+def test_fresh_book_banks_either_way():
+    for flag in (True, False):
+        e = pe.ProposerEngine(pe.ProposerParams(daily_target_pct=0.025, bank_regardless_of_book=flag))
+        e.set_book(day_realized=0.0, book_net=0.0)
+        held = pe.Position(side="CE", entry_price=400, qty=20, entry_spot=74000)
+        assert e.evaluate(T_BANK, _print(T_BANK), held, option_ltp=410, spot=74010).reason == "daily_target"
+
+
+def test_only_v4_skips_recovery_mode():
+    on = {v for v in pe.KNOWN_VERSIONS if pe.params_for(v).bank_regardless_of_book}
+    assert on == {V4}
+    assert tr.params_on("2026-11-05", tr.NIFTY_V4).bank_regardless_of_book
+    assert not any(tr.params_on("2026-11-05", b).bank_regardless_of_book
+                   for b in (tr.NIFTY_V3, tr.NIFTY_V5, tr.V5_DT25, tr.V6_DT25))

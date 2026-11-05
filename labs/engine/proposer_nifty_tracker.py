@@ -210,8 +210,9 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                     if sig.action == "EXIT":
                         mark = ltp if ltp else pos["last"]
                         if sig.reason == "daily_target":
-                            need = max(eng.params.daily_target_pct * pos["ein"] * pos["qty"] - realized,
-                                       -(book_before + realized))
+                            need = eng.params.daily_target_pct * pos["ein"] * pos["qty"] - realized
+                            if not eng.params.bank_regardless_of_book:     # recovery mode: the fill must also clear the book
+                                need = max(need, -(book_before + realized))
                             mark = min(mark, pos["ein"] + need / pos["qty"])
                         close(now_, mark - pos["half"], spot, sig.reason)
                         book_state()

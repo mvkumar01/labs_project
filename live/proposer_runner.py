@@ -1017,10 +1017,11 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         elif scaled:
             log.warning("NIFTY entries held: 09:15 opening ratio is unavailable conn=%s day=%s", conn_id, trade_date)
         log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
-                 "loss_floor=%s spot_floor_pts=%s day_target=%s print_clock=%s", conn_id,
+                 "loss_floor=%s spot_floor_pts=%s day_target=%s bank_regardless_of_book=%s print_clock=%s", conn_id,
                  strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
                  pc.engine.params.with_day_pts or "off", pc.engine.params.loss_floor_pct,
-                 pc.engine.params.spot_floor_pts or "off", pc.engine.params.daily_target_pct, print_clock)
+                 pc.engine.params.spot_floor_pts or "off", pc.engine.params.daily_target_pct,
+                 pc.engine.params.bank_regardless_of_book, print_clock)
     pc.ensure_session(trade_date, dry_run, feed, now)
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)

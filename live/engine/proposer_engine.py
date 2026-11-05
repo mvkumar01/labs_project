@@ -101,6 +101,12 @@ class ProposerParams:
     reentry_cooldown_secs: float = 300.0
     daily_target_pct: float = 0.025
     recovery_min_book_net: float = 0.0
+    # True: the day banks at the day target whatever the connection's lifetime Proposer book (no recovery
+    # mode). False reproduces Pramanaa: while the book is below recovery_min_book_net the day never banks and
+    # the bot trades all session. Replay of Nifty Scalper V4, 1 Jul - 30 Oct 2026, from a book of -2L: recovery
+    # mode -33.18L (329 trades, worst day -9.05L); banking regardless +10.90L (88 trades, worst day -0.21L), the
+    # same as a fresh book (alphaIMB v4_tail_risk.py; Vipin, 2026-11-05).
+    bank_regardless_of_book: bool = False
     predictor_max_age_secs: float = 600.0
     confirm_bank_on_realized: bool = True
     confirm_bank_tolerance: float = 0.10
@@ -151,8 +157,11 @@ def params_for(strategy_version: Optional[str], day_target_pct: Optional[float] 
 
 
 def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
-    if str(strategy_version or "") in (STRATEGY_VERSION_NIFTY_SCALPER_V3, STRATEGY_VERSION_NIFTY_SCALPER_V4):
-        return _preset_params(STRATEGY_VERSION_NIFTY_SCALPER_V1)       # only the print clock (and V4's blocks) differ
+    if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V4:
+        # V3's rules plus the entry blocks, and the day banks whatever the book (no recovery mode).
+        return replace(_preset_params(STRATEGY_VERSION_NIFTY_SCALPER_V1), bank_regardless_of_book=True)
+    if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V3:
+        return _preset_params(STRATEGY_VERSION_NIFTY_SCALPER_V1)       # only the print clock differs
     if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V1:
         # Approved 2026-10-21 after the re-entry-loop replay (plan section 8).
         return replace(_preset_params(STRATEGY_VERSION_V5), daily_target_pct=0.015,
@@ -315,7 +324,8 @@ class ProposerEngine:
             return True
         return (self.last_entry_capital > 0
                 and self.day_real >= self.params.daily_target_pct * self.last_entry_capital
-                and self.book_net >= self.params.recovery_min_book_net)
+                and (self.params.bank_regardless_of_book
+                     or self.book_net >= self.params.recovery_min_book_net))
 
     def _confirm_bank(self) -> None:
         if not (self.params.confirm_bank_on_realized and self.day_done and self.day_real_at_latch is not None):
@@ -398,7 +408,8 @@ class ProposerEngine:
             target_rs = self.params.daily_target_pct * self.last_entry_capital
             unreal = (float(ltp) - float(pos.entry_price)) * pos.qty
             if (self.day_real + unreal >= target_rs
-                    and self.book_net + unreal >= self.params.recovery_min_book_net):
+                    and (self.params.bank_regardless_of_book
+                         or self.book_net + unreal >= self.params.recovery_min_book_net)):
                 self.day_done = True
                 self.skip_cd_arm = False
                 if self.params.confirm_bank_on_realized:

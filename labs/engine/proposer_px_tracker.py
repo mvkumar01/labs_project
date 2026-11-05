@@ -139,6 +139,8 @@ NIFTY_V3_PCLOCK = Book("proposer_nifty_v3_pclock", pe.STRATEGY_VERSION_V5, PRAMA
 NIFTY_V4 = Book("proposer_nifty_v4", pe.STRATEGY_VERSION_V5, 180.0)
 NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key})
 ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key})
+# Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
+BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key})
 
 
 # ------------------------------------------------------------------ schema ---
@@ -287,6 +289,8 @@ def params_on(day: str, book) -> "pe.ProposerParams":
         params = dataclasses.replace(params, loss_floor_pct=NO_PREMIUM_FLOOR)
     if book.key in DAY_TARGET_PCT:
         params = dataclasses.replace(params, daily_target_pct=DAY_TARGET_PCT[book.key])
+    if book.key in BANK_REGARDLESS_BOOKS:
+        params = dataclasses.replace(params, bank_regardless_of_book=True)
     return params
 
 
@@ -547,8 +551,9 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         if sig.reason == "daily_target":
                             # the bank fires at its threshold; a jump past it at a re-anchor happened
                             # somewhere inside the previous minute, so fill at the threshold
-                            need = max(eng.params.daily_target_pct * pos["ein"] * QTY - realized,
-                                       -(book_before + realized))
+                            need = eng.params.daily_target_pct * pos["ein"] * QTY - realized
+                            if not eng.params.bank_regardless_of_book:     # recovery mode: the fill must also clear the book
+                                need = max(need, -(book_before + realized))
                             mark = min(mark, pos["ein"] + need / QTY)
                         close(now_, mark - pos["half"], spot, sig.reason)
                         book_state()
