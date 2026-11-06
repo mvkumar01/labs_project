@@ -49,6 +49,14 @@
         <span class="muted">Latest {{ proposer_nifty_v4_stats.latest.trade_date }}: {{ proposer_nifty_v4_stats.latest.status }}, through {{ (proposer_nifty_v4_stats.latest.through_ts or '')[11:16] }}</span>
       </div>
 
+      {% set rs = proposer_nifty_v4_stats.replay_split %}{% if rs %}
+      <p class="note">Replay: from {{ rs.tick_from }} each session is replayed after the close on the recorded NIFTY
+        index and option ticks (entries at the ask, exits at the bid, {{ "%.0f"|format(rs.latency_s) }} s after the
+        signal) - {{ rs.tick_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.tick_net) }}. Earlier sessions, and today until
+        the close, use the one-minute path - {{ rs.min_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.min_net) }}. The
+        two are summed above; the tick replay is closer to the live runner.</p>
+      {% endif %}
+
       <h2 style="margin-top:24px">By month</h2>
       <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead><tbody>
       {% for m in proposer_nifty_v4_stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>
@@ -65,9 +73,10 @@
       {% else %}<p class="empty">No trades in this date range.</p>{% endif %}
 
       <h2 style="margin-top:24px">Daily history</h2>
-      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Net &#8377;</th></tr></thead><tbody>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Replay</th><th>Net &#8377;</th></tr></thead><tbody>
       {% for r in proposer_nifty_v4_rows %}<tr><td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status in ['live', 'unavailable'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
         <td>{{ r.regime or '&mdash;' }}</td><td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td><td>{{ '&check;' if r.day_banked else '&mdash;' }}</td>
+        <td class="muted" title="{{ ('minutes on the 1-min path: ' ~ r.fb_min ~ ', option quotes estimated: ' ~ r.fb_opt) if r.replay == 'ticks' else 'one-minute path' }}">{{ 'ticks' if r.replay == 'ticks' else '1-min' }}{{ ' (' ~ (r.fb_min + r.fb_opt) ~ ' fallback)' if r.replay == 'ticks' and (r.fb_min or 0) + (r.fb_opt or 0) else '' }}</td>
         <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
       </tbody></table>
       <p class="note">Paper only; signals from the Sensex V5 2.5% book on the 3-minute clock, positions in NIFTY options. Live preset: Nifty Scalper V4.</p>

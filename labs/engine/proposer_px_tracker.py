@@ -471,11 +471,12 @@ def _rest_of_minute(sec: float, spot: float, bar) -> list[tuple[float, float]]:
 
 # --------------------------------------------------------------------- day ---
 def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None,
-                 book: Book = PX) -> dict:
-    """Replay one session to its last recorded minute. Pure: reads market data, writes nothing."""
+                 book: Book = PX, ticks=None) -> dict:
+    """Replay one session to its last recorded minute. Pure: reads market data, writes nothing. `ticks`: see
+    labs.engine.tick_replay (NIFTY books only)."""
     if book.key in NIFTY_BOOKS:                        # positions in NIFTY options, signals as here
         from labs.engine import proposer_nifty_tracker
-        return proposer_nifty_tracker.simulate_day(day, book_before=book_before, now=now, book=book)
+        return proposer_nifty_tracker.simulate_day(day, book_before=book_before, now=now, book=book, ticks=ticks)
     if date.fromisoformat(day).weekday() >= 5:
         raise ProposerPxInputError(f"{day} is not a trading weekday")
     frame = _session_frame(day)
@@ -651,14 +652,19 @@ def _book_before(conn: sqlite3.Connection, day: str, book: Book = PX) -> float:
 def run_day(trade_date: str | None = None, *, persist: bool = True,
             connection: sqlite3.Connection | None = None, now: datetime | None = None,
             book: Book = PX) -> dict:
-    """Replay a session (to now, for today) and store it. Idempotent."""
+    """Replay a session (to now, for today) and store it. Idempotent. A tick book (labs.engine.tick_replay)
+    replays on the recorded ticks once the day's ticks are complete, on the one-minute path before that."""
+    from labs.engine import tick_replay
     now = now or datetime.now(IST)
     trade_date = trade_date or now.date().isoformat()
     own = connection is None
     conn = connection or get_conn()
     _ensure_tables(conn, book)
     try:
-        result = simulate_day(trade_date, book_before=_book_before(conn, trade_date, book), now=now, book=book)
+        # TicksMissing is deliberately not an input error: the backfill must stop, not record the day unavailable
+        ticks = tick_replay.ticks_for(book.key, trade_date, now.date().isoformat())
+        result = simulate_day(trade_date, book_before=_book_before(conn, trade_date, book), now=now, book=book,
+                              ticks=ticks)
         if persist:
             _persist(conn, result, book)
         return {k: result[k] for k in ("trade_date", "status", "regime", "n_trades", "gross_rs", "net_rs")}
@@ -699,6 +705,9 @@ def _persist(conn: sqlite3.Connection, r: dict, book: Book = PX) -> None:
          r["n_losses"], int(r["day_banked"]), r["gross_rs"], r["charges_rs"], r["net_rs"],
          r["book_gross_before"], r["through_ts"], LOTS, QTY, params.bar_exit, book.strategy_version,
          datetime.now(IST).isoformat(timespec="seconds")))
+    from labs.engine import tick_replay
+    if book.key in tick_replay.TICK_BOOKS:             # how the day was replayed, for the tab's Replay column
+        tick_replay.record(conn, book.key, r["trade_date"], r.get("replay") or tick_replay.ONE_MINUTE)
     conn.commit()
 
 

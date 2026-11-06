@@ -4,6 +4,7 @@ storage/labs.db
 storage/live.db
 storage/live.db-*
 storage/state/
+storage/tick_replay_done/
 storage/state/creds_enc.json
 storage/calibration_center_state.json
 storage/calibration_center_audit.jsonl

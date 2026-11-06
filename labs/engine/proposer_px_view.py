@@ -26,6 +26,12 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
     trades = [dict(zip(cols, r)) for r in cur.fetchall()]
     if not rows:
         return rows, trades, {}
+    from labs.engine import tick_replay
+    ticked = book.key in tick_replay.TICK_BOOKS
+    if ticked:                                           # how each day was replayed (ticks / one-minute path)
+        how = tick_replay.replays(conn, book.key)
+        for r in rows:
+            r.update(how.get(r["trade_date"]) or tick_replay.ONE_MINUTE)
     done = [r for r in rows if r["status"] in ("closed", "no_trade")]
     traded = [r for r in done if r["n_trades"]]
     green = [r for r in traded if float(r["gross_rs"] or 0) > 0]
@@ -72,4 +78,11 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
         "with_day_pts": pe.params_for(book.strategy_version).with_day_pts,
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
+    if ticked:
+        on_ticks = [r for r in done if r.get("replay") == tick_replay.REPLAY_TICKS]
+        stats["replay_split"] = {
+            "tick_days": len(on_ticks), "tick_net": round(sum(float(r["net_rs"] or 0) for r in on_ticks), 2),
+            "min_days": len(done) - len(on_ticks),
+            "min_net": round(net_total - sum(float(r["net_rs"] or 0) for r in on_ticks), 2),
+            "tick_from": tick_replay.TICK_BOOKS[book.key], "latency_s": tick_replay.FILL_LATENCY_S}
     return rows, trades, stats

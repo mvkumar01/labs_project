@@ -65,6 +65,16 @@ def run_backfill(*, start_date: str = DEFAULT_START, end_date: str | None = None
     `rebuild` first clears the book from `start_date` on: call it once, then continue without it.
     Date order is a hard requirement, so the run stops at the first session that errors."""
     end_date = end_date or _default_end_date()
+    if rebuild:                     # a tick book's past sessions replay only where their ticks are: refuse first
+        from labs.engine import tick_replay
+        today = datetime.now(IST).date().isoformat()
+        missing = [s for s in sessions_with_quotes(start_date, end_date)
+                   if tick_replay.wants_ticks(book.key, s) and s < today and not tick_replay.ready(s)]
+        if missing:
+            return {"done": [], "unavailable": [], "remaining": 0,
+                    "errors": {missing[0]: f"TicksMissing: {len(missing)} session(s) from {missing[0]} replay on "
+                                           "ticks that are not here; nothing was cleared - rebuild them where the "
+                                           "ticks are and import the result"}}
     conn = get_conn()
     _ensure_tables(conn, book)
     try:

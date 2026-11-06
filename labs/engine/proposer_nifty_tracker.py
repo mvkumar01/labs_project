@@ -91,8 +91,10 @@ def _params(day: str, book, ratio: float) -> "pe.ProposerParams":
     return pe.scaled_for_nifty(tr.params_on(day, book), ratio)
 
 
-def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None, book=None) -> dict:
-    """Replay one session to its last recorded minute. Pure: reads market data, writes nothing."""
+def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None, book=None,
+                 ticks=None) -> dict:
+    """Replay one session to its last recorded minute. Pure: reads market data, writes nothing. `ticks` (a
+    labs.engine.tick_replay.DayTicks) replays inside each minute on the recorded index and option ticks."""
     dday = date.fromisoformat(day)
     if dday.weekday() >= 5:
         raise tr.ProposerPxInputError(f"{day} is not a trading weekday")
@@ -161,6 +163,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
 
     def close(now_, px, spot_, rule):
         nonlocal realized, pos
+        px = pos.pop("tick_exit", px)
         qty = pos["qty"]
         gross = (px - pos["ein"]) * qty
         rc = round_trip_charges(pos["ein"], px, qty)
@@ -190,6 +193,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             q = pos["c"].quote(t)
             anchor = (q[0], q[1], pos["c"].delta(t)) if q else None
         path, i = tr._with_print_seconds(tr._dense(tr._nodes(nb)), [p["sec"] for p in pending], nb[4]), 0
+        if ticks is not None:                                    # the minute on the recorded index ticks
+            path = ticks.path(t, nb, [p["sec"] for p in pending], tr, path)
         move = (shist[-1][4] - open_ref) if shist and open_ref else None     # the SENSEX with-the-day input
         while i < len(path):
             sec, spot = path[i]
@@ -204,6 +209,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                     sgn = 1 if pos["side"] == "CE" else -1
                     ltp = max(0.05, anchor[0] + sgn * anchor[2] * (spot - anchor_spot))
                     pos["last"], pos["half"] = ltp, anchor[1]
+                if ticks is not None:                                # the held option at its recorded bid / ask
+                    ltp = ticks.held(pos, now_, ltp)
                 if snap:
                     # the early adverse window runs from the first check after the entry (the next path step)
                     early = eng.early_adverse(now_, pos.setdefault("t_in", now_),
@@ -217,6 +224,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                             if not eng.params.bank_regardless_of_book:     # recovery mode: the fill must also clear the book
                                 need = max(need, -(book_before + realized))
                             mark = min(mark, pos["ein"] + need / pos["qty"])
+                        if ticks is not None:                        # out at the bid, the fill delay later
+                            pos["tick_exit"] = ticks.exit_px(pos, now_, mark - pos["half"])
                         close(now_, mark - pos["half"], spot, sig.reason)
                         book_state()
                         eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot)
@@ -235,9 +244,13 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                     if q:
                         d = c.delta(t)
                         est = max(0.05, q[0] + (1 if typ == "CE" else -1) * d * (spot - anchor_spot))
+                        if ticks is not None:                        # in at the ask, the fill delay later
+                            est, q = ticks.entry(sym or c.symbol(t), now_, est, q)
                         qty = max(1, int(CAPITAL_RS // ((est + q[1]) * LOT_SIZE))) * LOT_SIZE
                         pos = {"c": c, "side": typ, "ein": est + q[1], "espot": spot, "last": est,
                                "half": q[1], "qty": qty}
+                        if ticks is not None:
+                            pos["sym"] = sym or c.symbol(t)
                         anchor = (q[0], q[1], d)
                         eng.mark_entry(snap)
                         trades.append({"signal": sig.reason, "side": typ, "strike": strike,
@@ -245,7 +258,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                                        "entry_ts": now_.isoformat(timespec="seconds"),
                                        "entry_spot": round(spot, 2), "entry_price": round(est + q[1], 2),
                                        "qty": qty, "exit_ts": None})
-                        path = path[:i + 1] + tr._dense(tr._rest_of_minute(sec, spot, nb))[1:]
+                        if ticks is None:                            # on ticks the minute's path stands
+                            path = path[:i + 1] + tr._dense(tr._rest_of_minute(sec, spot, nb))[1:]
             i += 1
         shist.append(sb)
         t += timedelta(minutes=1)
@@ -271,6 +285,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         "net_rs": round(sum(x["net_rs"] for x in closed), 2),
         "book_gross_before": round(book_before, 2),
         "through_ts": through.isoformat(timespec="minutes"), "trades": trades,
+        "replay": ticks.summary() if ticks is not None else None,
         "prints": [{"minute": p["t"].strftime("%H:%M"), "sec": p["sec"], "x5": p["x5"],
                     "x5_conf": round(float(p["x5_conf"]), 4)} for p in prints],
     }

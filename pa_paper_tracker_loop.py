@@ -76,6 +76,7 @@ def main() -> None:
     from labs.engine.crypto_xs_tracker import run_live as run_crypto_xs_live
     from labs.engine.crypto_trend_tracker import run_live as run_crypto_trend_live
     from labs.services.paper_trade_alerts import emit_paper_trade_alerts
+    from labs.engine import tick_replay
     print(f"[paper-loop] started {datetime.now(IST).isoformat()}", flush=True)
     last_log = {
         "nifty": None,
@@ -120,6 +121,7 @@ def main() -> None:
         "btc_rsi_roc": None,
         "crypto_xs": None,
         "crypto_trend": None,
+        "tick_post_close": None,
     }
     while True:
         now = datetime.now(IST)
@@ -186,6 +188,16 @@ def main() -> None:
                         f"[paper-loop:{name}] error: {type(exc).__name__}: {exc}",
                         flush=True,
                     )
+        if now.weekday() < 5 and CLOSE < now.time() <= time(*tick_replay.POST_CLOSE_END):
+            # Tick books (labs.engine.tick_replay): replay the day on its compacted ticks if the session runs
+            # above did not, then drop the done-marker the depth downloader waits for.
+            try:
+                res = tick_replay.run_post_close(now.date().isoformat())
+                if res != last_log["tick_post_close"]:
+                    print(f"[paper-loop:tick_post_close] {now.strftime('%H:%M')} {res}", flush=True)
+                    last_log["tick_post_close"] = res
+            except Exception as exc:
+                print(f"[paper-loop:tick_post_close] error: {type(exc).__name__}: {exc}", flush=True)
         if _in_mcx_session(now):
             # MCX GOLD CCI short (paper); isolated like the other MCX books.
             try:
