@@ -144,6 +144,8 @@ NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_
 ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
 # Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
 BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
+# Books that take the live preset's early adverse exit (proposer_engine.V4_EARLY_ADVERSE), from this session on.
+EARLY_ADVERSE_FROM = {NIFTY_V4_DT25.key: "2026-07-01"}
 
 
 # ------------------------------------------------------------------ schema ---
@@ -296,6 +298,9 @@ def params_on(day: str, book) -> "pe.ProposerParams":
         params = dataclasses.replace(params, daily_target_pct=DAY_TARGET_PCT[book.key])
     if book.key in BANK_REGARDLESS_BOOKS:
         params = dataclasses.replace(params, bank_regardless_of_book=True)
+    if day >= EARLY_ADVERSE_FROM.get(book.key, "9999"):
+        params = dataclasses.replace(params, early_adverse_pts=pe.V4_EARLY_ADVERSE[0],
+                                     early_adverse_secs=pe.V4_EARLY_ADVERSE[1])
     return params
 
 

@@ -395,6 +395,15 @@ class SessionBars:
         return bars + extra
 
 
+def entry_time_ist(entry_time_utc: str | None) -> datetime | None:
+    """The stored entry fill time (UTC ISO) as a naive IST datetime, the runner's clock; None when unreadable."""
+    try:
+        t = datetime.fromisoformat(str(entry_time_utc))
+    except (TypeError, ValueError):
+        return None
+    return t.astimezone(IST).replace(tzinfo=None) if t.tzinfo is not None else t
+
+
 def entry_bar_index(bars: list[tuple[datetime, float]], entry_time_utc: str | None) -> int | None:
     """Index of the 1-min bar the entry happened in (len(bars) while that bar is still forming)."""
     try:
@@ -1017,11 +1026,13 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
         elif scaled:
             log.warning("NIFTY entries held: 09:15 opening ratio is unavailable conn=%s day=%s", conn_id, trade_date)
         log.info("proposer conn=%s strategy=%s bar_exit=%s max_losses_per_day=%s with_day_pts=%s "
-                 "loss_floor=%s spot_floor_pts=%s day_target=%s bank_regardless_of_book=%s print_clock=%s", conn_id,
+                 "loss_floor=%s spot_floor_pts=%s day_target=%s bank_regardless_of_book=%s early_adverse=%s/%ss "
+                 "print_clock=%s", conn_id,
                  strategy, pc.engine.params.bar_exit or "off", pc.engine.params.max_losses_per_day or "off",
                  pc.engine.params.with_day_pts or "off", pc.engine.params.loss_floor_pct,
                  pc.engine.params.spot_floor_pts or "off", pc.engine.params.daily_target_pct,
-                 pc.engine.params.bank_regardless_of_book, print_clock)
+                 pc.engine.params.bank_regardless_of_book, pc.engine.params.early_adverse_pts or "off",
+                 pc.engine.params.early_adverse_secs, print_clock)
     pc.ensure_session(trade_date, dry_run, feed, now)
     day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
     pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
@@ -1088,8 +1099,11 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             closes, entry_idx = [b[1] for b in bars], entry_bar_index(bars, st.get("entry_time"))
         if not is_open and pc.engine.params.with_day_pts:
             move = day_move(session_bars.completed(now), getattr(feed, "open_ref", None))
-        sig = pc.engine.evaluate(now, snap, pos, option_ltp=ltp, spot=spot,
-                                 closes=closes, entry_idx=entry_idx, day_move=move)
+        # Nifty Scalper V4 at 2.5%: out early when NIFTY runs 25 points against within 180 s of the fill (on ticks).
+        early = (pc.engine.early_adverse(now, entry_time_ist(st.get("entry_time")), pos, spot)
+                 if is_open and pc.engine.params.early_adverse_pts > 0 else None)
+        sig = early or pc.engine.evaluate(now, snap, pos, option_ltp=ltp, spot=spot,
+                                          closes=closes, entry_idx=entry_idx, day_move=move)
         if sig.action == "ENTER" and not is_open and strategy in pe.ENTRY_BLOCK_VERSIONS:
             why = entry_block(now, sig.side, spot, ctx.setdefault("entry_block_cpr", {}))
             if why:

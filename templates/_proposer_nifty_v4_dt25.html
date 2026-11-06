@@ -4,7 +4,8 @@
       {{ "%.1f"|format((proposer_nifty_v4_dt25_stats.daily_target_pct or 0.025) * 100) }}% day target</strong> instead of 1.5%
       &mdash; the paper copy of the live preset Nifty Scalper V4 with 2.5% chosen on the configure page. The day banks once
       today's realized profit plus the open trade reaches that share of the trade's entry capital, whatever the running book
-      (no recovery mode). Everything else is Nifty Scalper V4: entries held with a NIFTY CPR level within 15 points on the
+      (no recovery mode), and a trade is closed early once NIFTY is <strong>25 points against within 3 minutes</strong> of the
+      entry (from 6 Nov 2026 on the live preset; this history is replayed with it from 1 July). Everything else is Nifty Scalper V4: entries held with a NIFTY CPR level within 15 points on the
       way or after a doji, hammer or inverted hammer one-minute candle, prints every 3 minutes from 09:22, NIFTY options
       (|delta| &ge; 0.60, &#8377;12L of premium per entry), scaled spot targets and 150-point floor, a 270 s wait after an exit.</p>
 
@@ -14,7 +15,9 @@
       &minus;&#8377;3.13L), 3% +&#8377;8.65L (&minus;&#8377;5.89L) (alphaIMB v4_tail_risk.py round 4). <strong>Caveats:</strong>
       in-sample, and the four targets do not rise or fall in order; the larger target turns some banked days into floor
       exits. The history here is the one-minute simulator; the live preset trades on ticks. Paper only: it never calls a
-      broker order API.
+      broker order API. With the 25-point / 3-minute early exit, the same replay through 5 Nov:
+      +&#8377;19.29L against +&#8377;15.85L without it, worst day &minus;&#8377;1.73L against &minus;&#8377;3.13L, 9 early exits; almost
+      all of the gain is 7 Oct, and on the 27 Oct &ndash; 5 Nov ticks it never fired (alphaIMB v4_early_exit.py).
     </div>
 
     {% if proposer_nifty_v4_dt25_stats.get('error') %}

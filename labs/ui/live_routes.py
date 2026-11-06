@@ -654,7 +654,7 @@ V45_DEFAULT_DAY_TARGET = "3.5"
 # Nifty Scalper V4's choices (default 1.5%); the day banks whatever the book at each of them. Research 1 Jul - 30 Oct,
 # 1-min simulator: 1.5% +10.90L, 2% +10.37L, 2.5% +14.82L, 3% +8.65L (alphaIMB v4_tail_risk.py round 4; Vipin, 2026-11-05).
 V4_DAY_TARGETS = {"1.5": "1.5% (V4 preset; paper book Nifty Scalper V4)", "2": "2%",
-                  "2.5": "2.5% (paper book Nifty Scalper V4 2.5%)", "3": "3%"}
+                  "2.5": "2.5% + early exit 25 pts / 3 min (paper book Nifty Scalper V4 2.5%)", "3": "3%"}
 
 
 def _v45_day_target(user_id: str, conn_id: str) -> str:

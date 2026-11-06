@@ -205,8 +205,11 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                     ltp = max(0.05, anchor[0] + sgn * anchor[2] * (spot - anchor_spot))
                     pos["last"], pos["half"] = ltp, anchor[1]
                 if snap:
+                    # the early adverse window runs from the first check after the entry (the next path step)
+                    early = eng.early_adverse(now_, pos.setdefault("t_in", now_),
+                                              pe.Position(pos["side"], pos["ein"], pos["espot"], pos["qty"]), spot)
                     sig = eng.evaluate(now_, snap, pe.Position(pos["side"], pos["ein"], pos["espot"], pos["qty"]),
-                                       option_ltp=ltp, spot=spot)
+                                       option_ltp=ltp, spot=spot) if early is None else early
                     if sig.action == "EXIT":
                         mark = ltp if ltp else pos["last"]
                         if sig.reason == "daily_target":
