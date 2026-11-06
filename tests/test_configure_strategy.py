@@ -18,6 +18,13 @@ CONN_ID = f"{USER_ID}:angel"
 CSRF_TOKEN = "test-csrf-token"
 
 
+@pytest.fixture(autouse=True)
+def every_preset_offered(monkeypatch):
+    """These checks switch between every preset, archived ones included (labs.ui.live_routes.ACTIVE_PRESETS)."""
+    from labs.ui import live_routes
+    monkeypatch.setattr(live_routes, "ACTIVE_PRESETS", tuple(live_routes.STRATEGY_PRESETS))
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(live_db, "LIVE_DB_PATH", tmp_path / "live.db")

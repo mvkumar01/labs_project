@@ -602,6 +602,18 @@ STRATEGY_LABELS = {
 NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3", "nifty_scalper_v4")
 
 
+# Presets offered on the configure page (Vipin, 2026-11-06: "it's pretty crowded"). Every other preset is archived:
+# its code, engine version and KNOWN_VERSIONS entry stay, an account already on it keeps it (shown and saveable), and
+# adding its key here brings it back.
+ACTIVE_PRESETS = ("gold_cci_v2", "crudem_combo_v1", "champion_v214e", SENSEX_V45, "nifty_scalper_v4",
+                  "oi_unwind_nifty", "oi_unwind_sensex")
+
+
+def offered_presets(current: str | None) -> dict:
+    """Configure-page choices: the active presets, plus the account's current one if it is archived."""
+    return {k: v for k, v in STRATEGY_LABELS.items() if k in ACTIVE_PRESETS or k == current}
+
+
 def _short_label(label: str) -> str:
     """"Nifty Scalper V4 (V3 with ...)" -> "Nifty Scalper V4"; a short qualifier such as "(legacy)" stays."""
     head, _, rest = label.partition(" (")
@@ -721,7 +733,7 @@ def _render_configure(user_id: str, conn_id: str, *, error: str | None = None):
         mode=svc.get_mode(user_id, conn_id),
         kill_switch=svc.is_kill_switch_on(user_id, conn_id),
         strategy=_current_strategy_preset(user_id, conn_id),
-        strategy_presets=STRATEGY_LABELS,
+        strategy_presets=offered_presets(_current_strategy_preset(user_id, conn_id)),
         v45_preset=SENSEX_V45,
         v45_floors={k: label for k, (_, label) in SENSEX_V45_FLOORS.items()},
         v45_floor=_v45_floor(svc.get_config(user_id, conn_id, "strategy_version")),
@@ -747,6 +759,9 @@ def configure():
     if request.method == "POST":
         strat = (request.form.get("strategy") or "").strip()
         target = STRATEGY_PRESETS.get(strat)
+        if target is not None and strat not in offered_presets(_current_strategy_preset(user_id, conn_id)):
+            return _render_configure(user_id, conn_id, error=(
+                f"{STRATEGY_LABELS.get(strat, strat)} is archived. Nothing was changed."))
         broker_clear = False
         gold_config = (strat in ("gold_cci_v2", "crudem_combo_v1")
                        or _current_strategy_preset(user_id, conn_id) in ("gold_cci_v2", "crudem_combo_v1"))
