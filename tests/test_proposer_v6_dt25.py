@@ -27,7 +27,7 @@ def test_inverted_cpr_and_no_cpr():
 
 
 def test_v6_is_v5_dt25_plus_the_block():
-    assert tr.NO_INSIDE_CPR_BOOKS == {tr.V6_DT25.key} and tr.V6_DT25.key not in tr.NIFTY_BOOKS
+    assert tr.V6_DT25.key in tr.NO_INSIDE_CPR_BOOKS and tr.V6_DT25.key not in tr.NIFTY_BOOKS
     assert tr.V6_DT25.strategy_version == tr.V5_DT25.strategy_version
     assert tr.V6_DT25.print_gap_s == tr.V5_DT25.print_gap_s and tr.V6_DT25.key in tr.DELTA_STRIKE_BOOKS
     for day in ("2026-07-01", "2026-10-20"):

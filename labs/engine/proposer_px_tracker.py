@@ -126,7 +126,12 @@ V5_DT25 = Book("proposer_v5_dt25", pe.STRATEGY_VERSION_V5)
 # Sensex 2.5% V6: Sensex V5 2.5% with no entry while SENSEX is inside the previous session's CPR (TC..BC), paper only
 # (alphaIMB REBUILD sec. 57; Vipin, 2026-11-02).
 V6_DT25 = Book("proposer_v6_dt25", pe.STRATEGY_VERSION_V5)
-NO_INSIDE_CPR_BOOKS = frozenset({V6_DT25.key})
+# Sensex 2.5% V6 with the engine's SENSEX loss floor at 125 points instead of 150, paper only - a forward test: 125 was
+# picked after looking at October (alphaIMB v6_rescue.py floor125; Vipin, 2026-11-06).
+V6_DT25_F125 = Book("proposer_v6_dt25_f125", pe.STRATEGY_VERSION_V5)
+NO_INSIDE_CPR_BOOKS = frozenset({V6_DT25.key, V6_DT25_F125.key})
+# Books whose engine spot floor (ProposerParams.spot_floor_pts, SENSEX points) differs from their preset's.
+ENGINE_SPOT_FLOOR_PTS = {V6_DT25_F125.key: 125.0}
 # NIFTY on Sensex V5 signals: the same SENSEX prints and engine, positions in NIFTY options with NIFTY's
 # own exits (labs.engine.proposer_nifty_tracker; Vipin, 2026-10-21).
 NIFTY_V5 = Book("proposer_nifty_v5", pe.STRATEGY_VERSION_V5)
@@ -269,11 +274,12 @@ DELTA_STRIKE_FROM = "2026-10-19"
 COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
 SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01", "proposer_v6_dt25": "2026-07-01",
+                 "proposer_v6_dt25_f125": "2026-07-01",
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
                  "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01",
                  "proposer_nifty_v4_dt25": "2026-07-01"}
 # Books whose day target differs from their live preset's.
-DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
+DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_v6_dt25_f125": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
                   "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015,
                   "proposer_nifty_v4_dt25": 0.025}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
@@ -298,6 +304,8 @@ def params_on(day: str, book) -> "pe.ProposerParams":
         params = dataclasses.replace(params, daily_target_pct=DAY_TARGET_PCT[book.key])
     if book.key in BANK_REGARDLESS_BOOKS:
         params = dataclasses.replace(params, bank_regardless_of_book=True)
+    if book.key in ENGINE_SPOT_FLOOR_PTS:
+        params = dataclasses.replace(params, spot_floor_pts=ENGINE_SPOT_FLOOR_PTS[book.key])
     if day >= EARLY_ADVERSE_FROM.get(book.key, "9999"):
         params = dataclasses.replace(params, early_adverse_pts=pe.V4_EARLY_ADVERSE[0],
                                      early_adverse_secs=pe.V4_EARLY_ADVERSE[1])
@@ -318,7 +326,8 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # The books that mirror a live preset (and the 3.5% trial on Pramanaa's timing); the shadows copy
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
-                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_nifty_v5",
+                                "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_v6_dt25_f125",
+                                "proposer_nifty_v5",
                                 "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4",
                                 "proposer_nifty_v4_dt25"})
 
