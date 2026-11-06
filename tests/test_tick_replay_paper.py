@@ -33,6 +33,8 @@ def _ticks(rows):
 def archive(tmp_path, monkeypatch):
     monkeypatch.setattr(tk, "TICK_ARCHIVE_DIR", tmp_path / "archive")
     monkeypatch.setattr(tk, "DONE_DIR", tmp_path / "done")
+    monkeypatch.setattr(tk, "TICK_LIVE_DIR", tmp_path / "live")
+    tk.forget_live()
     d = tmp_path / "archive" / DAY
     d.mkdir(parents=True)
     _ticks([("2026-11-04 09:40:01", 24500.0, None, None), ("2026-11-04 09:40:20", 24490.0, None, None),
@@ -196,3 +198,68 @@ def test_the_paper_loop_runs_the_post_close_pass():
     loop = (ROOT / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
     assert "tick_replay.run_post_close(now.date().isoformat())" in loop
     assert "CLOSE < now.time() <= time(*tick_replay.POST_CLOSE_END)" in loop
+
+
+
+HEAD = "recv_ts,exch_ts,last_trade_ts,ltp,last_qty,bid1_px,bid1_qty,ask1_px\n"
+
+
+def _line(ts, ltp, bid="", ask=""):
+    return f"2026-11-09T{ts}+05:30,,,{ltp},1,{bid},5,{ask}\n"
+
+
+def test_live_csv_is_read_incrementally_like_the_archive(tmp_path, monkeypatch, archive):
+    live = tk.TICK_LIVE_DIR / "2026-11-09"
+    live.mkdir(parents=True)
+    f = live / "NIFTY_50.csv"
+    f.write_text(HEAD + _line("09:40:01.120", 24500.5) + _line("09:40:20.000", 24490) + "2026-11-09T09:40:3",
+                 encoding="utf-8")                                                      # torn last line
+    s = tk._live_series(f)
+    assert s[0] == [datetime(2026, 11, 9, 9, 40, 1, 120000), datetime(2026, 11, 9, 9, 40, 20)]
+    assert s[1] == [24500.5, 24490.0] and all(x != x for x in s[2])                    # empty book -> NaN
+    with f.open("a", encoding="utf-8") as fh:                                           # the line completes, more come
+        fh.write("0.500+05:30,,,24510,1,,5,\n" + _line("09:40:10.000", 24495) + _line("09:41:02.000", 24505))
+    s = tk._live_series(f)
+    assert [x.strftime("%H:%M:%S") for x in s[0]] == ["09:40:01", "09:40:10", "09:40:20", "09:40:30", "09:41:02"]
+    assert s[1] == [24500.5, 24495.0, 24490.0, 24510.0, 24505.0]                          # stable time order
+    assert tk._LIVE[str(f)]["offset"] == f.stat().st_size
+    assert tk._live_series(live / "NIFTY26N1024500CE.csv") is None
+
+
+def test_today_replays_on_the_live_files(tmp_path, archive):
+    v4 = tr.NIFTY_V4.key
+    assert tk.ticks_for(v4, "2026-11-09", "2026-11-09") is None                            # no live file yet
+    live = tk.TICK_LIVE_DIR / "2026-11-09"
+    live.mkdir(parents=True)
+    (live / "NIFTY_50.csv").write_text(HEAD + _line("09:40:01.000", 24500) + _line("09:40:30.000", 24520),
+                                       encoding="utf-8")
+    (live / "NIFTY26N1024500CE.csv").write_text(HEAD + _line("09:40:05.000", 101, 100, 102), encoding="utf-8")
+    t = tk.ticks_for(v4, "2026-11-09", "2026-11-09")
+    assert isinstance(t, tk.DayTicks) and t.source == "live"
+    assert t.path(datetime(2026, 11, 9, 9, 40), None, [], _Trm, []) == [(1.0, 24500.0), (30.0, 24520.0)]
+    assert t.quote("NIFTY26N1024500CE", datetime(2026, 11, 9, 9, 40, 10)) == (101.0, 1.0)
+    assert t.summary()["replay"] == "ticks_live"
+
+
+def test_live_days_count_as_ticks_and_are_replayed_again_after_compaction(tmp_path, archive):
+    conn = sqlite3.connect(tmp_path / "labs.db")
+    for b in (tr.NIFTY_V4, tr.NIFTY_V4_DT25):
+        tr._ensure_tables(conn, b)
+        tr._persist(conn, _result(DAY, 50.0, {"replay": "ticks_live", "fb_min": 0, "fb_opt": 0, "latency_s": 2.0}), b)
+    rows, trades, stats = view.tab_data(conn, book=tr.NIFTY_V4)
+    assert stats["replay_split"]["tick_days"] == 1
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(ROOT / "templates")), autoescape=True)
+    html = env.get_template("_proposer_nifty_v4.html").render(proposer_nifty_v4_rows=rows,
+                                                               proposer_nifty_v4_trades=trades,
+                                                               proposer_nifty_v4_stats=stats)
+    assert "ticks (live files)" in html and "recorder's live files" in html
+    assert not tk.day_done(conn, DAY)                                                      # the marker waits
+    ran = []
+
+    def run_book_day(key, day):
+        ran.append(key)
+        book = next(b for b in (tr.NIFTY_V4, tr.NIFTY_V4_DT25) if b.key == key)
+        tr._persist(conn, _result(day, 50.0, tk.DayTicks(day).summary()), book)
+
+    out = tk.post_close(DAY, conn, run_book_day)
+    assert sorted(ran) == sorted(tk.TICK_BOOKS) and out["marker"] and tk.day_done(conn, DAY)

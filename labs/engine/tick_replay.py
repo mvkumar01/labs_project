@@ -6,11 +6,14 @@ instead of the synthetic one-minute path, so a paper book stops and fills the wa
   after the signal (live Angel orders take about 2.3 s to send). A minute without index ticks, or an option without
   a tick in the last 120 s, falls back to the one-minute path / estimate; both are counted per day.
 - Ticks: Order Flow Research/data/archive/YYYY-MM-DD/{alias}.parquet in the alphaIMB checkout next to labs (the
-  depth recorder compacts the day there at about 15:32 IST; manifest.json marks a complete day). Read-only.
-- Which days: books in TICK_BOOKS, from their first tick session. During the session the one-minute path runs as
-  before (the day's ticks are not compacted yet); once the day's ticks are complete the replay is on ticks, and
-  that post-close run is the recorded result. A past day whose ticks are not here is refused, never silently
-  replayed on the one-minute path: rebuild it where the ticks are (locally) and import the result.
+  depth recorder compacts the day there at about 15:32 IST; manifest.json marks a complete day); during the session
+  the recorder's growing data/live/YYYY-MM-DD/{alias}.csv, read incrementally (only complete new lines each run).
+  Read-only.
+- Which days: books in TICK_BOOKS, from their first tick session. All day on ticks (Vipin, 2026-11-07: option B):
+  intraday from the live CSVs ("ticks_live"), after the close from the compacted day ("ticks") - that run is the
+  recorded result. Today with no live index file yet: the one-minute path, labelled. A past day whose ticks are
+  not here is refused, never silently replayed on the one-minute path: rebuild it where the ticks are (locally)
+  and import the result.
 - Each replayed day records how it was replayed in tick_replay_days (book, date, replay, fallbacks, latency).
 - The paper loop drops storage/tick_replay_done/YYYY-MM-DD.json once every tick book has its day on ticks; the
   depth downloader deletes today's PA files only after that marker exists.
@@ -23,22 +26,25 @@ import bisect
 import json
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config.labs_config import BASE_DIR
 
 TICK_ARCHIVE_DIR = Path(os.environ.get(
     "LABS_TICK_ARCHIVE_DIR", BASE_DIR.parent / "alphaIMB" / "Order Flow Research" / "data" / "archive"))
+TICK_LIVE_DIR = Path(os.environ.get("LABS_TICK_LIVE_DIR", TICK_ARCHIVE_DIR.parent / "live"))
 DONE_DIR = BASE_DIR / "storage" / "tick_replay_done"
 FILL_LATENCY_S = 2.0
 QUOTE_MAX_AGE_S = 120.0
 INDEX_ALIAS = "NIFTY_50"
+_IST = timezone(timedelta(hours=5, minutes=30))
 # Book key -> first session replayed on ticks (the option bands were recorded from 27 Oct 2026).
 TICK_BOOKS = {"proposer_nifty_v4": "2026-10-27", "proposer_nifty_v4_dt25": "2026-10-27"}
 # Sessions on or after a book's first tick session that have no recorded ticks anywhere: one-minute path, labelled.
 NO_TICK_DAYS: frozenset = frozenset()
-REPLAY_TICKS, REPLAY_1MIN = "ticks", "1min"
+REPLAY_TICKS, REPLAY_TICKS_LIVE, REPLAY_1MIN = "ticks", "ticks_live", "1min"
+ON_TICKS = (REPLAY_TICKS, REPLAY_TICKS_LIVE)
 
 
 class TicksMissing(Exception):
@@ -55,6 +61,11 @@ def ready(day: str) -> bool:
     return (d / "manifest.json").is_file() and (d / f"{INDEX_ALIAS}.parquet").is_file()
 
 
+def live_ready(day: str) -> bool:
+    """True while the recorder is writing the day's index ticks to its live CSV."""
+    return (TICK_LIVE_DIR / day / f"{INDEX_ALIAS}.csv").is_file()
+
+
 def wants_ticks(book_key: str, day: str) -> bool:
     start = TICK_BOOKS.get(book_key)
     return bool(start) and day >= start and day not in NO_TICK_DAYS
@@ -67,8 +78,11 @@ def ticks_for(book_key: str, day: str, today: str) -> "DayTicks | None":
         return None
     if ready(day):
         return DayTicks(day)
-    if day >= today:                    # today before the recorder compacts: the one-minute path, intraday
-        return None
+    if day >= today:                    # today: the recorder's live files, else (none yet) the one-minute path
+        if not live_ready(day):
+            return None
+        forget_live(day)                                       # keep only today's files cached
+        return DayTicks(day, source="live")
     raise TicksMissing(f"{day}: {book_key} replays on ticks and they are not in {TICK_ARCHIVE_DIR} "
                        "- rebuild it where the ticks are and import the result")
 
@@ -76,8 +90,8 @@ def ticks_for(book_key: str, day: str, today: str) -> "DayTicks | None":
 class DayTicks:
     """One session's recorded ticks: the index path inside each minute and option quotes."""
 
-    def __init__(self, day: str, latency_s: float = FILL_LATENCY_S):
-        self.day, self.lat = day, float(latency_s)
+    def __init__(self, day: str, latency_s: float = FILL_LATENCY_S, source: str = "archive"):
+        self.day, self.lat, self.source = day, float(latency_s), source
         self.cache: dict = {}
         self.fallback = {"min": 0, "opt": 0}
         self.idx = self._series(INDEX_ALIAS)
@@ -85,6 +99,10 @@ class DayTicks:
     def _series(self, alias):
         if alias in self.cache:
             return self.cache[alias]
+        if self.source == "live":
+            out = _live_series(TICK_LIVE_DIR / self.day / f"{alias}.csv")
+            self.cache[alias] = out
+            return out
         import pandas as pd
         path = day_dir(self.day) / f"{alias}.parquet"
         if not path.is_file():
@@ -149,8 +167,80 @@ class DayTicks:
         return q[0] - q[1]
 
     def summary(self) -> dict:
-        return {"replay": REPLAY_TICKS, "fb_min": self.fallback["min"], "fb_opt": self.fallback["opt"],
-                "latency_s": self.lat}
+        return {"replay": REPLAY_TICKS_LIVE if self.source == "live" else REPLAY_TICKS,
+                "fb_min": self.fallback["min"], "fb_opt": self.fallback["opt"], "latency_s": self.lat}
+
+
+# ------------------------------------------------------------- live files ---
+# path -> {"offset", "size", "cols", "t", "ltp", "bid", "ask"}; kept for the paper loop's process so each run
+# parses only the lines the recorder appended since the last one.
+_LIVE: dict = {}
+
+
+def _num(text: str) -> float:
+    try:
+        return float(text) if text != "" else float("nan")
+    except ValueError:
+        return float("nan")
+
+
+def _live_series(path: Path):
+    """(times, ltp, bid1, ask1) of a live CSV as read_depth would give them after compaction (rows in stable time
+    order, a torn last line left for the next read); None when the file is not there."""
+    import csv
+    import io
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        _LIVE.pop(str(path), None)
+        return None
+    key = str(path)
+    st = _LIVE.get(key)
+    if st is None or size < st["size"]:                       # new file, or rewritten: start over
+        st = _LIVE[key] = {"offset": 0, "size": 0, "cols": None, "t": [], "ltp": [], "bid": [], "ask": []}
+    if size > st["offset"]:
+        with path.open("rb") as fh:
+            fh.seek(st["offset"])
+            chunk = fh.read(size - st["offset"])
+        end = chunk.rfind(b"\n")
+        if end >= 0:
+            st["offset"] += end + 1
+            rows = list(csv.reader(io.StringIO(chunk[:end + 1].decode("utf-8", "replace"))))
+            if st["cols"] is None and rows:
+                head = rows.pop(0)
+                st["cols"] = [head.index(c) for c in ("recv_ts", "ltp", "bid1_px", "ask1_px")]
+            it, il, ib, ia = st["cols"] or (0, 0, 0, 0)
+            last = st["t"][-1] if st["t"] else None
+            disorder = False
+            for r in rows:
+                try:
+                    ts = datetime.fromisoformat(r[it])
+                except (ValueError, IndexError):
+                    continue
+                if ts.tzinfo is not None:
+                    ts = ts.astimezone(_IST).replace(tzinfo=None)
+                if last is not None and ts < last:
+                    disorder = True
+                last = ts
+                st["t"].append(ts)
+                st["ltp"].append(_num(r[il]) if len(r) > il else float("nan"))
+                st["bid"].append(_num(r[ib]) if len(r) > ib else float("nan"))
+                st["ask"].append(_num(r[ia]) if len(r) > ia else float("nan"))
+            if disorder:                                       # the archive's stable sort on time
+                order = sorted(range(len(st["t"])), key=st["t"].__getitem__)
+                for f in ("t", "ltp", "bid", "ask"):
+                    st[f] = [st[f][i] for i in order]
+        st["size"] = size
+    if not st["t"]:
+        return None
+    return st["t"], st["ltp"], st["bid"], st["ask"]
+
+
+def forget_live(day: str | None = None) -> None:
+    """Drop cached live files (all, or another day's) - the paper loop keeps only today's."""
+    for key in [k for k in _LIVE if day is None or f"{os.sep}{day}{os.sep}" not in k]:
+        _LIVE.pop(key, None)
 
 
 ONE_MINUTE = {"replay": REPLAY_1MIN, "fb_min": None, "fb_opt": None, "latency_s": None}
@@ -208,6 +298,7 @@ def post_close(day: str, conn: sqlite3.Connection, run_book_day) -> dict:
     out = {"ready": ready(day), "ran": [], "marker": None}
     if not out["ready"]:
         return out
+    forget_live()                                             # the live files are gone once compacted
     done = replays_for_day(conn, day)
     for key in TICK_BOOKS:
         if wants_ticks(key, day) and done.get(key) != REPLAY_TICKS:

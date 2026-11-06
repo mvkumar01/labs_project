@@ -653,7 +653,7 @@ def run_day(trade_date: str | None = None, *, persist: bool = True,
             connection: sqlite3.Connection | None = None, now: datetime | None = None,
             book: Book = PX) -> dict:
     """Replay a session (to now, for today) and store it. Idempotent. A tick book (labs.engine.tick_replay)
-    replays on the recorded ticks once the day's ticks are complete, on the one-minute path before that."""
+    replays on the recorded ticks: the recorder's live files intraday, the compacted day after the close."""
     from labs.engine import tick_replay
     now = now or datetime.now(IST)
     trade_date = trade_date or now.date().isoformat()
