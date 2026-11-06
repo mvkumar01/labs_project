@@ -84,7 +84,9 @@ PROPOSER_STRATEGY_VERSION = "proposer_dt25"
 #   points on the way, doji / hammer / inverted hammer last 1-min candle); a v16 runner holds V4's entries.
 # v18 (2026-11-06): Nifty Scalper V4 at the 2.5% day target exits a trade NIFTY 25 points against within 180 s of the
 #   fill (early_adverse, on ticks); other day targets and presets unchanged.
-PROPOSER_DECISION_ABI = "proposer-dt25-live-v18"
+# v19 (2026-11-06): Nifty Scalper V4's early exit is 35 points against within 600 s of the fill, at both the 1.5% and
+#   the 2.5% day targets (replaces 25 / 180 s at 2.5%); 2% and 3% unchanged, no early exit.
+PROPOSER_DECISION_ABI = "proposer-dt25-live-v19"
 RUNNER_HEARTBEAT_MAX_AGE_SECONDS = 30
 
 

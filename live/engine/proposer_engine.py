@@ -123,7 +123,7 @@ class ProposerParams:
     # Loss floor in SENSEX points against the entry spot (0 = off).
     spot_floor_pts: float = 0.0
     # Early adverse exit (0 = off): out once spot is early_adverse_pts against the entry spot within
-    # early_adverse_secs of the entry. On only for Nifty Scalper V4 at the 2.5% day target (params_for).
+    # early_adverse_secs of the entry. On only for Nifty Scalper V4 at the 1.5% and 2.5% day targets (params_for).
     early_adverse_pts: float = 0.0
     early_adverse_secs: float = 0.0
 
@@ -134,12 +134,14 @@ DAY_TARGET_VERSIONS = frozenset({STRATEGY_VERSION_V3_DT35, STRATEGY_VERSION_V5,
                                  STRATEGY_VERSION_NIFTY_SCALPER_V1, STRATEGY_VERSION_NIFTY_SCALPER_V3,
                                  STRATEGY_VERSION_NIFTY_SCALPER_V4})
 DAY_TARGET_MIN_PCT, DAY_TARGET_MAX_PCT = 0.5, 10.0
-# Nifty Scalper V4 at the 2.5% day target only: out of a trade NIFTY 25 points against within 180 s of the entry.
-# Research (1-min simulator, 1 Jul - 5 Nov 2026, in-sample): V4 2.5% +15.85L -> +19.29L, worst day -3.13L -> -1.73L,
-# 9 early exits, almost all of the gain on 7 Oct; on the 27 Oct - 5 Nov ticks it never fired (alphaIMB v4_early_exit.py
-# rule adv3_25; Vipin, 2026-11-06). Checked on ticks live.
-V4_EARLY_ADVERSE = (25.0, 180.0)
-V4_EARLY_ADVERSE_DAY_TARGET = 0.025
+# Nifty Scalper V4 at the 1.5% and 2.5% day targets: out of a trade NIFTY 35 points against within 600 s of the entry
+# (replaced 25 pts / 180 s at 2.5%, which had been on from 2026-11-06; Vipin, 2026-11-06). Research (1-min simulator,
+# 89 sessions 1 Jul - 5 Nov 2026, in-sample; "pessimistic" = an open trade meets each minute's adverse extreme first):
+# 2.5% 25/3 +19.29L normal / +17.32L pessimistic, 35/10 +19.20L / +19.21L with 4 early exits instead of 9; 1.5% none
+# +11.46L / +8.26L, 35/10 +11.40L / +11.39L, worst day -8k in both; on the 27 Oct - 5 Nov ticks 35/10 never fired
+# (alphaIMB pessimistic_replay.py). 2% and 3% have no early exit. Checked on ticks live.
+V4_EARLY_ADVERSE = (35.0, 600.0)
+V4_EARLY_ADVERSE_DAY_TARGETS = (0.015, 0.025)
 
 
 def parse_day_target(value) -> Optional[float]:
@@ -164,7 +166,7 @@ def params_for(strategy_version: Optional[str], day_target_pct: Optional[float] 
     if day_target_pct and str(strategy_version or "") in DAY_TARGET_VERSIONS:
         params = replace(params, daily_target_pct=float(day_target_pct))
     if (str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V4
-            and abs(params.daily_target_pct - V4_EARLY_ADVERSE_DAY_TARGET) < 1e-9):
+            and any(abs(params.daily_target_pct - t) < 1e-9 for t in V4_EARLY_ADVERSE_DAY_TARGETS)):
         params = replace(params, early_adverse_pts=V4_EARLY_ADVERSE[0], early_adverse_secs=V4_EARLY_ADVERSE[1])
     return params
 

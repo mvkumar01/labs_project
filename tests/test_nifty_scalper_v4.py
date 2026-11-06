@@ -76,17 +76,19 @@ def test_previous_cpr_is_the_last_session_before_the_day():
 
 
 def test_v4_is_v3_with_the_blocks_and_no_recovery_mode():
-    assert pe.params_for(V4) == replace(pe.params_for(V3), bank_regardless_of_book=True)
+    assert pe.params_for(V4) == replace(pe.params_for(V3), bank_regardless_of_book=True, early_adverse_pts=35.0,
+                                        early_adverse_secs=600.0)          # 1.5% takes the 35 / 600 s early exit
     assert pe.params_for(V4, .02) == replace(pe.params_for(V3, .02), bank_regardless_of_book=True)
     assert pe.params_for(V4).bank_regardless_of_book and not pe.params_for(V3).bank_regardless_of_book
     assert V4 in pe.KNOWN_VERSIONS and V4 in pe.DAY_TARGET_VERSIONS and V4 in pe.NIFTY_SCALPER_VERSIONS
     assert pe.ENTRY_BLOCK_VERSIONS == {V4} and pr.instrument_for(V4) is pr.NIFTY_I
     assert pr.print_clock_for(V4) == pr.PRINT_CLOCK_3MIN and ex.is_proposer_strategy(V4)
-    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v18"
+    assert ex.PROPOSER_DECISION_ABI == "proposer-dt25-live-v19"
     assert tr.NIFTY_V4.key in tr.NIFTY_BOOKS and tr.NIFTY_V4.key in tr.DELTA_STRIKE_BOOKS
     assert tr.NIFTY_V4.key in tr.ENTRY_BLOCK_BOOKS and tr.NIFTY_V4.print_gap_s == tr.NIFTY_V3.print_gap_s
     assert tr.params_on("2026-10-20", tr.NIFTY_V4) == replace(tr.params_on("2026-10-20", tr.NIFTY_V3),
-                                                              bank_regardless_of_book=True)
+                                                              bank_regardless_of_book=True, early_adverse_pts=35.0,
+                                                              early_adverse_secs=600.0)
 
 
 def _v4(monkeypatch, candle=PLAIN, file_has_it=True, broker=None, cpr=None):
@@ -169,7 +171,7 @@ def test_configure_offers_v4_and_its_orders_need_a_v17_runner(client):       # n
     assert _post(client, "nifty_scalper_v4").status_code == 302
     assert _strategy_pair() == ("proposer", V4)
     assert svc.get_config(USER_ID, CONN_ID, "proposer_day_target_pct") == "1.5"
-    assert ex.expected_decision_abi(V4) == "proposer-dt25-live-v18"      # a v16 runner's heartbeat does not match
+    assert ex.expected_decision_abi(V4) == "proposer-dt25-live-v19"      # a v16 runner's heartbeat does not match
 
 
 # ─────────────────────────────────────── V4 banks the day target whatever the book (2026-11-05) ──

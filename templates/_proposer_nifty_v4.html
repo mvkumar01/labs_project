@@ -7,14 +7,18 @@
       prints every 3 minutes from 09:22, the Sensex V5 entry gate with the 75-point SENSEX with-the-day filter, NIFTY
       options (next weekly on NIFTY's expiry day, |delta| &ge; 0.60, &#8377;12L of premium per entry), scaled spot targets
       and 150-point floor, a 270 s wait after an exit and a
-      <strong>{{ "%.1f"|format((proposer_nifty_v4_stats.daily_target_pct or 0.015) * 100) }}% day target</strong>.</p>
+      <strong>{{ "%.1f"|format((proposer_nifty_v4_stats.daily_target_pct or 0.015) * 100) }}% day target</strong>, banked
+      whatever the running book. A trade is closed early once NIFTY is <strong>35 points against within 10 minutes</strong>
+      of the entry (on the live preset from 9 Nov 2026; this history is replayed with it from 1 July).</p>
 
     <div class="formula">
       Research, 1 Jul &ndash; 30 Oct 2026 on the one-minute simulator: 88 trades, +&#8377;10.90L against V3's +&#8377;1.29L
       (alphaIMB support_exit.py, REBUILD sec. 56&ndash;57). <strong>Caveats:</strong> in-sample; three days (10 Aug, 11 Sep,
       25 Sep) carry most of the gain; the same blocks do not help Nifty Scalper V1 or Sensex V5. The history here is the
       one-minute simulator, which misses fills decided within seconds; the live preset trades on ticks. Paper only: it
-      never calls a broker order API.
+      never calls a broker order API. The 35-point / 10-minute early exit, 1 Jul &ndash; 5 Nov: +&#8377;11.40L against
+      +&#8377;11.46L without it, and +&#8377;11.39L against +&#8377;8.26L when each open minute meets its adverse extreme first;
+      worst day &minus;&#8377;8k in both; on the 27 Oct &ndash; 5 Nov ticks it never fired (alphaIMB pessimistic_replay.py).
     </div>
 
     {% if proposer_nifty_v4_stats.get('error') %}

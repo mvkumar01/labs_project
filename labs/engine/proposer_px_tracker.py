@@ -149,8 +149,20 @@ NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_
 ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
 # Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
 BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
-# Books that take the live preset's early adverse exit (proposer_engine.V4_EARLY_ADVERSE), from this session on.
-EARLY_ADVERSE_FROM = {NIFTY_V4_DT25.key: "2026-07-01"}
+# Books that take the live preset's early adverse exit: (first session, (points, seconds)) steps in date order, the
+# last step on or before a session applies. 35 pts / 600 s (proposer_engine.V4_EARLY_ADVERSE) on both V4 books,
+# replayed from 1 July (Vipin, 2026-11-06; it replaced 25 pts / 180 s on the 2.5% book).
+EARLY_ADVERSE_FROM = {NIFTY_V4.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),),
+                      NIFTY_V4_DT25.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),)}
+
+
+def early_adverse_on(day: str, book: Book):
+    """(points, seconds) of the book's early adverse exit on `day`, or None when it has none that day."""
+    rule = None
+    for start, step in EARLY_ADVERSE_FROM.get(book.key, ()):
+        if day >= start:
+            rule = step
+    return rule
 
 
 # ------------------------------------------------------------------ schema ---
@@ -306,9 +318,9 @@ def params_on(day: str, book) -> "pe.ProposerParams":
         params = dataclasses.replace(params, bank_regardless_of_book=True)
     if book.key in ENGINE_SPOT_FLOOR_PTS:
         params = dataclasses.replace(params, spot_floor_pts=ENGINE_SPOT_FLOOR_PTS[book.key])
-    if day >= EARLY_ADVERSE_FROM.get(book.key, "9999"):
-        params = dataclasses.replace(params, early_adverse_pts=pe.V4_EARLY_ADVERSE[0],
-                                     early_adverse_secs=pe.V4_EARLY_ADVERSE[1])
+    early = early_adverse_on(day, book)
+    if early:
+        params = dataclasses.replace(params, early_adverse_pts=early[0], early_adverse_secs=early[1])
     return params
 
 

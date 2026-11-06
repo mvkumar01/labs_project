@@ -25,8 +25,8 @@ V3, V4 = pe.STRATEGY_VERSION_NIFTY_SCALPER_V3, pe.STRATEGY_VERSION_NIFTY_SCALPER
 def test_book_is_v4_at_2_5_percent():
     a, b = tr.params_on("2026-10-20", tr.NIFTY_V4), tr.params_on("2026-10-20", tr.NIFTY_V4_DT25)
     assert b.daily_target_pct == 0.025 and a.daily_target_pct == 0.015
-    assert dataclasses.replace(b, daily_target_pct=0.015, early_adverse_pts=0.0, early_adverse_secs=0.0) == a
-    assert b.bank_regardless_of_book and (b.early_adverse_pts, b.early_adverse_secs) == (25.0, 180.0)
+    assert dataclasses.replace(b, daily_target_pct=0.015) == a
+    assert b.bank_regardless_of_book and (b.early_adverse_pts, b.early_adverse_secs) == (35.0, 600.0)
     key = tr.NIFTY_V4_DT25.key
     assert key in tr.NIFTY_BOOKS and key in tr.ENTRY_BLOCK_BOOKS and key in tr.BANK_REGARDLESS_BOOKS
     assert key in tr.DELTA_STRIKE_BOOKS and tr.NIFTY_V4_DT25.print_gap_s == tr.NIFTY_V4.print_gap_s
