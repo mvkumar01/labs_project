@@ -10,8 +10,9 @@
     <div class="formula">
       Research, 1 Jul &ndash; 30 Oct 2026 on the one-minute simulator: 106 trades, +&#8377;9.79L against V5 2.5%'s
       +&#8377;4.63L (alphaIMB support_exit.py, REBUILD sec. 57). <strong>Caveats:</strong> in-sample; October is negative
-      under this rule (&minus;&#8377;0.69L) and its worst day is &minus;&#8377;2.76L; no SENSEX tick data, so exits run on
-      one-minute bars and recorded snapshots. Paper only: no live preset, it never calls a broker order API.
+      under this rule (&minus;&#8377;0.69L) and its worst day is &minus;&#8377;2.76L; before 27 Oct there is no SENSEX tick data, so
+      exits there run on one-minute bars and recorded snapshots; from 27 Oct the sessions are replayed on the recorded
+      SENSEX ticks (Replay column). Paper only: no live preset, it never calls a broker order API.
     </div>
 
     {% if proposer_v6_dt25_stats.get('error') %}
@@ -42,6 +43,16 @@
         <span class="muted">Latest {{ proposer_v6_dt25_stats.latest.trade_date }}: {{ proposer_v6_dt25_stats.latest.status }}, through {{ (proposer_v6_dt25_stats.latest.through_ts or '')[11:16] }}</span>
       </div>
 
+      {% set rs = proposer_v6_dt25_stats.replay_split %}{% if rs %}
+      <p class="note">Replay: from {{ rs.tick_from }} each session is replayed on the recorded SENSEX index and option
+        ticks (entries at the ask, exits at the bid, {{ "%.0f"|format(rs.latency_s) }} s after the signal) - during the
+        session from the recorder's live files, after the close once more from the compacted day, which is the recorded
+        result - {{ rs.tick_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.tick_net) }}. Earlier sessions use the one-minute
+        path - {{ rs.min_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.min_net) }}. The two are summed above; the tick replay
+        is closer to the live runner. The book carries day to day, so every session from {{ rs.tick_from }} was replayed again
+        in date order with the book the tick sessions left.</p>
+      {% endif %}
+
       <h2 style="margin-top:24px">By month</h2>
       <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead><tbody>
       {% for m in proposer_v6_dt25_stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>
@@ -58,9 +69,10 @@
       {% else %}<p class="empty">No trades in this date range.</p>{% endif %}
 
       <h2 style="margin-top:24px">Daily history</h2>
-      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Net &#8377;</th></tr></thead><tbody>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Replay</th><th>Net &#8377;</th></tr></thead><tbody>
       {% for r in proposer_v6_dt25_rows %}<tr><td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status in ['live', 'unavailable'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
         <td>{{ r.regime or '&mdash;' }}</td><td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td><td>{{ '&check;' if r.day_banked else '&mdash;' }}</td>
+        {% set on_t = r.replay in ['ticks', 'ticks_live'] %}<td class="muted" title="{{ ('minutes on the 1-min path: ' ~ r.fb_min ~ ', option quotes estimated: ' ~ r.fb_opt) if on_t else 'one-minute path' }}">{{ ('ticks' if r.replay == 'ticks' else 'ticks (live files)') if on_t else '1-min' }}{{ ' (' ~ (r.fb_min + r.fb_opt) ~ ' fallback)' if on_t and (r.fb_min or 0) + (r.fb_opt or 0) else '' }}</td>
         <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
       </tbody></table>
       <p class="note">Paper only: Sensex V5 2.5% with no entry inside CPR. There is no live preset for it.</p>

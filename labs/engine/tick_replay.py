@@ -1,7 +1,10 @@
 """Tick replay for the paper books (Vipin, 2026-11-07): replay a session on the depth recorder's recorded ticks
 instead of the synthetic one-minute path, so a paper book stops and fills the way the live runners do.
 
-- NIFTY spot inside each minute = the recorded NIFTY_50 index ticks; the held option's price = its recorded best
+- Books: Nifty Scalper V4 1.5% / 2.5% and Nifty Scalper V3 (NIFTY options) and Sensex 2.5% V6 (SENSEX options), all
+  from 27 Oct 2026, the first session with recorded option bands ("Ok send both" for V3 / V6).
+- Spot inside each minute = the book's recorded index ticks (NIFTY_50, or SENSEX for a SENSEX book; TICK_INDEX); the
+  held option's price = its recorded best
   bid / ask (mid for the engine's day-target check); entries fill at the ask and exits at the bid FILL_LATENCY_S
   after the signal (live Angel orders take about 2.3 s to send). A minute without index ticks, or an option without
   a tick in the last 120 s, falls back to the one-minute path / estimate; both are counted per day.
@@ -40,7 +43,10 @@ QUOTE_MAX_AGE_S = 120.0
 INDEX_ALIAS = "NIFTY_50"
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Book key -> first session replayed on ticks (the option bands were recorded from 27 Oct 2026).
-TICK_BOOKS = {"proposer_nifty_v4": "2026-10-27", "proposer_nifty_v4_dt25": "2026-10-27"}
+TICK_BOOKS = {"proposer_nifty_v4": "2026-10-27", "proposer_nifty_v4_dt25": "2026-10-27",
+              "proposer_nifty_v3": "2026-10-27", "proposer_v6_dt25": "2026-10-27"}
+# Book key -> its index's recorder alias, when not NIFTY_50.
+TICK_INDEX = {"proposer_v6_dt25": "SENSEX"}
 # Sessions on or after a book's first tick session that have no recorded ticks anywhere: one-minute path, labelled.
 NO_TICK_DAYS: frozenset = frozenset()
 REPLAY_TICKS, REPLAY_TICKS_LIVE, REPLAY_1MIN = "ticks", "ticks_live", "1min"
@@ -55,15 +61,24 @@ def day_dir(day: str) -> Path:
     return TICK_ARCHIVE_DIR / day
 
 
-def ready(day: str) -> bool:
+def index_of(book_key: str) -> str:
+    """The recorder alias of the book's index ticks."""
+    return TICK_INDEX.get(book_key, INDEX_ALIAS)
+
+
+def ready(day: str, index: str = INDEX_ALIAS) -> bool:
     """True once the recorder has compacted the day (manifest written) and the index ticks are there."""
     d = day_dir(day)
-    return (d / "manifest.json").is_file() and (d / f"{INDEX_ALIAS}.parquet").is_file()
+    return (d / "manifest.json").is_file() and (d / f"{index}.parquet").is_file()
 
 
-def live_ready(day: str) -> bool:
+def ready_for(book_key: str, day: str) -> bool:
+    return ready(day, index_of(book_key))
+
+
+def live_ready(day: str, index: str = INDEX_ALIAS) -> bool:
     """True while the recorder is writing the day's index ticks to its live CSV."""
-    return (TICK_LIVE_DIR / day / f"{INDEX_ALIAS}.csv").is_file()
+    return (TICK_LIVE_DIR / day / f"{index}.csv").is_file()
 
 
 def wants_ticks(book_key: str, day: str) -> bool:
@@ -76,13 +91,14 @@ def ticks_for(book_key: str, day: str, today: str) -> "DayTicks | None":
     that must be on ticks but whose ticks are not here."""
     if not wants_ticks(book_key, day):
         return None
-    if ready(day):
-        return DayTicks(day)
+    index = index_of(book_key)
+    if ready(day, index):
+        return DayTicks(day, index=index)
     if day >= today:                    # today: the recorder's live files, else (none yet) the one-minute path
-        if not live_ready(day):
+        if not live_ready(day, index):
             return None
         forget_live(day)                                       # keep only today's files cached
-        return DayTicks(day, source="live")
+        return DayTicks(day, source="live", index=index)
     raise TicksMissing(f"{day}: {book_key} replays on ticks and they are not in {TICK_ARCHIVE_DIR} "
                        "- rebuild it where the ticks are and import the result")
 
@@ -90,11 +106,12 @@ def ticks_for(book_key: str, day: str, today: str) -> "DayTicks | None":
 class DayTicks:
     """One session's recorded ticks: the index path inside each minute and option quotes."""
 
-    def __init__(self, day: str, latency_s: float = FILL_LATENCY_S, source: str = "archive"):
-        self.day, self.lat, self.source = day, float(latency_s), source
+    def __init__(self, day: str, latency_s: float = FILL_LATENCY_S, source: str = "archive",
+                 index: str = INDEX_ALIAS):
+        self.day, self.lat, self.source, self.index = day, float(latency_s), source, index
         self.cache: dict = {}
         self.fallback = {"min": 0, "opt": 0}
-        self.idx = self._series(INDEX_ALIAS)
+        self.idx = self._series(index)
 
     def _series(self, alias):
         if alias in self.cache:
@@ -277,8 +294,11 @@ def day_done(conn: sqlite3.Connection, day: str) -> bool:
         return False
     ensure_table(conn)
     for k in keys:
-        row = conn.execute(f"SELECT d.status, r.replay FROM {k}_daily d LEFT JOIN tick_replay_days r "
-                           "ON r.book=? AND r.trade_date=d.trade_date WHERE d.trade_date=?", (k, day)).fetchone()
+        try:
+            row = conn.execute(f"SELECT d.status, r.replay FROM {k}_daily d LEFT JOIN tick_replay_days r "
+                               "ON r.book=? AND r.trade_date=d.trade_date WHERE d.trade_date=?", (k, day)).fetchone()
+        except sqlite3.OperationalError:              # the book has never stored a session here
+            return False
         if not row or row[0] not in ("closed", "no_trade") or row[1] != REPLAY_TICKS:
             return False
     return True
@@ -295,13 +315,14 @@ def write_marker(day: str, books: list[str]) -> Path:
 def post_close(day: str, conn: sqlite3.Connection, run_book_day) -> dict:
     """After the close: replay any tick book whose day is not yet on ticks (once the ticks are complete), then drop
     the done-marker when every tick book has the day on ticks. `run_book_day(book_key, day)` stores one book-day."""
-    out = {"ready": ready(day), "ran": [], "marker": None}
-    if not out["ready"]:
+    keys = [k for k in TICK_BOOKS if wants_ticks(k, day)]
+    out = {"ready": bool(keys) and all(ready_for(k, day) for k in keys), "ran": [], "marker": None}
+    if not any(ready_for(k, day) for k in keys):
         return out
     forget_live()                                             # the live files are gone once compacted
     done = replays_for_day(conn, day)
-    for key in TICK_BOOKS:
-        if wants_ticks(key, day) and done.get(key) != REPLAY_TICKS:
+    for key in keys:                    # date order within a book is kept: only today runs here
+        if ready_for(key, day) and done.get(key) != REPLAY_TICKS:
             run_book_day(key, day)
             out["ran"].append(key)
     if day_done(conn, day) and not (DONE_DIR / f"{day}.json").is_file():

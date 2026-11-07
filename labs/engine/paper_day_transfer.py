@@ -7,8 +7,10 @@ moved them off PythonAnywhere - so a rebuild runs there and only its results go 
     PA:     python -m labs.engine.paper_day_transfer import <payload.json>
 
 The import replaces each listed session of each book (daily row, trades, prints, tick_replay_days row) in one
-transaction, then recomputes book_gross_before from the first imported session on. Paper tables only; it never
-touches a live table or an order.
+transaction, then recomputes book_gross_before from the first imported session on. A book that carries its book day
+to day (recovery mode; not in BANK_REGARDLESS_BOOKS) replayed each session with the book it had locally, so the
+import is refused, nothing changed, unless that equals the target's recomputed book on every imported session.
+Paper tables only; it never touches a live table or an order.
 """
 from __future__ import annotations
 
@@ -68,6 +70,14 @@ def import_days(conn: sqlite3.Connection, payloads: list[dict]) -> dict:
                         _insert(conn, f"{key}_{t}", row)
                 tick_replay.record(conn, key, day, s["replay"])
             _rebase(conn, key, days[0] if days else None)
+            if key not in tr.BANK_REGARDLESS_BOOKS:          # the replay's book must be the target's book
+                for day in days:
+                    want = (p["sessions"][day]["daily"] or [{}])[0].get("book_gross_before")
+                    have = conn.execute(f"SELECT book_gross_before FROM {key}_daily WHERE trade_date=?",
+                                        (day,)).fetchone()[0]
+                    if want is None or abs(float(want) - float(have or 0.0)) > 0.01:
+                        raise ValueError(f"{key} {day}: replayed with book {want}, the target's book is {have} "
+                                         "- rebuild on the target's history; nothing was imported")
             out[key] = days
         conn.commit()
     except Exception:
