@@ -1,0 +1,94 @@
+{# Paper books: the three Nifty New Alpha V1 twins (labs.engine.nna_twins_tracker; nna_tw_stats carries the book) #}
+    {% set st = nna_tw_stats %}
+    <h1>{{ st.label or 'NNA V1 twin' }} (paper)</h1>
+    <p class="sub">Nifty New Alpha V1 as deployed &mdash; range = the previous official NIFTY close rounded to 50,
+      &plusmn;{{ st.half_width }}; standard alpha on the nearest weekly read at every 5-minute mark; <strong>CALL</strong> when
+      alpha crosses above +30, <strong>PUT</strong> below &minus;30; alpha &plusmn;100 target; marks with |alpha| &gt; 200 skipped;
+      15:25 end of day &mdash; with <strong>at most one trade a day</strong> and spot stops checked every minute from the minute
+      after entry (level known before that minute; a stop fills at the level, or the minute's open if it gapped through).
+      {% if st.key == 'nna_c3' %}
+      <strong>Points:</strong> {{ st.lots }} lot of {{ st.lot_size }}, alpha stop &minus;30 (+30 for puts), no trailing: when India
+      VIX at the open is 15 or more, once the trade is +40 the stop is fixed at entry +20; otherwise once +30 the stop is fixed
+      at entry +15.
+      {% else %}
+      <strong>{{ 'Win rate' if st.key == 'nna_c1' else 'Balanced' }}:</strong> {{ st.lots }} lots of {{ st.lot_size }}. Lot A sells
+      at entry spot +{{ "%.0f"|format(st.book) }} (puts &minus;{{ "%.0f"|format(st.book) }}); once A is sold, lot B's stop is the
+      entry spot, or the trail stop if tighter; B keeps the trail (arms at +30, trails 15); alpha stop
+      {{ "%.0f"|format(st.alpha_stop) }} ({{ "%+.0f"|format(-st.alpha_stop) }} for puts); before A sells both lots exit together.
+      {% endif %}
+      Paper leg: the ATM strike of the same weekly, bought at the ask and sold at the bid, NSE charges.</p>
+
+    <div class="formula">
+      Evidence status: <strong>in-sample, in spot points, no costs</strong> &mdash; the research picked these three on
+      {{ st.reference.sessions }} sessions (Jul 2025 &ndash; {{ st.research_end }}): {{ st.reference.trades }} trades,
+      {{ "{:+,.1f}".format(st.reference.points) }} points per full position{% if st.lots == 2 %} (half lot A + half lot B){% endif %},
+      {{ st.reference.win_pct }}% of trades ahead, {{ st.reference.losing_days }} losing days. This book reproduces the research
+      trade for trade on the sessions the labs store holds (from June). The option leg was not part of the research.
+      Sessions from <strong>{{ st.first_unseen }}</strong> were not in the research data (the three were picked on 7 Nov 2026).
+      <br>Replay: before {{ st.tick_from or '2026-10-27' }} on one-minute bars (entries, alpha exits and 15:25 at the mark
+      minute's quote, a stop or lot A at the first quote after its minute); from {{ st.tick_from or '2026-10-27' }} on the recorded
+      NIFTY ticks (stops, the trail and lot A tick by tick, every fill at the option's recorded ask / bid 2 s after the rule
+      acts). Paper only: it never calls a broker order API.
+    </div>
+
+    {% if st.get('error') %}
+      <p class="empty">{{ st.label }} book unavailable ({{ st.error }}).</p>
+    {% elif not nna_tw_rows %}
+      <p class="empty">No sessions recorded in this date range.</p>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Option leg, net</div>
+          <div class="v {{ 'green' if st.net_rs>0 else ('red' if st.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(st.net_rs) }}</div>
+          <div class="sub-k">after &#8377;{{ "{:,.0f}".format(st.charges_rs) }} charges{% if st.unpriced %}; {{ st.unpriced }} trades without quotes{% endif %}</div></div>
+        <div class="card"><div class="k">Spot points</div>
+          <div class="v {{ 'green' if st.spot_pts>0 else ('red' if st.spot_pts<0 else '') }}">{{ "%+.1f"|format(st.spot_pts) }}</div>
+          <div class="sub-k">{{ st.trades }} trades, {{ st.win_trades }} ahead in points ({{ st.win_rs }} in rupees)</div></div>
+        <div class="card"><div class="k">Since {{ st.first_unseen }}</div>
+          <div class="v {{ 'green' if st.unseen_net>0 else ('red' if st.unseen_net<0 else '') }}">&#8377;{{ "{:,.0f}".format(st.unseen_net) }}</div>
+          <div class="sub-k">{{ st.unseen_trades }} trades, {{ "%+.1f"|format(st.unseen_pts) }} points</div></div>
+        <div class="card"><div class="k">Worst day / drawdown</div>
+          <div class="v red">&#8377;{{ "{:,.0f}".format(st.worst_day_rs) }}</div>
+          <div class="sub-k">largest fall &#8377;{{ "{:,.0f}".format(st.max_dd_rs) }}, option leg</div></div>
+      </div>
+
+      {% set lt = st.latest %}
+      {% set ex = st.exit_reasons %}
+      <p class="note">Latest {{ lt.trade_date }}: {{ lt.status }}{% if lt.range_lo %}, range {{ lt.range_lo }}&ndash;{{ lt.range_hi }}
+        (centre {{ "%.2f"|format(lt.prev_close) }}, {{ lt.prev_close_source }}){% if lt.vix_open %}, VIX at the open {{ "%.2f"|format(lt.vix_open) }}{% endif %}{% if lt.error %} &middot; <span class="amber">{{ lt.error }}</span>{% endif %}{% endif %}{% if lt.latest_mark %}, last mark
+        {{ lt.latest_mark[11:16] }} alpha {{ "%+.1f"|format(lt.latest_alpha) }} spot {{ "%.1f"|format(lt.latest_spot) }}{% endif %}.
+        Exits so far: {% if st.lock %}stop lock {{ ex.LOCK }}{% else %}trail {{ ex.TRAIL }}{% if st.book %}, entry stop after lot A {{ ex.ENTRY_STOP }}{% endif %}{% endif %},
+        alpha target {{ ex.ALPHA_TGT }}, alpha stop {{ ex.ALPHA_SL }}, end of day {{ ex.EOD }}{% if st.book %}; lot A sold on {{ st.lotA_filled }} of {{ st.trades }}{% endif %}.</p>
+      {% for t in st.open_trades %}
+        <p class="note"><span class="amber">Open</span> {{ t.side }} since {{ t.entry_ts[11:16] }} at spot {{ "%.1f"|format(t.entry_spot) }}
+          ({{ t.tradingsymbol or t.strike }}){% if t.lotA_ts %}, lot A sold {{ t.lotA_ts[11:16] }}{% endif %}, marked {{ "%+.1f"|format(t.spot_pnl_pts) }} points.</p>
+      {% endfor %}
+
+      <h2 style="margin-top:24px">Trades</h2>
+      <table class="perf"><thead><tr><th>Date</th><th>Side</th><th>Entry &rarr; exit</th>{% if st.book %}<th>Lot A</th>{% endif %}<th>Alpha in / out</th><th>Spot in / out</th>
+        <th>Points</th><th>Contract</th><th>Ask in / {% if st.book %}bid A / bid B{% else %}bid out{% endif %}</th><th>Net &#8377;</th><th>Exit</th></tr></thead><tbody>
+      {% for t in nna_tw_trades %}<tr>
+        <td>{{ t.trade_date }}{% if t.trade_date >= st.first_unseen %} <span class="muted">&bull;</span>{% endif %}</td><td>{{ t.side }}</td>
+        <td>{{ t.entry_ts[11:16] }} &rarr; {{ t.exit_ts[11:16] if t.exit_ts else 'open' }}</td>
+        {% if st.book %}<td class="muted">{{ t.lotA_ts[11:16] if t.lotA_ts else '&mdash;'|safe }}</td>{% endif %}
+        <td class="muted">{{ "%+.0f"|format(t.entry_alpha) }} / {{ "%+.0f"|format(t.exit_alpha) if t.exit_alpha is not none else '&mdash;'|safe }}</td>
+        <td class="muted">{{ "%.1f"|format(t.entry_spot) }} / {{ "%.1f"|format(t.exit_spot) }}</td>
+        <td class="{{ 'green' if (t.spot_pnl_pts or 0)>0 else ('red' if (t.spot_pnl_pts or 0)<0 else '') }}">{{ "%+.1f"|format(t.spot_pnl_pts or 0) }}</td>
+        <td class="muted">{{ t.tradingsymbol or t.strike }}</td>
+        <td class="muted">{{ "%.2f"|format(t.entry_ask) if t.entry_ask else '&mdash;'|safe }}{% if st.book %} / {{ "%.2f"|format(t.lotA_bid) if t.lotA_bid else '&mdash;'|safe }}{% endif %} / {{ "%.2f"|format(t.exit_bid) if t.exit_bid else '&mdash;'|safe }}</td>
+        <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">{{ "{:,.0f}".format(t.net_rs) if t.net_rs is not none else t.quote_status }}</td>
+        <td>{{ t.exit_reason }}</td></tr>{% endfor %}
+      </tbody></table>
+
+      <h2 style="margin-top:24px">Day by day</h2>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Replay</th><th>Range</th><th>VIX open</th><th>Expiry</th><th>Trades</th><th>Points</th><th>Net &#8377;</th></tr></thead><tbody>
+      {% for r in nna_tw_rows %}<tr><td>{{ r.trade_date }}</td>
+        <td class="{{ 'amber' if r.status in ['live', 'unavailable', 'partial_quotes'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+        <td class="muted">{{ {'ticks': 'ticks', 'ticks_live': 'ticks (live files)', '1min': '1-minute'}.get(r.replay, r.replay or '') }}</td>
+        <td class="muted">{{ r.range_lo or '' }}&ndash;{{ r.range_hi or '' }}</td>
+        <td class="muted" title="{{ r.vix_source or '' }}">{{ "%.2f"|format(r.vix_open) if r.vix_open else '' }}</td>
+        <td class="muted">{{ r.expiry_code or '' }}</td><td>{{ r.n_trades }}</td>
+        <td class="{{ 'green' if (r.spot_pnl_pts or 0)>0 else ('red' if (r.spot_pnl_pts or 0)<0 else '') }}">{{ "%+.1f"|format(r.spot_pnl_pts or 0) }}</td>
+        <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="note">&bull; = after the research data ended. Paper only; this book never calls a broker order API.</p>
+    {% endif %}

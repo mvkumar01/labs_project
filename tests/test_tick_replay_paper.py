@@ -49,6 +49,14 @@ def archive(tmp_path, monkeypatch):
 
 
 BOOKS = (tr.NIFTY_V4, tr.NIFTY_V4_DT25, tr.NIFTY_V3, tr.V6_DT25)
+NNA_TWINS = ("nna_c1", "nna_c2", "nna_c3")          # tick books too; their own post-close test: test_nna_twins.py
+
+
+@pytest.fixture(autouse=True)
+def _proposer_tick_books(monkeypatch):
+    """These tests are about the proposer tick books: the NNA twins are taken out of TICK_BOOKS here."""
+    assert all(k in tk.TICK_BOOKS for k in NNA_TWINS)
+    monkeypatch.setattr(tk, "TICK_BOOKS", {k: v for k, v in tk.TICK_BOOKS.items() if k not in NNA_TWINS})
 
 
 def _book(key):

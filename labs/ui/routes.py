@@ -385,6 +385,9 @@ LIVE_TABS = {
     "sx_pc400": "SENSEX Alpha PC400",
     "sx_open1400": "SENSEX Alpha OPEN1400",
     "nna_v1": "Nifty New Alpha V1",
+    "nna_c1": "NNA V1 · win rate",
+    "nna_c2": "NNA V1 · balanced",
+    "nna_c3": "NNA V1 · points",
     "oi_unwind_nifty": "OI Unwind NIFTY",
     "oi_unwind_sensex": "OI Unwind SENSEX",
     "proposer_v5_dt25": "Sensex V5 2.5%",
@@ -442,6 +445,7 @@ def live_strategy():
     bn_alpha_rows, bn_alpha_trades, bn_alpha_stats = [], [], {}
     sx_rows, sx_trades, sx_stats = [], [], {}
     nna_rows, nna_trades, nna_stats = [], [], {}
+    nna_tw_rows, nna_tw_trades, nna_tw_stats = [], [], {}
     oiu_rows, oiu_trades, oiu_stats = [], [], {}
     proposer_v5_dt25_rows, proposer_v5_dt25_trades, proposer_v5_dt25_stats = [], [], {}
     proposer_v6_dt25_rows, proposer_v6_dt25_trades, proposer_v6_dt25_stats = [], [], {}
@@ -1124,6 +1128,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     nna_stats = {"error": str(exc)}
 
+        # Nifty New Alpha V1 twins (paper): three books, one template.
+        if active_live_tab in ("nna_c1", "nna_c2", "nna_c3"):
+            try:
+                from labs.engine.nna_twins_tracker import tab_data as nna_tw_tab_data
+                nna_tw_rows, nna_tw_trades, nna_tw_stats = nna_tw_tab_data(
+                    conn, active_live_tab, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    nna_tw_stats = {"error": str(exc)}
+
         # SENSEX Alpha (paper): two books, one template.
         if active_live_tab in ("sx_pc400", "sx_open1400"):
             try:
@@ -1442,6 +1456,9 @@ def live_strategy():
         nna_rows=nna_rows,
         nna_trades=nna_trades,
         nna_stats=nna_stats,
+        nna_tw_rows=nna_tw_rows,
+        nna_tw_trades=nna_tw_trades,
+        nna_tw_stats=nna_tw_stats,
         oiu_rows=oiu_rows,
         oiu_trades=oiu_trades,
         oiu_stats=oiu_stats,

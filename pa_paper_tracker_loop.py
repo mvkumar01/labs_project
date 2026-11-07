@@ -53,6 +53,7 @@ def main() -> None:
     from labs.engine.bn_alpha_tracker import run_paper_day as run_bn_alpha_day
     from labs.engine.sx_alpha_tracker import run_paper_day as run_sx_alpha_day
     from labs.engine.nna_tracker import run_paper_day as run_nna_day
+    from labs.engine.nna_twins_tracker import run_paper_day as run_nna_twins_day
     from labs.engine.oi_unwind_tracker import run_paper_day as run_oi_unwind_day
     from labs.engine.proposer_v5_dt25_book import run_day as run_proposer_v5_dt25_day
     from labs.engine.proposer_v6_dt25_book import run_day as run_proposer_v6_dt25_day
@@ -99,6 +100,7 @@ def main() -> None:
         "bn_alpha": None,
         "sx_alpha": None,
         "nna_v1": None,
+        "nna_twins": None,
         "oi_unwind": None,
         "proposer_v5_dt25": None,
         "proposer_v6_dt25": None,
@@ -147,6 +149,7 @@ def main() -> None:
                 ("bn_alpha", run_bn_alpha_day),
                 ("sx_alpha", run_sx_alpha_day),
                 ("nna_v1", run_nna_day),
+                ("nna_twins", run_nna_twins_day),
                 ("oi_unwind", run_oi_unwind_day),
                 ("proposer_v5_dt25", run_proposer_v5_dt25_day),
                 ("proposer_v6_dt25", run_proposer_v6_dt25_day),

@@ -2,7 +2,8 @@
 instead of the synthetic one-minute path, so a paper book stops and fills the way the live runners do.
 
 - Books: Nifty Scalper V4 1.5% / 2.5% and Nifty Scalper V3 (NIFTY options) and Sensex 2.5% V6 (SENSEX options), all
-  from 27 Oct 2026, the first session with recorded option bands ("Ok send both" for V3 / V6).
+  from 27 Oct 2026, the first session with recorded option bands ("Ok send both" for V3 / V6); the three Nifty New
+  Alpha V1 twins (nna_c1 / nna_c2 / nna_c3, labs.engine.nna_twins_tracker) from 27 Oct too.
 - Spot inside each minute = the book's recorded index ticks (NIFTY_50, or SENSEX for a SENSEX book; TICK_INDEX); the
   held option's price = its recorded best
   bid / ask (mid for the engine's day-target check); entries fill at the ask and exits at the bid FILL_LATENCY_S
@@ -44,12 +45,16 @@ INDEX_ALIAS = "NIFTY_50"
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Book key -> first session replayed on ticks (the option bands were recorded from 27 Oct 2026).
 TICK_BOOKS = {"proposer_nifty_v4": "2026-10-27", "proposer_nifty_v4_dt25": "2026-10-27",
-              "proposer_nifty_v3": "2026-10-27", "proposer_v6_dt25": "2026-10-27"}
+              "proposer_nifty_v3": "2026-10-27", "proposer_v6_dt25": "2026-10-27",
+              "nna_c1": "2026-10-27", "nna_c2": "2026-10-27", "nna_c3": "2026-10-27"}
 # Book key -> its index's recorder alias, when not NIFTY_50.
 TICK_INDEX = {"proposer_v6_dt25": "SENSEX"}
 # Sessions on or after a book's first tick session that have no recorded ticks anywhere: one-minute path, labelled.
 NO_TICK_DAYS: frozenset = frozenset()
 REPLAY_TICKS, REPLAY_TICKS_LIVE, REPLAY_1MIN = "ticks", "ticks_live", "1min"
+# A book's closed session: the proposer books write closed / no_trade, the NNA twins traded / no_trade /
+# partial_quotes (a session whose trades lack a quote is still over).
+DONE_STATUSES = ("closed", "no_trade", "traded", "partial_quotes")
 ON_TICKS = (REPLAY_TICKS, REPLAY_TICKS_LIVE)
 
 
@@ -299,7 +304,7 @@ def day_done(conn: sqlite3.Connection, day: str) -> bool:
                                "ON r.book=? AND r.trade_date=d.trade_date WHERE d.trade_date=?", (k, day)).fetchone()
         except sqlite3.OperationalError:              # the book has never stored a session here
             return False
-        if not row or row[0] not in ("closed", "no_trade") or row[1] != REPLAY_TICKS:
+        if not row or row[0] not in DONE_STATUSES or row[1] != REPLAY_TICKS:
             return False
     return True
 
