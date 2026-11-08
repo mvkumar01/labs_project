@@ -681,8 +681,22 @@ def _v45_floor(version: str | None) -> str:
     return next((k for k, (v, _) in SENSEX_V45_FLOORS.items() if v == version), "premium_20")
 
 
+def _scalper_label(preset: str, user_id: str, conn_id: str) -> str:
+    """A Nifty Scalper preset's label with the day target (and V4's early exit) the runner actually trades with: the
+    preset text says 1.5%, but the connection may have chosen another target (Vipin, 2026-11-09)."""
+    version = svc.get_config(user_id, conn_id, "strategy_version")
+    p = pe.params_for(version, pe.parse_day_target(svc.get_config(user_id, conn_id, "proposer_day_target_pct")))
+    rule = f"{p.daily_target_pct * 100:g}% day target"
+    if p.early_adverse_pts > 0:
+        rule += (f"; early exit {p.early_adverse_pts:g} pts against within "
+                 f"{p.early_adverse_secs / 60:g} min")
+    return STRATEGY_LABELS[preset].replace("1.5% day target", rule)
+
+
 def _strategy_label(user_id: str, conn_id: str) -> str:
     preset = _current_strategy_preset(user_id, conn_id)
+    if preset in NIFTY_SCALPER_PRESETS:
+        return _scalper_label(preset, user_id, conn_id)
     if preset != SENSEX_V45:
         return STRATEGY_LABELS[preset]
     floor = SENSEX_V45_FLOORS[_v45_floor(svc.get_config(user_id, conn_id, "strategy_version"))][1]

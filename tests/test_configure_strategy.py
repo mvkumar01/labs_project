@@ -312,6 +312,24 @@ def test_dashboard_displays_active_strategy_label(client):
     assert "Alpha v2.13" in response.get_data(as_text=True)
 
 
+@pytest.mark.parametrize("target, shown", [
+    (None, "1.5% day target; early exit 35 pts against within 10 min)"),
+    ("2.5", "2.5% day target; early exit 35 pts against within 10 min)"),
+    ("2", "2% day target)"),
+])
+def test_dashboard_scalper_v4_label_shows_the_chosen_day_target(client, target, shown):
+    from live.engine import proposer_engine as pe
+    _set_strategy("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V4)
+    if target:
+        svc.set_config(USER_ID, CONN_ID, "proposer_day_target_pct", target)
+
+    html = client.get("/live/").get_data(as_text=True)
+
+    assert "Nifty Scalper V4 (V3 with no entry near a CPR level or after a doji / hammer candle; " + shown in html
+    if target:
+        assert "1.5% day target" not in html.split('class="mode-label"')[1].split("</div>")[0]
+
+
 def test_new_live_schema_omits_retired_r2_source_ledger():
     conn = sqlite3.connect(":memory:")
     try:
