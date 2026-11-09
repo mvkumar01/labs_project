@@ -210,6 +210,10 @@
     {% include '_proposer_nifty_v4.html' %}
     {% elif active_live_tab == 'proposer_nifty_v4_dt25' %}
     {% include '_proposer_nifty_v4_dt25.html' %}
+    {% elif active_live_tab == 'proposer_nifty_v4_fc' %}
+    {% include '_proposer_nifty_v4_fc.html' %}
+    {% elif active_live_tab == 'proposer_nifty_v4_dt25_fc' %}
+    {% include '_proposer_nifty_v4_dt25_fc.html' %}
     {% elif active_live_tab == 'proposer_v5_dt25' %}
     {% include '_proposer_v5_dt25.html' %}
     {% elif active_live_tab == 'proposer_v6_dt25' %}
@@ -1540,6 +1544,90 @@
     }
     const refresh = document.getElementById('proposer-nifty-v4-dt25-backfill');
     const rebuild = document.getElementById('proposer-nifty-v4-dt25-rebuild');
+    if (refresh) refresh.addEventListener('click', () => run(refresh, false));
+    if (rebuild) rebuild.addEventListener('click', () => {
+      if (window.confirm('Clear only this paper book and replay every session from 1 July?')) run(rebuild, true);
+    });
+  })();
+</script>
+{% endif %}
+{% if active_live_tab == 'proposer_nifty_v4_fc' %}
+<script>
+  (function () {
+    const status = document.getElementById('proposer-nifty-v4-fc-backfill-status');
+    async function run(button, rebuild) {
+      button.disabled = true;
+      let completed = 0, first = rebuild;
+      try {
+        while (true) {
+          status.textContent = 'Backfilling... ' + completed + ' sessions completed';
+          const response = await fetch('/labs/api/proposer_nifty_v4_fc/backfill?limit=5' + (first ? '&rebuild=1' : ''),
+                                       {method: 'POST'});
+          first = false;
+          const payload = await response.json();
+          if (!response.ok || payload.error) throw new Error(payload.error || ('HTTP ' + response.status));
+          completed += payload.done.length + (payload.unavailable || []).length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            status.textContent = 'Completed ' + completed + '; stopped at ' + errors[0] + ': ' + payload.errors[errors[0]];
+            button.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            status.textContent = 'Backfill complete: ' + completed + ' sessions';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        status.textContent = 'Backfill failed: ' + error.message;
+        button.disabled = false;
+      }
+    }
+    const refresh = document.getElementById('proposer-nifty-v4-fc-backfill');
+    const rebuild = document.getElementById('proposer-nifty-v4-fc-rebuild');
+    if (refresh) refresh.addEventListener('click', () => run(refresh, false));
+    if (rebuild) rebuild.addEventListener('click', () => {
+      if (window.confirm('Clear only this paper book and replay every session from 1 July?')) run(rebuild, true);
+    });
+  })();
+</script>
+{% endif %}
+{% if active_live_tab == 'proposer_nifty_v4_dt25_fc' %}
+<script>
+  (function () {
+    const status = document.getElementById('proposer-nifty-v4-dt25-fc-backfill-status');
+    async function run(button, rebuild) {
+      button.disabled = true;
+      let completed = 0, first = rebuild;
+      try {
+        while (true) {
+          status.textContent = 'Backfilling... ' + completed + ' sessions completed';
+          const response = await fetch('/labs/api/proposer_nifty_v4_dt25_fc/backfill?limit=5' + (first ? '&rebuild=1' : ''),
+                                       {method: 'POST'});
+          first = false;
+          const payload = await response.json();
+          if (!response.ok || payload.error) throw new Error(payload.error || ('HTTP ' + response.status));
+          completed += payload.done.length + (payload.unavailable || []).length;
+          const errors = Object.keys(payload.errors || {});
+          if (errors.length) {
+            status.textContent = 'Completed ' + completed + '; stopped at ' + errors[0] + ': ' + payload.errors[errors[0]];
+            button.disabled = false;
+            break;
+          }
+          if (!payload.remaining) {
+            status.textContent = 'Backfill complete: ' + completed + ' sessions';
+            window.location.reload();
+            break;
+          }
+        }
+      } catch (error) {
+        status.textContent = 'Backfill failed: ' + error.message;
+        button.disabled = false;
+      }
+    }
+    const refresh = document.getElementById('proposer-nifty-v4-dt25-fc-backfill');
+    const rebuild = document.getElementById('proposer-nifty-v4-dt25-fc-rebuild');
     if (refresh) refresh.addEventListener('click', () => run(refresh, false));
     if (rebuild) rebuild.addEventListener('click', () => {
       if (window.confirm('Clear only this paper book and replay every session from 1 July?')) run(rebuild, true);

@@ -1,0 +1,85 @@
+{# Paper book: Nifty Scalper V4 1.5% · fixed clock #}
+    <h1>Nifty Scalper V4 1.5% · fixed clock (paper)</h1>
+    <p class="sub"><strong>Nifty Scalper V4 at 1.5% on a fixed print clock with a 2-loss stop</strong> &mdash; the controllable
+      set-up recommended after the 9 Nov 2026 live/paper audit. Two changes from the Nifty Scalper V4 1.5% book:
+      <strong>every print is acted on exactly 30 s into its minute</strong> (prints every 3 minutes from 09:22, always on
+      complete SENSEX data; the live runner's print second drifts through the minute and about one print in six is built
+      before that minute's SENSEX bar is written), and <strong>no new entry after the day's 2nd losing trade</strong>.
+      Everything else is Nifty Scalper V4 1.5%: the day banks once today's realized profit plus the open trade reaches
+      {{ "%.1f"|format((proposer_nifty_v4_fc_stats.daily_target_pct or 0.015) * 100) }}% of the trade's entry
+      capital, whatever the book; out early once NIFTY is 35 points against within 10 minutes; CPR-room and reversal-candle
+      entry blocks; NIFTY options (|delta| &ge; 0.60, &#8377;12L of premium per entry), scaled spot targets and floor, a 270 s
+      wait after an exit. One-minute simulator to 24 Oct, recorded ticks from 27 Oct. Paper only: it never calls a broker
+      order API.</p>
+
+    <div class="formula">
+      Research, 1 Jul &ndash; 9 Nov 2026 (alphaIMB det_test.py, fixed_report.py), stop after the 2nd loss, at a fixed print
+      second: 1.5% +&#8377;6.91L at 30 s (worst day &minus;&#8377;2.01L; +&#8377;1.73L..+&#8377;6.91L at 10&ndash;45 s), 2.5%
+      +&#8377;10.05L at 30 s (worst day &minus;&#8377;3.40L; &minus;&#8377;1.52L..+&#8377;11.78L at 10&ndash;45 s). With the stop the worst day
+      stayed at &minus;&#8377;2.0L..&minus;&#8377;3.8L (about two floor exits, 17&ndash;32% of the first trade's premium) at every second; without it
+      up to &minus;&#8377;8.0L. <strong>Caveats:</strong> in-sample; the V4 rules were tuned at 25 s and before 27 Oct the second decides where
+      a trade enters on a made-up one-minute path, so the totals swing with the second; on the 10 recorded tick days the stop kept
+      both books positive at every second. The loss count is the engine's (gross below zero). Companion: Nifty Scalper V4 2.5% &middot; fixed clock.
+    </div>
+
+    {% if proposer_nifty_v4_fc_stats.get('error') %}
+      <p class="empty">Nifty Scalper V4 1.5% · fixed clock book unavailable ({{ proposer_nifty_v4_fc_stats.error }}).</p>
+    {% elif not proposer_nifty_v4_fc_rows %}
+      <p class="empty">No sessions recorded in this date range.</p>
+      <button type="button" id="proposer-nifty-v4-fc-backfill" class="btn-secondary">Backfill from 1 July</button>
+      <span id="proposer-nifty-v4-fc-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if proposer_nifty_v4_fc_stats.net_total>0 else ('red' if proposer_nifty_v4_fc_stats.net_total<0 else '') }}">&#8377;{{ "{:,.0f}".format(proposer_nifty_v4_fc_stats.net_total) }}</div>
+          <div class="sub-k">after &#8377;{{ "{:,.0f}".format(proposer_nifty_v4_fc_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Green days</div><div class="v">{{ proposer_nifty_v4_fc_stats.green_pct }}%</div>
+          <div class="sub-k">{{ proposer_nifty_v4_fc_stats.green_days }} green / {{ proposer_nifty_v4_fc_stats.red_days }} red of {{ proposer_nifty_v4_fc_stats.traded_days }} traded</div></div>
+        <div class="card"><div class="k">Trades</div><div class="v">{{ proposer_nifty_v4_fc_stats.trades }}</div>
+          <div class="sub-k">over {{ proposer_nifty_v4_fc_stats.days }} sessions</div></div>
+        <div class="card"><div class="k">Worst day</div><div class="v red">&#8377;{{ "{:,.0f}".format(proposer_nifty_v4_fc_stats.worst_day) }}</div>
+          <div class="sub-k">worst trade &#8377;{{ "{:,.0f}".format(proposer_nifty_v4_fc_stats.worst_trade) }}</div></div>
+        <div class="card"><div class="k">Max drawdown</div><div class="v">&#8377;{{ "{:,.0f}".format(proposer_nifty_v4_fc_stats.max_dd) }}</div>
+          <div class="sub-k">on cumulative net, day by day</div></div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="proposer-nifty-v4-fc-backfill" class="btn-secondary">Refresh backfill</button>
+        <button type="button" id="proposer-nifty-v4-fc-rebuild" class="btn-secondary">Rebuild from 1 July</button>
+        <span id="proposer-nifty-v4-fc-backfill-status" class="muted"></span>
+        <span class="muted">Latest {{ proposer_nifty_v4_fc_stats.latest.trade_date }}: {{ proposer_nifty_v4_fc_stats.latest.status }}, through {{ (proposer_nifty_v4_fc_stats.latest.through_ts or '')[11:16] }}</span>
+      </div>
+
+      {% set rs = proposer_nifty_v4_fc_stats.replay_split %}{% if rs %}
+      <p class="note">Replay: from {{ rs.tick_from }} each session is replayed on the recorded NIFTY index and option
+        ticks (entries at the ask, exits at the bid, {{ "%.0f"|format(rs.latency_s) }} s after the signal) - during the
+        session from the recorder's live files, after the close once more from the compacted day, which is the recorded
+        result - {{ rs.tick_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.tick_net) }}. Earlier sessions use the one-minute
+        path - {{ rs.min_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.min_net) }}. The two are summed above; the tick replay
+        is closer to the live runner.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">By month</h2>
+      <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead><tbody>
+      {% for m in proposer_nifty_v4_fc_stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>
+        <td class="{{ 'green' if m.net_rs>0 else ('red' if m.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(m.net_rs) }}</td><td class="muted">&#8377;{{ "{:,.0f}".format(m.worst_day) }}</td></tr>{% endfor %}
+      </tbody></table>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if proposer_nifty_v4_fc_trades %}
+      <table class="perf"><thead><tr><th>Date</th><th>#</th><th>Signal</th><th>Contract</th><th>Entry &rarr; Exit</th><th>Buy</th><th>Sell</th><th>Net &#8377;</th><th>Exit</th></tr></thead><tbody>
+      {% for t in proposer_nifty_v4_fc_trades %}<tr><td>{{ t.trade_date }}</td><td>{{ t.seq }}</td><td>{{ t.signal }}</td><td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.side) }}</td>
+        <td>{{ t.entry_ts[11:19] }} &rarr; {{ t.exit_ts[11:19] if t.exit_ts else 'open' }}</td><td>{{ "%.2f"|format(t.entry_price or 0) }}</td><td>{{ "%.2f"|format(t.exit_price) if t.exit_price is not none else '&mdash;' }}</td>
+        <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td><td>{{ t.exit_rule if t.exit_ts else 'open' }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<p class="empty">No trades in this date range.</p>{% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Replay</th><th>Net &#8377;</th></tr></thead><tbody>
+      {% for r in proposer_nifty_v4_fc_rows %}<tr><td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status in ['live', 'unavailable'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+        <td>{{ r.regime or '&mdash;' }}</td><td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td><td>{{ '&check;' if r.day_banked else '&mdash;' }}</td>
+        {% set on_t = r.replay in ['ticks', 'ticks_live'] %}<td class="muted" title="{{ ('minutes on the 1-min path: ' ~ r.fb_min ~ ', option quotes estimated: ' ~ r.fb_opt) if on_t else 'one-minute path' }}">{{ ('ticks' if r.replay == 'ticks' else 'ticks (live files)') if on_t else '1-min' }}{{ ' (' ~ (r.fb_min + r.fb_opt) ~ ' fallback)' if on_t and (r.fb_min or 0) + (r.fb_opt or 0) else '' }}</td>
+        <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="note">Paper only; signals from the Sensex V5 2.5% book on the 3-minute clock, positions in NIFTY options. Live preset: Nifty Scalper V4 with a 2.5% day target.</p>
+    {% endif %}

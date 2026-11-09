@@ -47,7 +47,8 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 TICK_BOOKS = {"proposer_nifty_v4": "2026-10-27", "proposer_nifty_v4_dt25": "2026-10-27",
               "proposer_nifty_v3": "2026-10-27", "proposer_v6_dt25": "2026-10-27",
               "proposer_v6_dt25_ivh": "2026-10-27",
-              "nna_c1": "2026-10-27", "nna_c2": "2026-10-27", "nna_c3": "2026-10-27"}
+              "nna_c1": "2026-10-27", "nna_c2": "2026-10-27", "nna_c3": "2026-10-27",
+              "proposer_nifty_v4_fc": "2026-10-27", "proposer_nifty_v4_dt25_fc": "2026-10-27"}
 # Book key -> its index's recorder alias, when not NIFTY_50.
 TICK_INDEX = {"proposer_v6_dt25": "SENSEX", "proposer_v6_dt25_ivh": "SENSEX"}
 # Sessions on or after a book's first tick session that have no recorded ticks anywhere: one-minute path, labelled.

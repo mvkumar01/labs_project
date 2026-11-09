@@ -104,6 +104,7 @@ class Book:
     strategy_version: str
     print_gap_s: float = PRINT_EVERY_MIN * 60.0
     forming: bool = False             # Pramanaa's first print: the forming candle counted, 09:21:45
+    print_lag_s: float | None = None  # second of the minute its prints are acted on (None: PRINT_LAG_S)
 
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
@@ -150,15 +151,27 @@ NIFTY_V4 = Book("proposer_nifty_v4", pe.STRATEGY_VERSION_V5, 180.0)
 # Nifty Scalper V4 2.5%: the same book with the day target at 2.5% - the live preset with 2.5% chosen on the
 # configure page (alphaIMB v4_tail_risk.py round 4; Vipin, 2026-11-05).
 NIFTY_V4_DT25 = Book("proposer_nifty_v4_dt25", pe.STRATEGY_VERSION_V5, 180.0)
-NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key, NIFTY_V4_DT25.key})
-ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
+# Nifty Scalper V4 1.5% / 2.5% on a fixed clock: the V4 books with every print acted on exactly 30 s into its minute
+# (prints always on complete SENSEX data) and no new entry after the day's 2nd losing trade - the controllable set-up
+# recommended after the 9 Nov live/paper audit (alphaIMB det_test.py, fixed_report.py: the stop held the worst day
+# at -2.0..-3.8L at every fixed print second tested). Paper only (Vipin, 2026-11-09).
+FIXED_CLOCK_PRINT_S = 30.0
+NIFTY_V4_FC = Book("proposer_nifty_v4_fc", pe.STRATEGY_VERSION_V5, 180.0, print_lag_s=FIXED_CLOCK_PRINT_S)
+NIFTY_V4_DT25_FC = Book("proposer_nifty_v4_dt25_fc", pe.STRATEGY_VERSION_V5, 180.0, print_lag_s=FIXED_CLOCK_PRINT_S)
+NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key, NIFTY_V4_DT25.key,
+                         NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key})
+ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key})
 # Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
-BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
+BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key})
+# Books that take no new entry once the day has this many losing trades (ProposerParams.max_losses_per_day).
+MAX_LOSSES_PER_DAY = {NIFTY_V4_FC.key: 2, NIFTY_V4_DT25_FC.key: 2}
 # Books that take the live preset's early adverse exit: (first session, (points, seconds)) steps in date order, the
 # last step on or before a session applies. 35 pts / 600 s (proposer_engine.V4_EARLY_ADVERSE) on both V4 books,
 # replayed from 1 July (Vipin, 2026-11-06; it replaced 25 pts / 180 s on the 2.5% book).
 EARLY_ADVERSE_FROM = {NIFTY_V4.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),),
-                      NIFTY_V4_DT25.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),)}
+                      NIFTY_V4_DT25.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),),
+                      NIFTY_V4_FC.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),),
+                      NIFTY_V4_DT25_FC.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),)}
 
 
 @dataclass(frozen=True)
@@ -354,11 +367,12 @@ SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "prop
                  "proposer_v6_dt25_f125": "2026-07-01", "proposer_v6_dt25_ivh": "2026-07-01",
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
                  "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01",
-                 "proposer_nifty_v4_dt25": "2026-07-01"}
+                 "proposer_nifty_v4_dt25": "2026-07-01", "proposer_nifty_v4_fc": "2026-07-01",
+                 "proposer_nifty_v4_dt25_fc": "2026-07-01"}
 # Books whose day target differs from their live preset's.
 DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_v6_dt25_f125": 0.025, "proposer_v6_dt25_ivh": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
                   "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015,
-                  "proposer_nifty_v4_dt25": 0.025}
+                  "proposer_nifty_v4_dt25": 0.025, "proposer_nifty_v4_fc": 0.015, "proposer_nifty_v4_dt25_fc": 0.025}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
 # switched off (as in the research run: -99.9%).
@@ -381,6 +395,8 @@ def params_on(day: str, book) -> "pe.ProposerParams":
         params = dataclasses.replace(params, daily_target_pct=DAY_TARGET_PCT[book.key])
     if book.key in BANK_REGARDLESS_BOOKS:
         params = dataclasses.replace(params, bank_regardless_of_book=True)
+    if book.key in MAX_LOSSES_PER_DAY:
+        params = dataclasses.replace(params, max_losses_per_day=MAX_LOSSES_PER_DAY[book.key])
     if book.key in ENGINE_SPOT_FLOOR_PTS:
         params = dataclasses.replace(params, spot_floor_pts=ENGINE_SPOT_FLOOR_PTS[book.key])
     early = early_adverse_on(day, book)
@@ -406,7 +422,7 @@ DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35"
                                 "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_v6_dt25_f125",
                                 "proposer_v6_dt25_ivh", "proposer_nifty_v5",
                                 "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4",
-                                "proposer_nifty_v4_dt25"})
+                                "proposer_nifty_v4_dt25", "proposer_nifty_v4_fc", "proposer_nifty_v4_dt25_fc"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
@@ -460,17 +476,19 @@ class _Contract:
 # --------------------------------------------------------------- predictor ---
 def _prints(day: str, prior: list, today: list, open_ref: float | None, chains: dict,
             through: datetime, gap_s: float = PRINT_EVERY_MIN * 60.0,
-            forming: bool = False) -> tuple[list[dict], pp.Regime]:
+            forming: bool = False, print_lag_s: float | None = None) -> tuple[list[dict], pp.Regime]:
     """The live feed's prints, replayed: gap-rule regime, the first 5-class call as soon as one is
     valid (PRINT_LAG_S into its minute), then one every `gap_s` seconds; each from completed bars
     only (bars before its minute). `sec` is the second of minute `t` at which the print is acted
     on. At the default gap (exactly five minutes) every print lands PRINT_LAG_S into its minute,
     as the live feed's do; at PRAMANAA_PRINT_GAP_S the second and the minute slide. `forming`: Pramanaa's
-    first print - the forming bar counted (at the last completed close), from 09:21:45."""
+    first print - the forming bar counted (at the last completed close), from 09:21:45. `print_lag_s`: the
+    book's own print second instead of PRINT_LAG_S (Book.print_lag_s)."""
     regime = pp.regime_from_gap(prior[-1][1] if prior else None, open_ref)
     out = []
     at = datetime.combine(date.fromisoformat(day), SESSION_OPEN) + (
-        timedelta(seconds=PRAMANAA_FIRST_PRINT_S) if forming else timedelta(minutes=1, seconds=PRINT_LAG_S))
+        timedelta(seconds=PRAMANAA_FIRST_PRINT_S) if forming
+        else timedelta(minutes=1, seconds=PRINT_LAG_S if print_lag_s is None else print_lag_s))
     while True:
         m = at.replace(second=0, microsecond=0)
         if m > through or m.time() > PRINT_UNTIL:
