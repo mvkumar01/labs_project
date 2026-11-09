@@ -131,9 +131,10 @@ V6_DT25 = Book("proposer_v6_dt25", pe.STRATEGY_VERSION_V5)
 # Sensex 2.5% V6 with the engine's SENSEX loss floor at 125 points instead of 150, paper only - a forward test: 125 was
 # picked after looking at October (alphaIMB v6_rescue.py floor125; Vipin, 2026-11-06).
 V6_DT25_F125 = Book("proposer_v6_dt25_f125", pe.STRATEGY_VERSION_V5)
-# Sensex 2.5% V6 IV-half: V6 at half size (1,000 qty) on a day whose 09:30 SENSEX ATM IV is above 1.2 x the median 09:30
-# IV of the earlier sessions from 1 Jul (at least 10 of them), full size (2,000) otherwise; paper only (alphaIMB
-# sizing_test.py variant iv_hard1.2, iv_days.py; Vipin, 2026-11-09). See IV_HALF_BOOKS.
+# Sensex 2.5% V6 IV-half: V6 at half size (1,000 qty) from 09:20 on a day whose 09:20 SENSEX ATM IV is above 1.2 x the
+# median 09:20 IV of the earlier sessions from 1 Jul (at least 10 of them), full size (2,000) otherwise; paper only
+# (alphaIMB sizing_test.py variant iv_hard1.2_c, iv_days.py iv0920; Vipin, 2026-11-09: 09:20 so that the size is known
+# before V6's first entries, 09:22:25). See IV_HALF_BOOKS.
 V6_DT25_IVH = Book("proposer_v6_dt25_ivh", pe.STRATEGY_VERSION_V5)
 NO_INSIDE_CPR_BOOKS = frozenset({V6_DT25.key, V6_DT25_F125.key, V6_DT25_IVH.key})
 # Books whose engine spot floor (ProposerParams.spot_floor_pts, SENSEX points) differs from their preset's.
@@ -176,14 +177,14 @@ EARLY_ADVERSE_FROM = {NIFTY_V4.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),),
 
 @dataclass(frozen=True)
 class IvHalf:
-    """A day's size from its 09:30 ATM implied vol: `qty` x `factor` on a day whose IV is above `ratio` x the median
-    09:30 IV of the earlier sessions from `since` (at least `min_sessions` of them), full size otherwise or when an IV
-    is missing. Entries before `at` (IV not known yet) are full size."""
+    """A day's size from its ATM implied vol at the `at` snapshot: `qty` x `factor` on a day whose IV is above `ratio` x
+    the median IV at `at` of the earlier sessions from `since` (at least `min_sessions` of them), full size otherwise or
+    when an IV is missing. Entries before `at` (IV not known yet) are full size."""
     ratio: float = 1.2
     factor: float = 0.5
     since: str = "2026-07-01"
     min_sessions: int = 10
-    at: time = time(9, 30)
+    at: time = time(9, 20)
 
 
 IV_HALF_BOOKS = {V6_DT25_IVH.key: IvHalf()}
@@ -214,19 +215,19 @@ def atm_iv(near: pd.DataFrame, expiry, at: datetime, step: int = 100):
 
 
 def iv_size(rule: IvHalf, iv_today, history: list) -> dict:
-    """{iv_0930, iv_ref, iv_n, qty}: the day's size under `rule` (history = the earlier sessions' 09:30 IVs)."""
+    """{day_iv, iv_ref, iv_n, qty}: the day's size under `rule` (history = the earlier sessions' IVs at `rule.at`)."""
     hist = sorted(float(x) for x in history if x is not None and x == x)
     ref = float(pd.Series(hist).median()) if hist else None
     half = bool(iv_today and ref and len(hist) >= rule.min_sessions and iv_today > rule.ratio * ref)
     qty = max(1, int(round(QTY * rule.factor / LOT_SIZE))) * LOT_SIZE if half else QTY
-    return {"iv_0930": round(iv_today, 6) if iv_today else None, "iv_ref": round(ref, 6) if ref else None,
+    return {"day_iv": round(iv_today, 6) if iv_today else None, "iv_ref": round(ref, 6) if ref else None,
             "iv_n": len(hist), "qty": qty}
 
 
 def iv_history(conn: sqlite3.Connection, book: Book, day: str) -> list:
     rule = IV_HALF_BOOKS[book.key]
-    return [r[0] for r in conn.execute(f"SELECT iv_0930 FROM {book.key}_daily WHERE trade_date>=? AND trade_date<? "
-                                       "AND iv_0930 IS NOT NULL ORDER BY trade_date", (rule.since, day))]
+    return [r[0] for r in conn.execute(f"SELECT day_iv FROM {book.key}_daily WHERE trade_date>=? AND trade_date<? "
+                                       "AND day_iv IS NOT NULL ORDER BY trade_date", (rule.since, day))]
 
 
 def early_adverse_on(day: str, book: Book):
@@ -296,7 +297,7 @@ def _ensure_tables(conn: sqlite3.Connection, book: Book = PX) -> None:
     )
     if book.key in IV_HALF_BOOKS:
         have = {r[1] for r in conn.execute(f"PRAGMA table_info({book.key}_daily)")}
-        for col in ("iv_0930", "iv_ref", "iv_n"):
+        for col in ("day_iv", "iv_ref", "iv_n"):
             if col not in have:
                 conn.execute(f"ALTER TABLE {book.key}_daily ADD COLUMN {col} REAL")
     conn.commit()
@@ -558,7 +559,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     """Replay one session to its last recorded minute. Pure: reads market data, writes nothing. `ticks` (a
     labs.engine.tick_replay.DayTicks on the SENSEX index, for a SENSEX book) replays inside each minute on the
     recorded index and option ticks, as the NIFTY books do (proposer_nifty_tracker). `iv_hist`: for an IV_HALF_BOOKS book,
-    the earlier sessions' 09:30 IVs (iv_history), which set the day's size."""
+    the earlier sessions' IVs at its sizing time (iv_history), which set the day's size."""
     if book.key in NIFTY_BOOKS:                        # positions in NIFTY options, signals as here
         from labs.engine import proposer_nifty_tracker
         return proposer_nifty_tracker.simulate_day(day, book_before=book_before, now=now, book=book, ticks=ticks)
@@ -810,8 +811,8 @@ def _persist(conn: sqlite3.Connection, r: dict, book: Book = PX) -> None:
          r["book_gross_before"], r["through_ts"], r.get("qty", QTY) // LOT_SIZE, r.get("qty", QTY), params.bar_exit,
          book.strategy_version, datetime.now(IST).isoformat(timespec="seconds")))
     if book.key in IV_HALF_BOOKS:                      # the day's size and the IV that set it
-        conn.execute(f"UPDATE {book.key}_daily SET iv_0930=?, iv_ref=?, iv_n=? WHERE trade_date=?",
-                     (r.get("iv_0930"), r.get("iv_ref"), r.get("iv_n"), r["trade_date"]))
+        conn.execute(f"UPDATE {book.key}_daily SET day_iv=?, iv_ref=?, iv_n=? WHERE trade_date=?",
+                     (r.get("day_iv"), r.get("iv_ref"), r.get("iv_n"), r["trade_date"]))
     from labs.engine import tick_replay
     if book.key in tick_replay.TICK_BOOKS:             # how the day was replayed, for the tab's Replay column
         tick_replay.record(conn, book.key, r["trade_date"], r.get("replay") or tick_replay.ONE_MINUTE)

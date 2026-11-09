@@ -1,7 +1,7 @@
 """Paper book: Sensex 2.5% V6 IV-half - Sensex 2.5% V6 (labs.engine.proposer_v6_dt25_book: Sensex V5 2.5% with no entry
 while SENSEX is inside the previous session's CPR) at half size (1,000 qty instead of 2,000) for the whole day when the
-09:30 SENSEX ATM implied vol is above 1.2 x the median 09:30 IV of the earlier sessions from 1 Jul (at least 10 of
-them); the 2.5% day target is a share of the open position's premium, so it halves with the size (Vipin, 2026-11-09;
+09:20 SENSEX ATM implied vol is above 1.2 x the median 09:20 IV of the earlier sessions from 1 Jul (at least 10 of
+them), from 09:20 on (entries before 09:20 are full size); the 2.5% day target is a share of the open position's premium, so it halves with the size (Vipin, 2026-11-09;
 proposer_px_tracker.IV_HALF_BOOKS). Everything else as V6, replayed on the recorded SENSEX ticks from 27 Oct. Paper
 only: it never calls a broker order API; no live preset. Owns the proposer_v6_dt25_ivh_* tables.
 """

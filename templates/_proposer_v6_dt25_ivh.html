@@ -6,18 +6,21 @@
       {{ "%.1f"|format((proposer_v6_dt25_ivh_stats.daily_target_pct or 0.025) * 100) }}% day target) &mdash; with one change:
       <strong>no entry while SENSEX is inside the previous session's CPR</strong> (between TC and BC, ends included). A held
       signal waits for the next print; entries above or below CPR, exits and everything else are unchanged &mdash; with one
-      change, <strong>the size</strong>: at 09:30 the SENSEX ATM implied vol of the traded weekly (the average of the ATM call's
-      and put's IV, each from its bid/ask mid) is compared with the median 09:30 IV of the earlier sessions from
+      change, <strong>the size</strong>: at 09:20 the SENSEX ATM implied vol of the traded weekly (the average of the ATM call's
+      and put's IV, each from its bid/ask mid) is compared with the median 09:20 IV of the earlier sessions from
       {{ (proposer_v6_dt25_ivh_stats.iv_half or {}).since or '2026-07-01' }}. Above
       {{ (proposer_v6_dt25_ivh_stats.iv_half or {}).ratio or 1.2 }}&times; that median (once
       {{ (proposer_v6_dt25_ivh_stats.iv_half or {}).min_sessions or 10 }} sessions are in it), the whole day trades
       <strong>1,000 qty (50 lots)</strong> instead of 2,000; the day target stays 2.5% of the open position's premium, so it
-      halves too. A missing IV means full size, and so does an entry before 09:30 (the IV is not known yet).</p>
+      halves too. A missing IV means full size, and so does an entry before 09:20 (the IV is not known yet; V6's
+      earliest entries come at 09:22). Until 9 Nov 2026 evening this book sized on the 09:30 IV; it was rebuilt from
+      1 July on the 09:20 rule.</p>
 
     <div class="formula">
       Research, 1 Jul &ndash; 6 Nov 2026 (one-minute replay on bid/ask mid to 24 Oct, recorded ticks from 27 Oct, book
-      carried): +&#8377;12.07L, worst day &minus;&#8377;1.52L, max drawdown &#8377;2.34L, against V6 at full size in the same run
-      +&#8377;11.87L, &minus;&#8377;3.04L, &#8377;4.68L; 25 half-size days (alphaIMB sizing_test.py iv_hard1.2).
+      carried): +&#8377;12.18L, worst day &minus;&#8377;1.52L, max drawdown &#8377;2.34L, against V6 at full size in the same run
+      +&#8377;11.87L, &minus;&#8377;3.04L, &#8377;4.68L; 24 half-size days (alphaIMB sizing_test.py iv_hard1.2_c). The 09:20
+      time was chosen after the 09:30 version was found to halve entries made before its IV existed.
       <strong>Caveats:</strong> the high-IV weakness was found on this same data, and most of the gain is two days &mdash;
       26 Oct (&minus;&#8377;3.04L &rarr; &minus;&#8377;1.52L) and 27 Oct (&minus;&#8377;1.64L &rarr; &minus;&#8377;0.82L) &mdash; so
       the sessions from 9 Nov are the test. This book prices sessions before 27 Oct on LTP, not the mid, so its totals
@@ -83,11 +86,11 @@
       {% else %}<p class="empty">No trades in this date range.</p>{% endif %}
 
       <h2 style="margin-top:24px">Daily history</h2>
-      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Size</th><th>09:30 IV</th><th>Replay</th><th>Net &#8377;</th></tr></thead><tbody>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Size</th><th>09:20 IV</th><th>Replay</th><th>Net &#8377;</th></tr></thead><tbody>
       {% for r in proposer_v6_dt25_ivh_rows %}<tr><td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status in ['live', 'unavailable'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
         <td>{{ r.regime or '&mdash;' }}</td><td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td><td>{{ '&check;' if r.day_banked else '&mdash;' }}</td>
         <td class="{{ 'amber' if r.half else 'muted' }}">{{ "{:,}".format(r.qty) if r.qty else '&mdash;' }}{{ ' (half)' if r.half else '' }}</td>
-        <td class="muted" title="{{ ('median of ' ~ (r.iv_n|int) ~ ' earlier sessions: ' ~ ('%.1f'|format(r.iv_ref * 100)) ~ '%') if r.iv_ref else 'no reference yet' }}">{{ ('%.1f'|format(r.iv_0930 * 100) ~ '%') if r.iv_0930 else '&mdash;' }}{{ (' (' ~ r.iv_ratio ~ '×)') if r.iv_ratio else '' }}</td>
+        <td class="muted" title="{{ ('median of ' ~ (r.iv_n|int) ~ ' earlier sessions: ' ~ ('%.1f'|format(r.iv_ref * 100)) ~ '%') if r.iv_ref else 'no reference yet' }}">{{ ('%.1f'|format(r.day_iv * 100) ~ '%') if r.day_iv else '&mdash;' }}{{ (' (' ~ r.iv_ratio ~ '×)') if r.iv_ratio else '' }}</td>
         {% set on_t = r.replay in ['ticks', 'ticks_live'] %}<td class="muted" title="{{ ('minutes on the 1-min path: ' ~ r.fb_min ~ ', option quotes estimated: ' ~ r.fb_opt) if on_t else 'one-minute path' }}">{{ ('ticks' if r.replay == 'ticks' else 'ticks (live files)') if on_t else '1-min' }}{{ ' (' ~ (r.fb_min + r.fb_opt) ~ ' fallback)' if on_t and (r.fb_min or 0) + (r.fb_opt or 0) else '' }}</td>
         <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
       </tbody></table>

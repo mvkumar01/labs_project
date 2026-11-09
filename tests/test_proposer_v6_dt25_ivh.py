@@ -1,4 +1,4 @@
-"""Sensex 2.5% V6 IV-half: the V6 paper book at half size on a day whose 09:30 SENSEX ATM IV is above 1.2 x the median
+"""Sensex 2.5% V6 IV-half: the V6 paper book at half size on a day whose 09:20 SENSEX ATM IV is above 1.2 x the median
 of the earlier sessions' (Vipin, 2026-11-09). Paper only."""
 from __future__ import annotations
 
@@ -29,16 +29,16 @@ def test_book_is_v6_apart_from_the_size():
     assert key in tr.NO_INSIDE_CPR_BOOKS and key in tr.DELTA_STRIKE_BOOKS and key not in tr.NIFTY_BOOKS
     assert IVH.strategy_version == tr.V6_DT25.strategy_version and tr.SETTINGS_FROM[key] == "2026-07-01"
     assert tk.TICK_BOOKS[key] == "2026-10-27" and tk.index_of(key) == "SENSEX"
-    assert tr.IV_HALF_BOOKS == {key: tr.IvHalf(1.2, 0.5, "2026-07-01", 10, time(9, 30))}
+    assert tr.IV_HALF_BOOKS == {key: tr.IvHalf(1.2, 0.5, "2026-07-01", 10, time(9, 20))}
 
 
 def test_iv_size_rule():
     rule = tr.IV_HALF_BOOKS[IVH.key]
     ten = [0.2, 0.18, 0.22, 0.2, 0.19, 0.21, 0.2, 0.25, 0.15, 0.2]           # median 0.2
-    assert tr.iv_size(rule, 0.25, ten) == {"iv_0930": 0.25, "iv_ref": 0.2, "iv_n": 10, "qty": 1000}
+    assert tr.iv_size(rule, 0.25, ten) == {"day_iv": 0.25, "iv_ref": 0.2, "iv_n": 10, "qty": 1000}
     assert tr.iv_size(rule, 0.24, ten)["qty"] == 2000                           # 1.2 x exactly: full
     assert tr.iv_size(rule, 0.5, ten[:9])["qty"] == 2000                        # fewer than 10 sessions
-    assert tr.iv_size(rule, None, ten)["qty"] == 2000 and tr.iv_size(rule, None, ten)["iv_0930"] is None
+    assert tr.iv_size(rule, None, ten)["qty"] == 2000 and tr.iv_size(rule, None, ten)["day_iv"] is None
     assert tr.iv_size(rule, 0.3, ten + [None, float("nan")])["iv_n"] == 10
 
 
@@ -81,22 +81,22 @@ def _key(t):
 
 def test_a_high_iv_day_trades_v6_at_half_size(paper):
     full = tr.simulate_day(DAY, book=tr.V6_DT25)
-    iv = tr.simulate_day(DAY, book=IVH, iv_hist=[])["iv_0930"]
-    assert iv and full["trades"] and full["qty"] == 2000 and full.get("iv_0930") is None
+    iv = tr.simulate_day(DAY, book=IVH, iv_hist=[])["day_iv"]
+    assert iv and full["trades"] and full["qty"] == 2000 and full.get("day_iv") is None
     low = tr.simulate_day(DAY, book=IVH, iv_hist=[iv] * 10)
     high = tr.simulate_day(DAY, book=IVH, iv_hist=[iv / 1.3] * 10)
     assert low["qty"] == 2000 and high["qty"] == 1000 and high["iv_ref"] == pytest.approx(iv / 1.3, abs=1e-6)
     assert [_key(t) for t in low["trades"]] == [_key(t) for t in full["trades"]] == [_key(t) for t in high["trades"]]
     assert low["gross_rs"] == full["gross_rs"] and high["gross_rs"] == pytest.approx(full["gross_rs"] / 2, abs=0.05)
     assert all(t["qty"] == 1000 for t in high["trades"])
-    assert all(t["entry_ts"] >= DAY + "T09:30" for t in high["trades"])
+    assert all(t["entry_ts"] >= DAY + "T09:20" for t in high["trades"])
 
 
 def test_run_day_reads_the_earlier_sessions_and_stores_the_size(paper):
     conn = paper
     tr._ensure_tables(conn, IVH)
-    iv = tr.simulate_day(DAY, book=IVH, iv_hist=[])["iv_0930"]
-    insert = (f"INSERT INTO {IVH.key}_daily (trade_date,status,n_trades,lots,qty,strategy_version,updated_at,iv_0930) "
+    iv = tr.simulate_day(DAY, book=IVH, iv_hist=[])["day_iv"]
+    insert = (f"INSERT INTO {IVH.key}_daily (trade_date,status,n_trades,lots,qty,strategy_version,updated_at,day_iv) "
               "VALUES (?,'no_trade',0,100,2000,'x','x',?)")
     for i in range(10):                         # ten earlier sessions at a low IV, one before 1 Jul that is ignored
         conn.execute(insert, (f"2026-07-{i + 1:02d}", iv / 1.5))
@@ -104,7 +104,7 @@ def test_run_day_reads_the_earlier_sessions_and_stores_the_size(paper):
     conn.commit()
     assert tr.iv_history(conn, IVH, DAY) == pytest.approx([iv / 1.5] * 10)
     tr.run_day(DAY, connection=conn, book=IVH)
-    row = conn.execute(f"SELECT qty, lots, iv_0930, iv_ref, iv_n FROM {IVH.key}_daily WHERE trade_date=?",
+    row = conn.execute(f"SELECT qty, lots, day_iv, iv_ref, iv_n FROM {IVH.key}_daily WHERE trade_date=?",
                        (DAY,)).fetchone()
     assert row[:2] == (1000, 50) and row[2] == pytest.approx(iv, abs=1e-6) and row[4] == 10
     from labs.engine import proposer_px_view as view
@@ -147,7 +147,7 @@ def test_transfer_carries_the_iv_columns(tmp_path, paper):
     r = tr.simulate_day(DAY, book=IVH, iv_hist=[0.01] * 10)
     payload = xfer.export_days(IVH, [r])
     daily = payload["sessions"][DAY]["daily"][0]
-    assert daily["qty"] == 1000 and daily["iv_n"] == 10 and daily["iv_0930"] == r["iv_0930"]
+    assert daily["qty"] == 1000 and daily["iv_n"] == 10 and daily["day_iv"] == r["day_iv"]
     conn = sqlite3.connect(tmp_path / "pa.db")
     xfer.import_days(conn, [payload])
-    assert conn.execute(f"SELECT qty, iv_0930 FROM {IVH.key}_daily").fetchone() == (1000, r["iv_0930"])
+    assert conn.execute(f"SELECT qty, day_iv FROM {IVH.key}_daily").fetchone() == (1000, r["day_iv"])
