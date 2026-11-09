@@ -125,3 +125,17 @@ def test_invalid_and_missing_csrf_do_not_overwrite_saved_settings(client):
     assert client.post(URL, json={"keys": []}).status_code == 400
     assert client.get(URL).json["keys"] == ["gold_cci_v2"]
     assert client.post(URL, json={"keys": []}, headers=headers).json["keys"] == []
+
+
+def test_spotlight_for_all_is_shown_first_to_everyone_and_skips_missing_tiles():
+    from labs.services.overview_navigation import SPOTLIGHT_FOR_ALL
+    assert SPOTLIGHT_FOR_ALL == ("proposer_nifty_v4", "proposer_nifty_v4_dt25", "proposer_v6_dt25",
+                                 "proposer_v6_dt25_ivh", "nna_v1")
+    assert set(SPOTLIGHT_FOR_ALL) <= strategy_keys()
+    cards = [card("nna_v1", "NIFTY options"), card("gold_cci_v2", "GOLD futures"),
+             card("proposer_v6_dt25", "SENSEX options")]
+    assert build_navigation(cards)["for_all"] == ["proposer_v6_dt25", "nna_v1"]       # catalog order of the set
+    html = render(cards)
+    assert '<script type="application/json" id="spotlight-for-all">["proposer_v6_dt25", "nna_v1"]</script>' in html
+    js = Path("static/overview.js").read_text(encoding="utf-8")
+    assert 'forAll.concat(keys)' in js and 'In Spotlight for everyone' in js and ':checked:not(:disabled)' in js

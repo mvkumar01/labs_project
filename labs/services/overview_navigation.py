@@ -2,6 +2,11 @@
 from labs.services.book_overview import BOOKS
 from labs.services.book_overview_more import MORE_BOOKS
 
+# In every visitor's Spotlight, first and not removable; each person's own picks follow (Vipin, 2026-11-09: "add
+# Nifty Scalper V4 - 1.5%, 2.5% and Sensex V6, New Nifty Alpha V1 and this new sensex to the spotlight for all").
+# Display only: no saved selection is changed. A key missing from the page's catalog is skipped.
+SPOTLIGHT_FOR_ALL = ("proposer_nifty_v4", "proposer_nifty_v4_dt25", "proposer_v6_dt25", "proposer_v6_dt25_ivh", "nna_v1")
+
 GROUPS = {
     "crypto": ("Crypto", "Bitcoin, Ethereum and crypto strategies"),
     "commodities": ("Commodities", "Gold and crude oil strategies"),
@@ -36,8 +41,10 @@ def build_navigation(cards, asset=None):
         if members or key != "other":
             groups.append(dict(key=key, label=label, description=description, cards=members,
                                count=len(members)))
+    keys = {c["key"] for c in cards}
     return dict(groups=groups, asset=selected, label=GROUPS[selected][0] if selected else "Overview",
-                cards=[c for c in cards if asset_for(c) == selected] if selected else cards)
+                cards=[c for c in cards if asset_for(c) == selected] if selected else cards,
+                for_all=[k for k in SPOTLIGHT_FOR_ALL if k in keys])
 
 
 def strategy_keys():

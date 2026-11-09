@@ -393,6 +393,7 @@ LIVE_TABS = {
     "proposer_v5_dt25": "Sensex V5 2.5%",
     "proposer_v6_dt25": "Sensex 2.5% V6",
     "proposer_v6_dt25_f125": "Sensex 2.5% V6 · floor 125",
+    "proposer_v6_dt25_ivh": "Sensex 2.5% V6 · IV half",
     "proposer_nifty_v5": "Nifty Scalper V1",
     "proposer_nifty_v3": "Nifty Scalper V3",
     "proposer_nifty_v3_pclock": "Nifty Scalper V3 (Pramanaa timing)",
@@ -450,6 +451,7 @@ def live_strategy():
     proposer_v5_dt25_rows, proposer_v5_dt25_trades, proposer_v5_dt25_stats = [], [], {}
     proposer_v6_dt25_rows, proposer_v6_dt25_trades, proposer_v6_dt25_stats = [], [], {}
     proposer_v6_dt25_f125_rows, proposer_v6_dt25_f125_trades, proposer_v6_dt25_f125_stats = [], [], {}
+    proposer_v6_dt25_ivh_rows, proposer_v6_dt25_ivh_trades, proposer_v6_dt25_ivh_stats = [], [], {}
     proposer_nifty_v5_rows, proposer_nifty_v5_trades, proposer_nifty_v5_stats = [], [], {}
     proposer_nifty_v3_rows, proposer_nifty_v3_trades, proposer_nifty_v3_stats = [], [], {}
     proposer_nifty_v3_pclock_rows, proposer_nifty_v3_pclock_trades, proposer_nifty_v3_pclock_stats = [], [], {}
@@ -1110,6 +1112,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_v6_dt25_f125_stats = {"error": str(exc)}
 
+        # Sensex 2.5% V6 · IV half (paper).
+        if active_live_tab == "proposer_v6_dt25_ivh":
+            try:
+                from labs.engine.proposer_v6_dt25_ivh_book import tab_data as proposer_v6_dt25_ivh_tab_data
+                proposer_v6_dt25_ivh_rows, proposer_v6_dt25_ivh_trades, proposer_v6_dt25_ivh_stats = (
+                    proposer_v6_dt25_ivh_tab_data(conn, date_clause, date_params))
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_v6_dt25_ivh_stats = {"error": str(exc)}
+
         # OI Unwind (paper): two books, one template.
         if active_live_tab in ("oi_unwind_nifty", "oi_unwind_sensex"):
             try:
@@ -1471,6 +1483,9 @@ def live_strategy():
         proposer_v6_dt25_f125_rows=proposer_v6_dt25_f125_rows,
         proposer_v6_dt25_f125_trades=proposer_v6_dt25_f125_trades,
         proposer_v6_dt25_f125_stats=proposer_v6_dt25_f125_stats,
+        proposer_v6_dt25_ivh_rows=proposer_v6_dt25_ivh_rows,
+        proposer_v6_dt25_ivh_trades=proposer_v6_dt25_ivh_trades,
+        proposer_v6_dt25_ivh_stats=proposer_v6_dt25_ivh_stats,
         proposer_nifty_v5_rows=proposer_nifty_v5_rows,
         proposer_nifty_v5_trades=proposer_nifty_v5_trades,
         proposer_nifty_v5_stats=proposer_nifty_v5_stats,
@@ -1768,6 +1783,25 @@ def proposer_v6_dt25_backfill():
 def proposer_v6_dt25_f125_backfill():
     """Backfill bounded batches of the Sensex 2.5% V6 · floor 125 paper book."""
     from labs.engine.proposer_v6_dt25_f125_book import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/proposer_v6_dt25_ivh/backfill", methods=["POST"])
+def proposer_v6_dt25_ivh_backfill():
+    """Backfill bounded batches of the Sensex 2.5% V6 · IV half paper book."""
+    from labs.engine.proposer_v6_dt25_ivh_book import DEFAULT_START, run_backfill
     try:
         limit = min(max(int(request.args.get("limit", 5)), 1), 20)
     except (TypeError, ValueError):

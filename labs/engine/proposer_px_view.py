@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from labs.engine.proposer_px_tracker import DAY_TARGET_PCT, LOTS, PX, Book
+from labs.engine.proposer_px_tracker import DAY_TARGET_PCT, IV_HALF_BOOKS, LOTS, PX, QTY, Book
 from live.engine import proposer_engine as pe
 
 
@@ -26,6 +26,13 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
     trades = [dict(zip(cols, r)) for r in cur.fetchall()]
     if not rows:
         return rows, trades, {}
+    if book.key in IV_HALF_BOOKS:                        # the day's size and the 09:30 IV that set it
+        iv = {r[0]: r[1:] for r in conn.execute(f"SELECT trade_date, iv_0930, iv_ref, iv_n FROM {book.key}_daily")}
+        rule = IV_HALF_BOOKS[book.key]
+        for r in rows:
+            r["iv_0930"], r["iv_ref"], r["iv_n"] = iv.get(r["trade_date"], (None, None, None))
+            r["half"] = bool(r["qty"] and r["qty"] < QTY)
+            r["iv_ratio"] = round(r["iv_0930"] / r["iv_ref"], 2) if r["iv_0930"] and r["iv_ref"] else None
     from labs.engine import tick_replay
     ticked = book.key in tick_replay.TICK_BOOKS
     if ticked:                                           # how each day was replayed (ticks / one-minute path)
@@ -78,6 +85,11 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
         "with_day_pts": pe.params_for(book.strategy_version).with_day_pts,
         "first_date": rows[-1]["trade_date"], "last_date": rows[0]["trade_date"], "latest": rows[0],
     }
+    if book.key in IV_HALF_BOOKS:
+        half = [r for r in done if r.get("half")]
+        stats["iv_half"] = {"days": len(half), "net": round(sum(float(r["net_rs"] or 0) for r in half), 2),
+                            "ratio": IV_HALF_BOOKS[book.key].ratio, "since": IV_HALF_BOOKS[book.key].since,
+                            "min_sessions": IV_HALF_BOOKS[book.key].min_sessions, "full_qty": QTY}
     if ticked:
         on_ticks = [r for r in done if r.get("replay") in tick_replay.ON_TICKS]
         stats["replay_split"] = {

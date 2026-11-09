@@ -1,0 +1,95 @@
+{# Paper book: Sensex 2.5% V6 IV-half - Sensex 2.5% V6 at half size on a high-IV day #}
+    <h1>Sensex 2.5% V6 &middot; IV half (paper)</h1>
+    <p class="sub">Sensex 2.5% V6 &mdash; Sensex V5 2.5% &mdash; the live preset <code>proposer_dt35_v5</code> rules (SENSEX Proposer v3, the
+      with-the-day filter, Sentinel's |delta| &ge; 0.60 strike, a 270 s wait after an exit, no premium floor, a trade closed
+      once SENSEX is 150 points against its entry, {{ proposer_v6_dt25_ivh_stats.lots or 100 }} lots, a
+      {{ "%.1f"|format((proposer_v6_dt25_ivh_stats.daily_target_pct or 0.025) * 100) }}% day target) &mdash; with one change:
+      <strong>no entry while SENSEX is inside the previous session's CPR</strong> (between TC and BC, ends included). A held
+      signal waits for the next print; entries above or below CPR, exits and everything else are unchanged &mdash; with one
+      change, <strong>the size</strong>: at 09:30 the SENSEX ATM implied vol of the traded weekly (the average of the ATM call's
+      and put's IV, each from its bid/ask mid) is compared with the median 09:30 IV of the earlier sessions from
+      {{ (proposer_v6_dt25_ivh_stats.iv_half or {}).since or '2026-07-01' }}. Above
+      {{ (proposer_v6_dt25_ivh_stats.iv_half or {}).ratio or 1.2 }}&times; that median (once
+      {{ (proposer_v6_dt25_ivh_stats.iv_half or {}).min_sessions or 10 }} sessions are in it), the whole day trades
+      <strong>1,000 qty (50 lots)</strong> instead of 2,000; the day target stays 2.5% of the open position's premium, so it
+      halves too. A missing IV means full size, and so does an entry before 09:30 (the IV is not known yet).</p>
+
+    <div class="formula">
+      Research, 1 Jul &ndash; 6 Nov 2026 (one-minute replay on bid/ask mid to 24 Oct, recorded ticks from 27 Oct, book
+      carried): +&#8377;12.07L, worst day &minus;&#8377;1.52L, max drawdown &#8377;2.34L, against V6 at full size in the same run
+      +&#8377;11.87L, &minus;&#8377;3.04L, &#8377;4.68L; 25 half-size days (alphaIMB sizing_test.py iv_hard1.2).
+      <strong>Caveats:</strong> the high-IV weakness was found on this same data, and most of the gain is two days &mdash;
+      26 Oct (&minus;&#8377;3.04L &rarr; &minus;&#8377;1.52L) and 27 Oct (&minus;&#8377;1.64L &rarr; &minus;&#8377;0.82L) &mdash; so
+      the sessions from 9 Nov are the test. This book prices sessions before 27 Oct on LTP, not the mid, so its totals
+      differ from the research's. Before 27 Oct there is no SENSEX tick data, so
+      exits there run on one-minute bars and recorded snapshots; from 27 Oct the sessions are replayed on the recorded
+      SENSEX ticks (Replay column). Paper only: no live preset, it never calls a broker order API.
+    </div>
+
+    {% if proposer_v6_dt25_ivh_stats.get('error') %}
+      <p class="empty">Sensex 2.5% V6 book unavailable ({{ proposer_v6_dt25_ivh_stats.error }}).</p>
+    {% elif not proposer_v6_dt25_ivh_rows %}
+      <p class="empty">No sessions recorded in this date range.</p>
+      <button type="button" id="proposer-v6-dt25-ivh-backfill" class="btn-secondary">Backfill from 1 July</button>
+      <span id="proposer-v6-dt25-ivh-backfill-status" class="muted"></span>
+    {% else %}
+      <div class="cards">
+        <div class="card"><div class="k">Net P&amp;L</div>
+          <div class="v {{ 'green' if proposer_v6_dt25_ivh_stats.net_total>0 else ('red' if proposer_v6_dt25_ivh_stats.net_total<0 else '') }}">&#8377;{{ "{:,.0f}".format(proposer_v6_dt25_ivh_stats.net_total) }}</div>
+          <div class="sub-k">&#8377;{{ "{:,.0f}".format(proposer_v6_dt25_ivh_stats.net_per_lot) }} per lot, after &#8377;{{ "{:,.0f}".format(proposer_v6_dt25_ivh_stats.charges_total) }} charges</div></div>
+        <div class="card"><div class="k">Green days</div><div class="v">{{ proposer_v6_dt25_ivh_stats.green_pct }}%</div>
+          <div class="sub-k">{{ proposer_v6_dt25_ivh_stats.green_days }} green / {{ proposer_v6_dt25_ivh_stats.red_days }} red of {{ proposer_v6_dt25_ivh_stats.traded_days }} traded</div></div>
+        <div class="card"><div class="k">Trades</div><div class="v">{{ proposer_v6_dt25_ivh_stats.trades }}</div>
+          <div class="sub-k">over {{ proposer_v6_dt25_ivh_stats.days }} sessions</div></div>
+        <div class="card"><div class="k">Worst day</div><div class="v red">&#8377;{{ "{:,.0f}".format(proposer_v6_dt25_ivh_stats.worst_day) }}</div>
+          <div class="sub-k">worst trade &#8377;{{ "{:,.0f}".format(proposer_v6_dt25_ivh_stats.worst_trade) }}</div></div>
+        <div class="card"><div class="k">Max drawdown</div><div class="v">&#8377;{{ "{:,.0f}".format(proposer_v6_dt25_ivh_stats.max_dd) }}</div>
+          <div class="sub-k">on cumulative net, day by day</div></div>
+        {% set ih = proposer_v6_dt25_ivh_stats.iv_half %}{% if ih %}
+        <div class="card"><div class="k">Half-size days</div><div class="v">{{ ih.days }}</div>
+          <div class="sub-k">net on them &#8377;{{ "{:,.0f}".format(ih.net) }}</div></div>{% endif %}
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;flex-wrap:wrap">
+        <button type="button" id="proposer-v6-dt25-ivh-backfill" class="btn-secondary">Refresh backfill</button>
+        <button type="button" id="proposer-v6-dt25-ivh-rebuild" class="btn-secondary">Rebuild from 1 July</button>
+        <span id="proposer-v6-dt25-ivh-backfill-status" class="muted"></span>
+        <span class="muted">Latest {{ proposer_v6_dt25_ivh_stats.latest.trade_date }}: {{ proposer_v6_dt25_ivh_stats.latest.status }}, through {{ (proposer_v6_dt25_ivh_stats.latest.through_ts or '')[11:16] }}</span>
+      </div>
+
+      {% set rs = proposer_v6_dt25_ivh_stats.replay_split %}{% if rs %}
+      <p class="note">Replay: from {{ rs.tick_from }} each session is replayed on the recorded SENSEX index and option
+        ticks (entries at the ask, exits at the bid, {{ "%.0f"|format(rs.latency_s) }} s after the signal) - during the
+        session from the recorder's live files, after the close once more from the compacted day, which is the recorded
+        result - {{ rs.tick_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.tick_net) }}. Earlier sessions use the one-minute
+        path - {{ rs.min_days }} session(s), &#8377;{{ "{:,.0f}".format(rs.min_net) }}. The two are summed above; the tick replay
+        is closer to the live runner. The book carries day to day, so every session from {{ rs.tick_from }} was replayed again
+        in date order with the book the tick sessions left.</p>
+      {% endif %}
+
+      <h2 style="margin-top:24px">By month</h2>
+      <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net &#8377;</th><th>Worst day</th></tr></thead><tbody>
+      {% for m in proposer_v6_dt25_ivh_stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td><td>{{ m.trades }}</td>
+        <td class="{{ 'green' if m.net_rs>0 else ('red' if m.net_rs<0 else '') }}">&#8377;{{ "{:,.0f}".format(m.net_rs) }}</td><td class="muted">&#8377;{{ "{:,.0f}".format(m.worst_day) }}</td></tr>{% endfor %}
+      </tbody></table>
+
+      <h2 style="margin-top:24px">Trades</h2>
+      {% if proposer_v6_dt25_ivh_trades %}
+      <table class="perf"><thead><tr><th>Date</th><th>#</th><th>Signal</th><th>Contract</th><th>Entry &rarr; Exit</th><th>Buy</th><th>Sell</th><th>Net &#8377;</th><th>Exit</th></tr></thead><tbody>
+      {% for t in proposer_v6_dt25_ivh_trades %}<tr><td>{{ t.trade_date }}</td><td>{{ t.seq }}</td><td>{{ t.signal }}</td><td>{{ t.tradingsymbol or (t.strike ~ ' ' ~ t.side) }}</td>
+        <td>{{ t.entry_ts[11:19] }} &rarr; {{ t.exit_ts[11:19] if t.exit_ts else 'open' }}</td><td>{{ "%.2f"|format(t.entry_price or 0) }}</td><td>{{ "%.2f"|format(t.exit_price) if t.exit_price is not none else '&mdash;' }}</td>
+        <td class="{{ 'green' if (t.net_rs or 0)>0 else ('red' if (t.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(t.net_rs or 0) }}</td><td>{{ t.exit_rule if t.exit_ts else 'open' }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% else %}<p class="empty">No trades in this date range.</p>{% endif %}
+
+      <h2 style="margin-top:24px">Daily history</h2>
+      <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Regime</th><th>Expiry</th><th>Trades</th><th>Day target</th><th>Size</th><th>09:30 IV</th><th>Replay</th><th>Net &#8377;</th></tr></thead><tbody>
+      {% for r in proposer_v6_dt25_ivh_rows %}<tr><td>{{ r.trade_date }}</td><td class="{{ 'amber' if r.status in ['live', 'unavailable'] else 'muted' }}" title="{{ r.error or '' }}">{{ r.status }}</td>
+        <td>{{ r.regime or '&mdash;' }}</td><td>{{ r.expiry_code or '&mdash;' }}</td><td>{{ r.n_trades }}</td><td>{{ '&check;' if r.day_banked else '&mdash;' }}</td>
+        <td class="{{ 'amber' if r.half else 'muted' }}">{{ "{:,}".format(r.qty) if r.qty else '&mdash;' }}{{ ' (half)' if r.half else '' }}</td>
+        <td class="muted" title="{{ ('median of ' ~ (r.iv_n|int) ~ ' earlier sessions: ' ~ ('%.1f'|format(r.iv_ref * 100)) ~ '%') if r.iv_ref else 'no reference yet' }}">{{ ('%.1f'|format(r.iv_0930 * 100) ~ '%') if r.iv_0930 else '&mdash;' }}{{ (' (' ~ r.iv_ratio ~ '×)') if r.iv_ratio else '' }}</td>
+        {% set on_t = r.replay in ['ticks', 'ticks_live'] %}<td class="muted" title="{{ ('minutes on the 1-min path: ' ~ r.fb_min ~ ', option quotes estimated: ' ~ r.fb_opt) if on_t else 'one-minute path' }}">{{ ('ticks' if r.replay == 'ticks' else 'ticks (live files)') if on_t else '1-min' }}{{ ' (' ~ (r.fb_min + r.fb_opt) ~ ' fallback)' if on_t and (r.fb_min or 0) + (r.fb_opt or 0) else '' }}</td>
+        <td class="{{ 'green' if (r.net_rs or 0)>0 else ('red' if (r.net_rs or 0)<0 else '') }}">&#8377;{{ "{:,.0f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
+      </tbody></table>
+      <p class="note">Paper only: Sensex 2.5% V6 at half size on a high-IV day. There is no live preset for it.</p>
+    {% endif %}

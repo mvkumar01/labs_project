@@ -48,7 +48,8 @@ def archive(tmp_path, monkeypatch):
     return d
 
 
-BOOKS = (tr.NIFTY_V4, tr.NIFTY_V4_DT25, tr.NIFTY_V3, tr.V6_DT25)
+BOOKS = (tr.NIFTY_V4, tr.NIFTY_V4_DT25, tr.NIFTY_V3, tr.V6_DT25, tr.V6_DT25_IVH)
+SENSEX_BOOKS = sorted(b.key for b in BOOKS if tk.index_of(b.key) == "SENSEX")
 NNA_TWINS = ("nna_c1", "nna_c2", "nna_c3")          # tick books too; their own post-close test: test_nna_twins.py
 
 
@@ -166,7 +167,7 @@ def test_persist_records_the_replay_and_the_tab_shows_it(tmp_path):
         html = env.get_template(f"_{key}.html").render(**{f"{key}_rows": rows, f"{key}_trades": trades,
                                                           f"{key}_stats": stats})
         assert "<th>Replay</th>" in html and "ticks (1 fallback)" in html and "1-min" in html
-        assert f"recorded {'SENSEX' if key == tr.V6_DT25.key else 'NIFTY'} index" in html and "2 s after the" in html
+        assert f"recorded {'SENSEX' if tk.index_of(key) == 'SENSEX' else 'NIFTY'} index" in html and "2 s after the" in html
 
 
 def test_post_close_replays_then_drops_the_marker(tmp_path, archive):
@@ -202,13 +203,13 @@ def test_post_close_waits_for_the_sensex_ticks(tmp_path, archive):
         tr._persist(conn, _result(day, 100.0, tk.DayTicks(day, index=tk.index_of(key)).summary()), book)
 
     out = tk.post_close(DAY, conn, run_book_day)
-    assert out["ready"] is False and out["marker"] is None and tr.V6_DT25.key not in ran
-    assert sorted(ran) == sorted(k for k in tk.TICK_BOOKS if k != tr.V6_DT25.key)
+    assert out["ready"] is False and out["marker"] is None and not set(SENSEX_BOOKS) & set(ran)
+    assert sorted(ran) == sorted(k for k in tk.TICK_BOOKS if k not in SENSEX_BOOKS)
     assert not tk.day_done(conn, DAY)                                                      # the downloader keeps them
     (archive.parent / "SENSEX.parquet").rename(archive / "SENSEX.parquet")
     ran.clear()
     out = tk.post_close(DAY, conn, run_book_day)
-    assert ran == [tr.V6_DT25.key] and out["marker"] and tk.day_done(conn, DAY)
+    assert sorted(ran) == SENSEX_BOOKS and out["marker"] and tk.day_done(conn, DAY)
 
 
 def test_no_marker_while_a_book_is_not_on_ticks(tmp_path, archive):

@@ -92,4 +92,5 @@
 <noscript><p class="ov-empty">Enable JavaScript to customize Spotlight. Asset pages and strategy details remain available.</p></noscript>
 </div>
 <script type="application/json" id="spotlight-catalog">{{ overview_cards|map(attribute='key')|list|tojson }}</script>
+<script type="application/json" id="spotlight-for-all">{{ (nav.for_all or [])|tojson }}</script>
 <script src="{{ url_for('static', filename='overview.js') }}" defer></script>

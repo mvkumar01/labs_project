@@ -130,7 +130,11 @@ V6_DT25 = Book("proposer_v6_dt25", pe.STRATEGY_VERSION_V5)
 # Sensex 2.5% V6 with the engine's SENSEX loss floor at 125 points instead of 150, paper only - a forward test: 125 was
 # picked after looking at October (alphaIMB v6_rescue.py floor125; Vipin, 2026-11-06).
 V6_DT25_F125 = Book("proposer_v6_dt25_f125", pe.STRATEGY_VERSION_V5)
-NO_INSIDE_CPR_BOOKS = frozenset({V6_DT25.key, V6_DT25_F125.key})
+# Sensex 2.5% V6 IV-half: V6 at half size (1,000 qty) on a day whose 09:30 SENSEX ATM IV is above 1.2 x the median 09:30
+# IV of the earlier sessions from 1 Jul (at least 10 of them), full size (2,000) otherwise; paper only (alphaIMB
+# sizing_test.py variant iv_hard1.2, iv_days.py; Vipin, 2026-11-09). See IV_HALF_BOOKS.
+V6_DT25_IVH = Book("proposer_v6_dt25_ivh", pe.STRATEGY_VERSION_V5)
+NO_INSIDE_CPR_BOOKS = frozenset({V6_DT25.key, V6_DT25_F125.key, V6_DT25_IVH.key})
 # Books whose engine spot floor (ProposerParams.spot_floor_pts, SENSEX points) differs from their preset's.
 ENGINE_SPOT_FLOOR_PTS = {V6_DT25_F125.key: 125.0}
 # NIFTY on Sensex V5 signals: the same SENSEX prints and engine, positions in NIFTY options with NIFTY's
@@ -155,6 +159,61 @@ BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key})
 # replayed from 1 July (Vipin, 2026-11-06; it replaced 25 pts / 180 s on the 2.5% book).
 EARLY_ADVERSE_FROM = {NIFTY_V4.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),),
                       NIFTY_V4_DT25.key: (("2026-07-01", pe.V4_EARLY_ADVERSE),)}
+
+
+@dataclass(frozen=True)
+class IvHalf:
+    """A day's size from its 09:30 ATM implied vol: `qty` x `factor` on a day whose IV is above `ratio` x the median
+    09:30 IV of the earlier sessions from `since` (at least `min_sessions` of them), full size otherwise or when an IV
+    is missing. Entries before `at` (IV not known yet) are full size."""
+    ratio: float = 1.2
+    factor: float = 0.5
+    since: str = "2026-07-01"
+    min_sessions: int = 10
+    at: time = time(9, 30)
+
+
+IV_HALF_BOOKS = {V6_DT25_IVH.key: IvHalf()}
+
+
+def atm_iv(near: pd.DataFrame, expiry, at: datetime, step: int = 100):
+    """The ATM implied vol at the `at` snapshot of the traded expiry (`near`: its quotes with ltp > 0): the average of
+    the ATM call's and put's IV, each from its bid/ask mid (its LTP without a valid quote), ATM = spot to the nearest
+    `step`, T = calendar time from `at` to 15:30 on expiry day over 365 days (alphaIMB iv_days.py). None if missing."""
+    s = near[near["timestamp"] == at]
+    ed = ps.expiry_date(expiry)
+    if s.empty or ed is None:
+        return None
+    spot = float(s["spot"].iloc[0])
+    k = round(spot / step) * step
+    years = (datetime.combine(ed, time(15, 30)) - at).total_seconds() / (365 * 86400)
+    ivs = []
+    for typ in ("CE", "PE"):
+        r = s[(s["option_type"] == typ) & (s["strike"] == k)]
+        if r.empty:
+            continue
+        r = r.iloc[-1]
+        px = (r["bid"] + r["ask"]) / 2 if r["bid"] > 0 and r["ask"] > r["bid"] else r["ltp"]
+        iv = ps.implied_vol(float(px), spot, k, years, typ)
+        if iv:
+            ivs.append(iv)
+    return sum(ivs) / len(ivs) if ivs else None
+
+
+def iv_size(rule: IvHalf, iv_today, history: list) -> dict:
+    """{iv_0930, iv_ref, iv_n, qty}: the day's size under `rule` (history = the earlier sessions' 09:30 IVs)."""
+    hist = sorted(float(x) for x in history if x is not None and x == x)
+    ref = float(pd.Series(hist).median()) if hist else None
+    half = bool(iv_today and ref and len(hist) >= rule.min_sessions and iv_today > rule.ratio * ref)
+    qty = max(1, int(round(QTY * rule.factor / LOT_SIZE))) * LOT_SIZE if half else QTY
+    return {"iv_0930": round(iv_today, 6) if iv_today else None, "iv_ref": round(ref, 6) if ref else None,
+            "iv_n": len(hist), "qty": qty}
+
+
+def iv_history(conn: sqlite3.Connection, book: Book, day: str) -> list:
+    rule = IV_HALF_BOOKS[book.key]
+    return [r[0] for r in conn.execute(f"SELECT iv_0930 FROM {book.key}_daily WHERE trade_date>=? AND trade_date<? "
+                                       "AND iv_0930 IS NOT NULL ORDER BY trade_date", (rule.since, day))]
 
 
 def early_adverse_on(day: str, book: Book):
@@ -222,6 +281,11 @@ def _ensure_tables(conn: sqlite3.Connection, book: Book = PX) -> None:
         );
         """
     )
+    if book.key in IV_HALF_BOOKS:
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({book.key}_daily)")}
+        for col in ("iv_0930", "iv_ref", "iv_n"):
+            if col not in have:
+                conn.execute(f"ALTER TABLE {book.key}_daily ADD COLUMN {col} REAL")
     conn.commit()
 
 
@@ -287,12 +351,12 @@ DELTA_STRIKE_FROM = "2026-10-19"
 COOLDOWN_270_FROM = "2026-10-19"
 # Books that take both from an earlier session instead.
 SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01", "proposer_v6_dt25": "2026-07-01",
-                 "proposer_v6_dt25_f125": "2026-07-01",
+                 "proposer_v6_dt25_f125": "2026-07-01", "proposer_v6_dt25_ivh": "2026-07-01",
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
                  "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01",
                  "proposer_nifty_v4_dt25": "2026-07-01"}
 # Books whose day target differs from their live preset's.
-DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_v6_dt25_f125": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
+DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_v6_dt25_f125": 0.025, "proposer_v6_dt25_ivh": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
                   "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015,
                   "proposer_nifty_v4_dt25": 0.025}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
@@ -340,7 +404,7 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 # Pramanaa's simulated bot (ATM -/+200).
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
                                 "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_v6_dt25_f125",
-                                "proposer_nifty_v5",
+                                "proposer_v6_dt25_ivh", "proposer_nifty_v5",
                                 "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4",
                                 "proposer_nifty_v4_dt25"})
 
@@ -472,10 +536,11 @@ def _rest_of_minute(sec: float, spot: float, bar) -> list[tuple[float, float]]:
 
 # --------------------------------------------------------------------- day ---
 def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None,
-                 book: Book = PX, ticks=None) -> dict:
+                 book: Book = PX, ticks=None, iv_hist: list | None = None) -> dict:
     """Replay one session to its last recorded minute. Pure: reads market data, writes nothing. `ticks` (a
     labs.engine.tick_replay.DayTicks on the SENSEX index, for a SENSEX book) replays inside each minute on the
-    recorded index and option ticks, as the NIFTY books do (proposer_nifty_tracker)."""
+    recorded index and option ticks, as the NIFTY books do (proposer_nifty_tracker). `iv_hist`: for an IV_HALF_BOOKS book,
+    the earlier sessions' 09:30 IVs (iv_history), which set the day's size."""
     if book.key in NIFTY_BOOKS:                        # positions in NIFTY options, signals as here
         from labs.engine import proposer_nifty_tracker
         return proposer_nifty_tracker.simulate_day(day, book_before=book_before, now=now, book=book, ticks=ticks)
@@ -526,6 +591,11 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         by_min.setdefault(p["t"], []).append(p)
 
     cpr = entry_blocks.previous_cpr(date.fromisoformat(day), spot_ohlc) if book.key in NO_INSIDE_CPR_BOOKS else None
+    sizing, size_from = {"qty": QTY}, None
+    if book.key in IV_HALF_BOOKS:
+        rule = IV_HALF_BOOKS[book.key]
+        size_from = datetime.combine(date.fromisoformat(day), rule.at)
+        sizing = iv_size(rule, atm_iv(near, expiry, size_from) if size_from <= through else None, iv_hist or [])
     eng = pe.ProposerEngine(params_on(day, book))
     pos, trades, realized, snap, hist = None, [], 0.0, {}, []
 
@@ -537,8 +607,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         nonlocal realized, pos
         px = pos.pop("tick_exit", px)
         tr = trades[-1]
-        gross = (px - pos["ein"]) * QTY
-        charges = sensex_round_trip_charges(pos["ein"], px, QTY)["total"]
+        gross = (px - pos["ein"]) * pos["qty"]
+        charges = sensex_round_trip_charges(pos["ein"], px, pos["qty"])["total"]
         tr.update({"exit_ts": now_.isoformat(timespec="seconds"), "exit_spot": round(spot_, 2),
                    "exit_price": round(px, 2), "gross_rs": round(gross, 2), "charges_rs": round(charges, 2),
                    "net_rs": round(gross - charges, 2), "exit_rule": rule})
@@ -583,7 +653,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                 if ticks is not None:                                # the held option at its recorded bid / ask
                     ltp = ticks.held(pos, now_, ltp)
                 if snap:
-                    sig = eng.evaluate(now_, snap, pe.Position(pos["side"], pos["ein"], pos["espot"], QTY),
+                    sig = eng.evaluate(now_, snap, pe.Position(pos["side"], pos["ein"], pos["espot"], pos["qty"]),
                                        option_ltp=ltp, spot=spot, closes=closes, entry_idx=pos["idx"])
                     sig = spot_floor_exit(eng, sig, pos, spot, book)
                     if sig.action == "EXIT":
@@ -591,10 +661,10 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         if sig.reason == "daily_target":
                             # the bank fires at its threshold; a jump past it at a re-anchor happened
                             # somewhere inside the previous minute, so fill at the threshold
-                            need = eng.params.daily_target_pct * pos["ein"] * QTY - realized
+                            need = eng.params.daily_target_pct * pos["ein"] * pos["qty"] - realized
                             if not eng.params.bank_regardless_of_book:     # recovery mode: the fill must also clear the book
                                 need = max(need, -(book_before + realized))
-                            mark = min(mark, pos["ein"] + need / QTY)
+                            mark = min(mark, pos["ein"] + need / pos["qty"])
                         if ticks is not None:                        # out at the bid, the fill delay later
                             pos["tick_exit"] = ticks.exit_px(pos, now_, mark - pos["half"])
                         close(now_, mark - pos["half"], spot, sig.reason)
@@ -615,7 +685,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         if ticks is not None:                        # in at the ask, the fill delay later
                             est, q = ticks.entry(c.symbol(t), now_, est, q)
                         pos = {"c": c, "side": typ, "ein": est + q[1], "espot": spot, "last": est,
-                               "half": q[1], "idx": len(hist)}
+                               "half": q[1], "idx": len(hist),
+                               "qty": sizing["qty"] if size_from is None or now_ >= size_from else QTY}
                         if ticks is not None:
                             pos["sym"] = c.symbol(t)
                         anchor = (q[0], q[1], d)
@@ -624,7 +695,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                                        "tradingsymbol": c.symbol(t), "expiry_code": str(expiry),
                                        "entry_ts": now_.isoformat(timespec="seconds"),
                                        "entry_spot": round(spot, 2), "entry_price": round(est + q[1], 2),
-                                       "exit_ts": None})
+                                       "qty": pos["qty"], "exit_ts": None})
                         if ticks is None:                            # on ticks the minute's path stands
                             path = path[:i + 1] + _dense(_rest_of_minute(sec, spot, bar))[1:]
             i += 1
@@ -638,7 +709,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             close(through, mark, bars[-1][4], "eod")
         else:
             trades[-1].update({"exit_price": round(mark, 2), "exit_rule": "open",
-                               "gross_rs": round((mark - pos["ein"]) * QTY, 2)})
+                               "gross_rs": round((mark - pos["ein"]) * pos["qty"], 2)})
     closed = [x for x in trades if x.get("exit_ts")]
     prev_close = prior[-1][1] if prior else None
     return {
@@ -651,7 +722,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         "charges_rs": round(sum(x["charges_rs"] for x in closed), 2),
         "net_rs": round(sum(x["net_rs"] for x in closed), 2),
         "book_gross_before": round(book_before, 2),
-        "through_ts": through.isoformat(timespec="minutes"), "trades": trades,
+        "through_ts": through.isoformat(timespec="minutes"), "trades": trades, **sizing,
         "replay": ticks.summary() if ticks is not None else None,
         "prints": [{"minute": p["t"].strftime("%H:%M"), "sec": p["sec"], "x5": p["x5"],
                     "x5_conf": round(float(p["x5_conf"]), 4)} for p in prints],
@@ -679,7 +750,7 @@ def run_day(trade_date: str | None = None, *, persist: bool = True,
         # TicksMissing is deliberately not an input error: the backfill must stop, not record the day unavailable
         ticks = tick_replay.ticks_for(book.key, trade_date, now.date().isoformat())
         result = simulate_day(trade_date, book_before=_book_before(conn, trade_date, book), now=now, book=book,
-                              ticks=ticks)
+                              ticks=ticks, iv_hist=iv_history(conn, book, trade_date) if book.key in IV_HALF_BOOKS else None)
         if persist:
             _persist(conn, result, book)
         return {k: result[k] for k in ("trade_date", "status", "regime", "n_trades", "gross_rs", "net_rs")}
@@ -718,8 +789,11 @@ def _persist(conn: sqlite3.Connection, r: dict, book: Book = PX) -> None:
         "error=NULL,updated_at=excluded.updated_at",
         (r["trade_date"], r["status"], r["expiry_code"], r["regime"], r["gap_pct"], r["n_trades"],
          r["n_losses"], int(r["day_banked"]), r["gross_rs"], r["charges_rs"], r["net_rs"],
-         r["book_gross_before"], r["through_ts"], LOTS, QTY, params.bar_exit, book.strategy_version,
-         datetime.now(IST).isoformat(timespec="seconds")))
+         r["book_gross_before"], r["through_ts"], r.get("qty", QTY) // LOT_SIZE, r.get("qty", QTY), params.bar_exit,
+         book.strategy_version, datetime.now(IST).isoformat(timespec="seconds")))
+    if book.key in IV_HALF_BOOKS:                      # the day's size and the IV that set it
+        conn.execute(f"UPDATE {book.key}_daily SET iv_0930=?, iv_ref=?, iv_n=? WHERE trade_date=?",
+                     (r.get("iv_0930"), r.get("iv_ref"), r.get("iv_n"), r["trade_date"]))
     from labs.engine import tick_replay
     if book.key in tick_replay.TICK_BOOKS:             # how the day was replayed, for the tab's Replay column
         tick_replay.record(conn, book.key, r["trade_date"], r.get("replay") or tick_replay.ONE_MINUTE)

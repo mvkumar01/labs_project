@@ -4,6 +4,9 @@
   const root = document.getElementById("strategy-overview");
   if (!root) return;
   const catalog = new Set(JSON.parse(document.getElementById("spotlight-catalog").textContent));
+  // Shown first in everyone's Spotlight and not removable; personal selections exclude them.
+  const forAllNode = document.getElementById("spotlight-for-all");
+  const forAll = forAllNode ? JSON.parse(forAllNode.textContent).filter(k => catalog.has(k)) : [];
   const storageKey = "labs.spotlight.v1";
   const grid = root.querySelector("[data-spotlight-grid]");
   const dialog = root.querySelector("#spotlight-chooser");
@@ -11,7 +14,7 @@
   const manage = root.querySelector("[data-spotlight-manage]");
   const status = root.querySelector("[data-spotlight-status]");
   let keys = [], scope = "browser", csrf = "", ready = false, saving = false;
-  const clean = value => Array.isArray(value) ? [...new Set(value.filter(k => typeof k === "string" && catalog.has(k)))].slice(0, 100) : [];
+  const clean = value => Array.isArray(value) ? [...new Set(value.filter(k => typeof k === "string" && catalog.has(k) && !forAll.includes(k)))].slice(0, 100) : [];
   function message(text) { status.textContent = text; }
   function scopeLabel() {
     const node = root.querySelector("[data-spotlight-scope]");
@@ -26,17 +29,18 @@
   function render() {
     if (grid) {
       grid.replaceChildren();
-      keys.forEach(key => {
+      forAll.concat(keys).forEach(key => {
         const template = Array.from(root.querySelectorAll("[data-card-template]")).find(t => t.dataset.cardTemplate === key);
         if (template) grid.append(template.content.cloneNode(true));
       });
-      root.querySelector("[data-spotlight-empty]").hidden = keys.length > 0;
+      root.querySelector("[data-spotlight-empty]").hidden = forAll.length + keys.length > 0;
     }
     root.querySelectorAll("[data-spotlight-toggle]").forEach(button => {
-      const selected = keys.includes(button.dataset.spotlightToggle);
+      const everyone = forAll.includes(button.dataset.spotlightToggle);
+      const selected = everyone || keys.includes(button.dataset.spotlightToggle);
       button.setAttribute("aria-pressed", String(selected));
-      button.textContent = selected ? "Remove from Spotlight" : "Add to Spotlight";
-      button.disabled = !ready || saving;
+      button.textContent = everyone ? "In Spotlight for everyone" : selected ? "Remove from Spotlight" : "Add to Spotlight";
+      button.disabled = everyone || !ready || saving;
     });
     if (manage) manage.disabled = !ready || saving;
     scopeLabel();
@@ -69,7 +73,7 @@
   }
   function count() {
     const node = root.querySelector("[data-spotlight-count]");
-    if (node) node.textContent = form.querySelectorAll('input[name="strategy"]:checked').length + " selected";
+    if (node) node.textContent = form.querySelectorAll('input[name="strategy"]:checked:not(:disabled)').length + " selected";
   }
   root.addEventListener("click", async event => {
     const button = event.target.closest("[data-spotlight-toggle]");
@@ -80,7 +84,12 @@
   });
   if (dialog) {
     manage.addEventListener("click", () => {
-      form.querySelectorAll('input[name="strategy"]').forEach(input => { input.checked = keys.includes(input.value); });
+      form.querySelectorAll('input[name="strategy"]').forEach(input => {
+        const everyone = forAll.includes(input.value);
+        input.checked = everyone || keys.includes(input.value);
+        input.disabled = everyone;
+        if (everyone) input.title = "In Spotlight for everyone";
+      });
       root.querySelector("[data-spotlight-search]").value = "";
       form.querySelectorAll("[data-choice-label], [data-choice-group]").forEach(node => { node.hidden = false; });
       count(); dialog.showModal();
@@ -91,7 +100,7 @@
     form.addEventListener("submit", async event => {
       event.preventDefault();
       // Keep existing Spotlight order; append newly selected strategies in catalog order.
-      const checked = Array.from(form.querySelectorAll('input[name="strategy"]:checked')).map(input => input.value);
+      const checked = Array.from(form.querySelectorAll('input[name="strategy"]:checked:not(:disabled)')).map(input => input.value);
       const next = keys.filter(key => checked.includes(key)).concat(checked.filter(key => !keys.includes(key)));
       if (await save(next)) dialog.close();
     });
