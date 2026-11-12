@@ -382,6 +382,9 @@ LIVE_TABS = {
     "proposer_v4": "Sensex V4",
     "proposer_v5": "Sensex V5",
     "bn_alpha": "BANKNIFTY Alpha",
+    "bn_selective": "Bank Nifty Selective",
+    "bn_alpha_guard": "Bank Nifty Alpha Guard",
+    "bn_selective_guard": "Bank Nifty Selective Guard",
     "sx_pc400": "SENSEX Alpha PC400",
     "sx_open1400": "SENSEX Alpha OPEN1400",
     "nna_v1": "Nifty New Alpha V1",
@@ -446,6 +449,8 @@ def live_strategy():
     proposer_v4_rows, proposer_v4_trades, proposer_v4_stats = [], [], {}
     proposer_v5_rows, proposer_v5_trades, proposer_v5_stats = [], [], {}
     bn_alpha_rows, bn_alpha_trades, bn_alpha_stats = [], [], {}
+    bn_selective_rows, bn_selective_trades, bn_selective_stats = [], [], {}
+    bn_guard_rows, bn_guard_trades, bn_guard_stats = [], [], {}
     sx_rows, sx_trades, sx_stats = [], [], {}
     nna_rows, nna_trades, nna_stats = [], [], {}
     nna_tw_rows, nna_tw_trades, nna_tw_stats = [], [], {}
@@ -1183,6 +1188,23 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     sx_stats = {"error": str(exc)}
 
+        # Bank Nifty Selective (independent paper ledger).
+        if active_live_tab in ("bn_alpha_guard", "bn_selective_guard"):
+            try:
+                from labs.engine.bn_initial_stop_tracker import tab_data as guard_tab_data
+                bn_guard_rows, bn_guard_trades, bn_guard_stats = guard_tab_data(conn, active_live_tab, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    bn_guard_stats = {"error": str(exc)}
+
+        if active_live_tab == "bn_selective":
+            try:
+                from labs.engine.bn_selective_tracker import tab_data as selective_tab_data
+                bn_selective_rows, bn_selective_trades, bn_selective_stats = selective_tab_data(conn, date_clause, date_params)
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    bn_selective_stats = {"error": str(exc)}
+
         # BANKNIFTY Alpha (paper).
         if active_live_tab == "bn_alpha":
             try:
@@ -1492,6 +1514,12 @@ def live_strategy():
         bn_alpha_rows=bn_alpha_rows,
         bn_alpha_trades=bn_alpha_trades,
         bn_alpha_stats=bn_alpha_stats,
+        bn_selective_rows=bn_selective_rows,
+        bn_selective_trades=bn_selective_trades,
+        bn_selective_stats=bn_selective_stats,
+        bn_guard_rows=bn_guard_rows,
+        bn_guard_trades=bn_guard_trades,
+        bn_guard_stats=bn_guard_stats,
         sx_rows=sx_rows,
         sx_trades=sx_trades,
         sx_stats=sx_stats,

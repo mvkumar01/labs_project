@@ -33,6 +33,8 @@ def _in_mcx_session(now: datetime) -> bool:
 
 
 def main() -> None:
+    from pa_bn_initial_stop_loop import start_background as start_bn_guard_worker
+    start_bn_guard_worker()
     from labs.engine.paper_strategy_tracker import run_day as run_nifty_day
     from labs.engine.alpha_v211b_tracker import run_day as run_v211b_day
     from labs.engine.alpha_v212_tracker import run_day as run_v212_day
@@ -51,6 +53,7 @@ def main() -> None:
     from labs.engine.proposer_v4_book import run_day as run_proposer_v4_day
     from labs.engine.proposer_v5_book import run_day as run_proposer_v5_day
     from labs.engine.bn_alpha_tracker import run_paper_day as run_bn_alpha_day
+    from labs.engine.bn_selective_tracker import run_paper_day as run_bn_selective_day
     from labs.engine.sx_alpha_tracker import run_paper_day as run_sx_alpha_day
     from labs.engine.nna_tracker import run_paper_day as run_nna_day
     from labs.engine.nna_twins_tracker import run_paper_day as run_nna_twins_day
@@ -101,6 +104,7 @@ def main() -> None:
         "proposer_v4": None,
         "proposer_v5": None,
         "bn_alpha": None,
+        "bn_selective": None,
         "sx_alpha": None,
         "nna_v1": None,
         "nna_twins": None,
@@ -153,6 +157,7 @@ def main() -> None:
                 ("proposer_v4", run_proposer_v4_day),
                 ("proposer_v5", run_proposer_v5_day),
                 ("bn_alpha", run_bn_alpha_day),
+                ("bn_selective", run_bn_selective_day),
                 ("sx_alpha", run_sx_alpha_day),
                 ("nna_v1", run_nna_day),
                 ("nna_twins", run_nna_twins_day),

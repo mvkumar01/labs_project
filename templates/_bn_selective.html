@@ -1,0 +1,25 @@
+{% set st = bn_selective_stats %}
+<h1>Bank Nifty Selective</h1>
+<p class="sub">BANKNIFTY monthly ATM options, one lot of 30 units. The strike range is the previous
+  official close rounded to 100, plus/minus 400. Alpha is checked at completed five-minute marks.</p>
+<p class="note"><strong>Entry:</strong> a fresh crossing of +30 must already land at +60 or higher for
+  a CALL; a fresh crossing of -30 must already land at -60 or lower for a PUT. Values beyond absolute
+  alpha 200 are skipped. A later continuation to 60 does not qualify without a new fresh crossing.</p>
+<p class="note"><strong>Risk:</strong> maximum one trade per day, so a losing trade ends the session.
+  Original exits apply: spot trail arms at +100 and trails by 50; alpha target at 100 in the trade's
+  direction, alpha stop at -30 against it; otherwise close at 15:25. Entry ask, exit bid and charges
+  determine option net P&amp;L.</p>
+<p class="note">Dates before <strong>11 November 2026</strong> are historical research replays.
+  Forward paper tracking starts from that date. This is a separate simulated book.</p>
+{% if st.get('error') %}<p class="empty">{{ st.error }}</p>
+{% elif not bn_selective_rows %}<p class="empty">No sessions recorded in this date range.</p>
+{% else %}
+<h2>Sessions</h2>
+<table class="perf"><thead><tr><th>Date</th><th>Period</th><th>Status</th><th>Range</th><th>Expiry</th><th>Trades</th><th>Net P&amp;L</th></tr></thead><tbody>
+{% for r in bn_selective_rows %}<tr>
+  <td>{{ r.trade_date }}</td><td>{{ 'Forward paper' if r.trade_date >= '2026-11-11' else 'Historical replay' }}</td>
+  <td title="{{ r.error or '' }}">{{ r.status }}</td>
+  <td>{{ r.range_lo or '' }}–{{ r.range_hi or '' }}</td><td>{{ r.expiry_code or '' }}</td>
+  <td>{{ r.n_trades }}</td><td>{{ '{:,.2f}'.format(r.net_rs) if r.net_rs is not none else 'Unavailable' }}</td>
+</tr>{% endfor %}</tbody></table>
+{% endif %}

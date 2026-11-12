@@ -1,0 +1,21 @@
+<h1>{{ live_tabs[active_live_tab] }}</h1>
+<p class="sub">Historical replay and independent forward paper from 11 November 2026. BANKNIFTY monthly ATM options,
+  one lot of 30 units; entry ask, exit bid and charges.</p>
+<p class="note"><strong>Initial protection:</strong> a completed one-minute spot close 50 points
+  against entry signals an exit at the next available valid minute bid. Once a completed minute
+  close first moves 25 points favourably, this added stop is permanently removed for that trade.</p>
+<p class="note">CALL example: entry 60,000; initial stop 59,950; remove that stop after a close at
+  60,025 or above. PUTs mirror these levels. Original alpha, trailing and EOD exits remain active.</p>
+<p class="note"><strong>No reclaim re-entry.</strong> Original five-minute signal windows remain
+  shadow-tracked after an early stop. The next entry waits for the next original signal episode.
+  {% if active_live_tab == 'bn_selective_guard' %}Selective retains the fresh ±30 crossing landing at
+  |alpha| ≥60 and maximum one trade per day.{% else %}Alpha retains its original fresh ±30 crossings.{% endif %}</p>
+<p class="note">The existing Alpha and Selective books remain separate controls. Historical results include only matched trades with verified archived prices; incomplete paths are omitted. A spot stop does not guarantee a fixed option loss.</p>
+{% if bn_guard_stats.get('error') %}<p class="empty">{{ bn_guard_stats.error }}</p>
+{% elif not bn_guard_rows %}<p class="empty">Awaiting the first forward paper session.</p>
+{% else %}
+<table class="perf"><thead><tr><th>Date</th><th>Period</th><th>Status</th><th>Updated</th><th>Trades</th><th>Net P&amp;L</th><th>Risk state</th></tr></thead><tbody>
+{% for r in bn_guard_rows %}<tr><td>{{ r.trade_date }}</td><td>{{ "Historical replay" if r.trade_date < "2026-11-11" else "Forward paper" }}</td><td>{{ r.status }}</td><td>{{ r.updated_at }}</td><td>{{ r.n_trades }}</td>
+  <td>{{ '{:,.2f}'.format(r.net_rs) if r.net_rs is not none else 'Unavailable' }}</td><td>{{ r.error or '' }}</td></tr>{% endfor %}
+</tbody></table>
+{% endif %}
