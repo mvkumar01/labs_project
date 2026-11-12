@@ -566,6 +566,7 @@ STRATEGY_PRESETS = {
     "proposer_sensex_v45": ("proposer", "proposer_dt35_v3"),
     "nifty_scalper_v1": ("proposer", "proposer_nifty_scalper_v1"),
     "nifty_scalper_v3": ("proposer", "proposer_nifty_scalper_v3"),
+    "nifty_scalper_v3_reverse": ("proposer", pe.STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE),
     "nifty_scalper_v4": ("proposer", "proposer_nifty_scalper_v4"),
     # One index per connection (live/engine/oi_unwind_engine.py).
     "oi_unwind_nifty": ("proposer", pe.STRATEGY_VERSION_OI_UNWIND_NIFTY),
@@ -595,6 +596,7 @@ STRATEGY_LABELS = {
                            "loss floor and day target chosen below)",
     "nifty_scalper_v1": "Nifty Scalper V1 (Sensex V5 signals on NIFTY options; 1.5% day target)",
     "nifty_scalper_v3": "Nifty Scalper V3 (V1 with the predictor printing every 3 min; 1.5% day target)",
+    "nifty_scalper_v3_reverse": "Nifty Scalper V3 Reverse (opposite option, original V3 1.5% day target and exits)",
     "nifty_scalper_v4": "Nifty Scalper V4 (V3 with no entry near a CPR level or after a doji / hammer candle; 1.5% day target)",
     "oi_unwind_nifty": "OI Unwind NIFTY (5-min close through an unwinding wall; stop 30, next CPR; ATM next expiry)",
     "oi_unwind_sensex": "OI Unwind SENSEX (5-min close through an unwinding wall; stop 97.2, next CPR; ATM next expiry)",
@@ -606,7 +608,7 @@ NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3", "nifty_scalper_
 # its code, engine version and KNOWN_VERSIONS entry stay, an account already on it keeps it (shown and saveable), and
 # adding its key here brings it back.
 ACTIVE_PRESETS = ("gold_cci_v2", "crudem_combo_v1", "champion_v214e", SENSEX_V45, "nifty_scalper_v4",
-                  "oi_unwind_nifty", "oi_unwind_sensex")
+                  "nifty_scalper_v3_reverse", "oi_unwind_nifty", "oi_unwind_sensex")
 
 
 def offered_presets(current: str | None) -> dict:

@@ -42,6 +42,7 @@ from live.engine import entry_blocks as eb
 from live.engine import oi_unwind_engine as oi
 from live.engine import proposer_engine as pe
 from live.engine import proposer_predictor as pp
+from live.engine import proposer_reverse as reverse_v3
 from live.engine import proposer_strike as ps
 from live.notify import notify_telegram
 from market_data import tick_feed
@@ -90,6 +91,7 @@ PRINT_CLOCK_5MIN, PRINT_CLOCK_3MIN = "5min", "3min"
 PRINT_GAP_S = {PRINT_CLOCK_5MIN: PRINT_EVERY_MIN * 60.0, PRINT_CLOCK_3MIN: 180.0}
 PRINTS_TABLE = {PRINT_CLOCK_5MIN: "live_proposer_prints", PRINT_CLOCK_3MIN: "live_proposer_prints_3min"}
 PRINT_CLOCK_BY_VERSION = {pe.STRATEGY_VERSION_NIFTY_SCALPER_V3: PRINT_CLOCK_3MIN,
+                          pe.STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE: PRINT_CLOCK_3MIN,
                           pe.STRATEGY_VERSION_NIFTY_SCALPER_V4: PRINT_CLOCK_3MIN}
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -762,7 +764,6 @@ class ProposerConnection:
         if self.day == trade_date and self.mode == mode:
             return
         self.engine.reset_session()
-        today, _ = _today_trades(self.user_id, self.conn_id, trade_date, dry_run)
         prints = prints_today(trade_date, table=getattr(feed, "table", PRINTS_TABLE[PRINT_CLOCK_5MIN]))
         regime = prints[-1]["regime"] if prints else None
         stale_asof = None
@@ -770,6 +771,11 @@ class ProposerConnection:
             last = datetime.fromisoformat(prints[-1]["asof"])
             if (now - last).total_seconds() > STARTUP_ACT_SECS:
                 stale_asof = prints[-1]["asof"]
+        self.day, self.mode = trade_date, mode
+        if self.strategy == pe.STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE:
+            self.engine.restore(regime=regime, x5_today=[p["x5"] for p in prints], last_acted_asof=stale_asof)
+            return
+        today, _ = _today_trades(self.user_id, self.conn_id, trade_date, dry_run)
         licence_key = "proposer_regime_entry_date_" + mode
         self.engine.restore(
             regime=regime, x5_today=[p["x5"] for p in prints],
@@ -777,7 +783,6 @@ class ProposerConnection:
             day_target_banked=any(t.get("reason") == "daily_target" for t in today),
             last_entry_capital=(float(today[-1]["entry_price"]) * int(today[-1]["qty"])) if today else 0.0,
             last_acted_asof=stale_asof)
-        self.day, self.mode = trade_date, mode
 
     def book(self, trade_date: str, dry_run: bool) -> tuple[float, float, int]:
         """(today's gross, lifetime gross, today's losing trades) of this connection's Proposer book."""
@@ -1034,8 +1039,10 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                  pc.engine.params.bank_regardless_of_book, pc.engine.params.early_adverse_pts or "off",
                  pc.engine.params.early_adverse_secs, print_clock)
     pc.ensure_session(trade_date, dry_run, feed, now)
-    day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
-    pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
+    reverse = strategy == pe.STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE
+    if not reverse:
+        day_gross, book_gross, day_losses = pc.book(trade_date, dry_run)
+        pc.engine.set_book(day_realized=day_gross, book_net=book_gross, day_losses=day_losses)
     snap = feed.snapshot()
     clock.mark("book")
 
@@ -1088,7 +1095,16 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
             # the exit decision stands: re-send it now at the current bid
             forced_exit = pe.Signal("EXIT", st.get("side"), w.get("reason") or "exit")
 
-    if is_open and now.time() >= EOD_FLAT:
+    if reverse:
+        move = (day_move(session_bars.completed(now), getattr(feed, "open_ref", None))
+                if snap and not is_open and now.time() < ENTRY_CUTOFF else None)
+        sig = reverse_v3.evaluate(
+            pc.engine, user_id=user_id, conn_id=conn_id, dry_run=dry_run, now=now, snap=snap,
+            spot=spot, day_move=move, exits_ready=ratio is not None, actual=pos,
+            chain=lambda: option_chain(now.date(), NIFTY_I),
+            quote=lambda symbol: market.quote(symbol, NIFTY_I),
+            lot_size=NIFTY_I.lot_size, entry_cutoff=ENTRY_CUTOFF, eod=EOD_FLAT)
+    elif is_open and now.time() >= EOD_FLAT:
         sig = pe.Signal("EXIT", st.get("side"), "eod")
     elif oi_book is not None:
         sig, oi_signal = _oi_unwind_signal(user_id, conn_id, ctx, oi_book, st, is_open, spot, now)
@@ -1247,9 +1263,9 @@ def process_connection(user_id: str, conn_id: str, *, ctx: dict, feed: Predictor
                        "entry_time": datetime.now(timezone.utc).isoformat(), "qty": qty,
                        "virtual": 1 if dry_run else 0, "entry_rule": sig.reason, "entry_spot": spot})
             svc.save_trade_state(user_id, conn_id, st)
-            if oi_signal is None:
+            if oi_signal is None and not reverse:
                 pc.engine.mark_entry(snap)
-            if pc.engine.entry_decisive:   # the once-per-day regime licence was just used
+            if not reverse and pc.engine.entry_decisive:   # the once-per-day regime licence was just used
                 svc.set_config(user_id, conn_id,
                                "proposer_regime_entry_date_" + ("dry" if dry_run else "live"), trade_date)
             notify_telegram(f"ENTER {sig.side} {broker_sym} @ {fill} | {sig.reason} | spot {spot:.0f}"

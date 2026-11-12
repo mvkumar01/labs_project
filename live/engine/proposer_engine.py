@@ -74,12 +74,13 @@ STRATEGY_VERSION_NIFTY_SCALPER_V1 = "proposer_nifty_scalper_v1"
 # clock follows the version). 27 Oct 2026 on ticks: +936 vs -11,710 at 3 lots; Oct 1-27 (1-min) +2.24L vs
 # -0.33L - one day decides it (alphaIMB print_gap_test.py; Vipin, 2026-10-28).
 STRATEGY_VERSION_NIFTY_SCALPER_V3 = "proposer_nifty_scalper_v3"
+STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE = "proposer_nifty_scalper_v3_reverse"
 # Nifty Scalper V4: V3 with two entry blocks (live/engine/entry_blocks.py) - no entry with a CPR level within 15 NIFTY
 # points on the way, or after a doji / hammer / inverted hammer 1-min candle. In-sample 1 Jul - 30 Oct 2026: +10.90L vs
 # V3's +1.29L, carried by three days (alphaIMB REBUILD sec. 56-57; Vipin, 2026-11-02).
 STRATEGY_VERSION_NIFTY_SCALPER_V4 = "proposer_nifty_scalper_v4"
 NIFTY_SCALPER_VERSIONS = frozenset({STRATEGY_VERSION_NIFTY_SCALPER_V1, STRATEGY_VERSION_NIFTY_SCALPER_V3,
-                                    STRATEGY_VERSION_NIFTY_SCALPER_V4})
+                                    STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE, STRATEGY_VERSION_NIFTY_SCALPER_V4})
 ENTRY_BLOCK_VERSIONS = frozenset({STRATEGY_VERSION_NIFTY_SCALPER_V4})
 # OI Unwind: the paper books' rule, one index per connection (live/engine/oi_unwind_engine.py). This engine's
 # parameters do not apply; the versions start with "proposer" so that this runner owns them and live_runner skips them.
@@ -175,7 +176,7 @@ def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
     if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V4:
         # V3's rules plus the entry blocks, and the day banks whatever the book (no recovery mode).
         return replace(_preset_params(STRATEGY_VERSION_NIFTY_SCALPER_V1), bank_regardless_of_book=True)
-    if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V3:
+    if strategy_version in (STRATEGY_VERSION_NIFTY_SCALPER_V3, STRATEGY_VERSION_NIFTY_SCALPER_V3_REVERSE):
         return _preset_params(STRATEGY_VERSION_NIFTY_SCALPER_V1)       # only the print clock differs
     if str(strategy_version or "") == STRATEGY_VERSION_NIFTY_SCALPER_V1:
         # Approved 2026-10-21 after the re-entry-loop replay (plan section 8).
@@ -206,9 +207,9 @@ def _preset_params(strategy_version: Optional[str]) -> ProposerParams:
 
 # Every version params_for knows; a runner must not trade any other Proposer version (it would fall back
 # to the base preset's rules).
-KNOWN_VERSIONS = frozenset({STRATEGY_VERSION, STRATEGY_VERSION_PX, STRATEGY_VERSION_V3, STRATEGY_VERSION_V3_DT35,
-                            STRATEGY_VERSION_V5, STRATEGY_VERSION_NIFTY_SCALPER_V1,
-                            STRATEGY_VERSION_NIFTY_SCALPER_V3, STRATEGY_VERSION_NIFTY_SCALPER_V4}) | OI_UNWIND_VERSIONS
+KNOWN_VERSIONS = (frozenset({STRATEGY_VERSION, STRATEGY_VERSION_PX, STRATEGY_VERSION_V3,
+                             STRATEGY_VERSION_V3_DT35, STRATEGY_VERSION_V5})
+                  | NIFTY_SCALPER_VERSIONS | OI_UNWIND_VERSIONS)
 
 
 def scaled_for_nifty(params: ProposerParams, ratio: float) -> ProposerParams:
