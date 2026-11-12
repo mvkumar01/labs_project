@@ -96,6 +96,8 @@ def is_proposer_strategy(strategy_version) -> bool:
 
 def expected_decision_abi(strategy_version) -> str:
     """The decision contract the owning runner must have loaded for this strategy."""
+    if strategy_version == "nifty_omega":
+        return "nifty-omega-ema9-21-split25-40-v1"
     if gold_v2.selected(strategy_version):
         return gold_v2.ABI
     if crudem.selected(strategy_version):

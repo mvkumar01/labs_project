@@ -1,0 +1,24 @@
+<h1>Nifty Omega (paper)</h1>
+<p class="sub">Forward paper starts 12 November 2026. NIFTY weekly ATM options, two lots. A fresh five-minute alpha crossing of +30 or −30 requires EMA9 and EMA21 to agree on the completed candle. One lot exits at +25 spot points and one at +40. Alpha and end-of-day exits apply to open lots.</p>
+{% if not nna_tw_rows %}
+  <p class="empty">No sessions recorded in this date range.</p>
+{% else %}
+  <table>
+    <thead><tr><th>Date</th><th>Status</th><th>Trades</th><th>Net P&amp;L</th></tr></thead>
+    <tbody>
+    {% for row in nna_tw_rows %}
+      <tr><td>{{ row.trade_date }}</td><td>{{ row.status }}</td><td>{{ row.n_trades }}</td><td>{{ '%.2f'|format(row.net_rs or 0) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if nna_tw_trades %}
+  <table>
+    <thead><tr><th>Date</th><th>Option</th><th>Entry</th><th>Lot 1 exit</th><th>Lot 2 exit</th><th>Net P&amp;L</th></tr></thead>
+    <tbody>
+    {% for trade in nna_tw_trades %}
+      <tr><td>{{ trade.trade_date }}</td><td>{{ trade.tradingsymbol }}</td><td>{{ trade.entry_ts }}</td><td>{{ trade.lotA_ts or '—' }}</td><td>{{ trade.exit_ts or '—' }}</td><td>{{ '%.2f'|format(trade.net_rs) if trade.net_rs is not none else '—' }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+{% endif %}

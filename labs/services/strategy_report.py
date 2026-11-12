@@ -79,6 +79,7 @@ SOURCES['bn_selective_guard'] = Source('bn_selective_guard_trades', 'BANKNIFTY',
 SOURCES['sx_pc400'] = Source('sx_pc400_trades', 'SENSEX', 20)
 SOURCES['sx_open1400'] = Source('sx_open1400_trades', 'SENSEX', 20)
 SOURCES['nna_v1'] = Source('nna_v1_trades', 'NIFTY', 65)
+SOURCES['nifty_omega'] = Source('nifty_omega_trades', 'NIFTY', 130)
 SOURCES['nna_c1'] = Source('nna_c1_trades', 'NIFTY', 130)
 SOURCES['nna_c2'] = Source('nna_c2_trades', 'NIFTY', 130)
 SOURCES['nna_c3'] = Source('nna_c3_trades', 'NIFTY', 65)

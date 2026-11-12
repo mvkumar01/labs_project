@@ -388,6 +388,7 @@ LIVE_TABS = {
     "sx_pc400": "SENSEX Alpha PC400",
     "sx_open1400": "SENSEX Alpha OPEN1400",
     "nna_v1": "Nifty New Alpha V1",
+    "nifty_omega": "Nifty Omega",
     "nna_c1": "NNA V1 · win rate",
     "nna_c2": "NNA V1 · balanced",
     "nna_c3": "NNA V1 · points",
@@ -1182,6 +1183,10 @@ def live_strategy():
                     nna_stats = {"error": str(exc)}
 
         # Nifty New Alpha V1 twins (paper): three books, one template.
+        if active_live_tab == "nifty_omega":
+            from labs.engine.nifty_omega_book import tab_data as omega_tab
+            nna_tw_rows, nna_tw_trades, nna_tw_stats = omega_tab(conn, date_clause, date_params)
+
         if active_live_tab in ("nna_c1", "nna_c2", "nna_c3"):
             try:
                 from labs.engine.nna_twins_tracker import tab_data as nna_tw_tab_data

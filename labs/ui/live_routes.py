@@ -539,6 +539,7 @@ def select_broker(broker):
 # (decision_engine == "champion_replay" enables the champion replay; combined
 # with the strategy version it enables the corresponding overlay).
 STRATEGY_PRESETS = {
+    "nifty_omega": ("nifty_omega", "nifty_omega"),
     "gold_cci_v2": ("gold_cci", "gold_cci_v2"),
     "crudem_combo_v1": ("crudem_combo", "crudem_combo_v1"),
     "legacy_v211":   ("signal_engine",   "hybrid_alpha_v28"),
@@ -578,6 +579,7 @@ SENSEX_V45_FLOORS = {
     "spot_150": ("proposer_dt35_v5", "SENSEX 150 points against the entry (Sensex V5, no premium floor)"),
 }
 STRATEGY_LABELS = {
+    "nifty_omega": "Nifty Omega (split +25 / +40, single +25 if funds require)",
     "gold_cci_v2": "Gold CCI V2 (GOLD futures short; 3% daily net target; bullish entry filter)",
     "crudem_combo_v1": "CRUDEOILM Combo (six rules, long and short; stop at Angel One, flat 23:29)",
     "legacy_v211":   "Alpha v2.11 (legacy)",
@@ -607,7 +609,7 @@ NIFTY_SCALPER_PRESETS = ("nifty_scalper_v1", "nifty_scalper_v3", "nifty_scalper_
 # Presets offered on the configure page (Vipin, 2026-11-06: "it's pretty crowded"). Every other preset is archived:
 # its code, engine version and KNOWN_VERSIONS entry stay, an account already on it keeps it (shown and saveable), and
 # adding its key here brings it back.
-ACTIVE_PRESETS = ("gold_cci_v2", "crudem_combo_v1", "champion_v214e", SENSEX_V45, "nifty_scalper_v4",
+ACTIVE_PRESETS = ("nifty_omega", "gold_cci_v2", "crudem_combo_v1", "champion_v214e", SENSEX_V45, "nifty_scalper_v4",
                   "nifty_scalper_v3_reverse", "oi_unwind_nifty", "oi_unwind_sensex")
 
 
@@ -708,6 +710,8 @@ def _strategy_label(user_id: str, conn_id: str) -> str:
 def _current_strategy_preset(user_id: str, conn_id: str) -> str:
     de = svc.get_config(user_id, conn_id, "decision_engine")
     sv = svc.get_config(user_id, conn_id, "strategy_version")
+    if de == "nifty_omega" and sv == "nifty_omega":
+        return "nifty_omega"
     if de == "gold_cci" and sv == "gold_cci_v2":
         return "gold_cci_v2"
     if de == "crudem_combo" and sv == "crudem_combo_v1":
@@ -854,6 +858,8 @@ def configure():
         except ValueError:
             lots = 1
         lots = max(1, lots)
+        if strat == "nifty_omega":
+            lots = 2
 
         try:
             cap = float(request.form.get("daily_loss_cap", "3000"))

@@ -1387,6 +1387,12 @@ def process_connection(user_id: str, conn_id: str, *, adapters: dict,
     if adapter is None:
         return
 
+    if svc.get_config(user_id, conn_id, "strategy_version") == "nifty_omega":
+        from live.nifty_omega_runner import execute
+        if not is_killed(user_id, conn_id):
+            execute(user_id, conn_id, adapter, _now_ist(), dry_run)
+        return
+
     # A DRY_RUN position is local simulation state only. Clear it before LIVE
     # reconciliation so it is never compared with the broker book and cannot
     # leave a false mismatch block when the operator switches modes mid-trade.

@@ -9,7 +9,7 @@ from tests.test_configure_strategy import CONN_ID, CSRF_TOKEN, USER_ID, _set_str
 from tests.test_configure_strategy import client  # noqa: F401
 
 KEEP = {"gold_cci_v2", "crudem_combo_v1", "champion_v214e", "proposer_sensex_v45", "nifty_scalper_v4",
-        "oi_unwind_nifty", "oi_unwind_sensex", "nifty_scalper_v3_reverse"}
+        "oi_unwind_nifty", "oi_unwind_sensex", "nifty_scalper_v3_reverse", "nifty_omega"}
 
 
 def _select(client):  # noqa: F811
