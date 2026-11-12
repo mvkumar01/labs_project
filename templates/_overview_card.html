@@ -33,6 +33,6 @@
     {% if c.note is defined %}<div class="ov-note">{{ c.note }}</div>{% endif %}
     {% endif %}
     <a class="ov-btn" href="{{ c.href if c.href is defined else url_for('labs.live_strategy', tab=(c.tab if c.tab is defined else c.key), date_from=date_from, date_to=date_to) }}">View Details</a>
-    <button class="spotlight-toggle" type="button" data-spotlight-toggle="{{ c.key }}" aria-pressed="false" disabled>Add to Spotlight</button>
+    <button class="spotlight-toggle" type="button" data-watch-toggle="{{ c.key }}" aria-pressed="false" disabled>Add to Watch List</button>
   </article>
 {%- endmacro %}

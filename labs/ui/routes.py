@@ -1424,11 +1424,17 @@ def live_strategy():
             report_error = f"Performance data unavailable: {type(exc).__name__}: {exc}"
         finally:
             report_conn.close()
-    from labs.services.overview_navigation import build_navigation
-    overview_navigation = build_navigation(overview_cards, request.args.get("asset"))
+    from labs.services.overview_navigation import GROUPS, build_navigation
+    can_manage_spotlight = False
+    spotlight_keys = ()
+    if active_live_tab == "overview" and request.args.get("asset") not in GROUPS:
+        from labs.ui.overview_preferences import spotlight_settings
+        spotlight_keys, can_manage_spotlight = spotlight_settings()
+    overview_navigation = build_navigation(overview_cards, request.args.get("asset"), spotlight_keys)
     return render_template(
         "live_strategy.html",
         overview_navigation=overview_navigation,
+        can_manage_spotlight=can_manage_spotlight,
         report_panels=report_panels,
         report_error=report_error,
         basket_defs=basket_defs,

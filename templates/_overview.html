@@ -1,4 +1,4 @@
-{# Asset navigation and personal Spotlight. Strategy metrics retain their existing scope. #}
+{# Asset navigation, shared Spotlight and personal Watch List. #}
 {% from "_overview_card.html" import strategy_card %}
 {% from "_overview_money.html" import money %}
 <style>
@@ -32,13 +32,14 @@
 </style>
 <link rel="stylesheet" href="{{ url_for('static', filename='overview.css') }}">
 {% set nav = overview_navigation %}
-<div id="strategy-overview" data-preferences-url="{{ url_for('live.overview_preferences') }}">
+<div id="strategy-overview" data-preferences-url="{{ url_for('live.overview_preferences') }}"
+     {% if can_manage_spotlight %}data-spotlight-url="{{ url_for('live.overview_spotlight') }}"{% endif %}>
 {% if nav.asset %}
   <nav class="ov-breadcrumb" aria-label="Asset navigation">
     <a href="{{ url_for('labs.live_strategy', tab='overview', date_from=date_from, date_to=date_to) }}">Overview</a><span aria-hidden="true">/</span><span aria-current="page">{{ nav.label }}</span>
   </nav>
   <div class="ov-head"><h1>{{ nav.label }}</h1><span class="ov-meta">{{ nav.cards|length }} strategies</span></div>
-  <p class="ov-meta" data-spotlight-scope>Loading your selections…</p>
+  <p class="ov-meta" data-watch-scope>Loading your Watch List…</p>
   <div class="ov-grid" data-asset-strategies>
     {% for c in nav.cards %}{{ strategy_card(c, date_from, date_to) }}{% endfor %}
   </div>
@@ -46,11 +47,21 @@
 {% else %}
   <section class="ov-spotlight" aria-labelledby="spotlight-title">
     <div class="ov-head">
-      <div><h1 id="spotlight-title">Spotlight</h1><p class="ov-meta" data-spotlight-scope>Loading your selections…</p></div>
-      <button type="button" class="ov-manage" data-spotlight-manage disabled>Choose strategies</button>
+      <div><h1 id="spotlight-title">Spotlight</h1><p class="ov-meta">Strategies selected by the Labs admin</p></div>
+      {% if can_manage_spotlight %}<button type="button" class="ov-manage" data-spotlight-manage disabled>Manage Spotlight</button>{% endif %}
     </div>
-    <p class="ov-empty" data-spotlight-empty hidden>Highlight the strategies you want to follow. Choose strategies to add your first tile.</p>
-    <div class="ov-grid" data-spotlight-grid></div>
+    <div class="ov-grid" data-spotlight-grid>
+      {% for c in nav.spotlight %}{{ strategy_card(c, date_from, date_to) }}{% endfor %}
+    </div>
+    {% if not nav.spotlight %}<p class="ov-empty">No strategies are in Spotlight yet.</p>{% endif %}
+  </section>
+  <section class="ov-spotlight" aria-labelledby="watch-list-title">
+    <div class="ov-head">
+      <div><h2 id="watch-list-title">Watch List</h2><p class="ov-meta" data-watch-scope>Loading your Watch List…</p></div>
+      <button type="button" class="ov-manage" data-watch-manage disabled>Choose strategies</button>
+    </div>
+    <p class="ov-empty" data-watch-empty hidden>Add the strategies you want to follow.</p>
+    <div class="ov-grid" data-watch-grid></div>
   </section>
   <section class="ov-assets" aria-labelledby="asset-title">
     <h2 id="asset-title">Explore by asset</h2>
@@ -68,9 +79,9 @@
     {% for c in overview_cards %}<template data-card-template="{{ c.key }}">{{ strategy_card(c, date_from, date_to) }}</template>{% endfor %}
   </div>
   <dialog id="spotlight-chooser" aria-labelledby="spotlight-chooser-title">
-    <form data-spotlight-form>
-      <div class="ov-head"><h2 id="spotlight-chooser-title">Choose Spotlight strategies</h2><button type="button" class="ov-manage" data-spotlight-cancel>Cancel</button></div>
-      <label class="ov-search">Find a strategy<input type="search" data-spotlight-search placeholder="Name or asset" autocomplete="off"></label>
+    <form data-overview-form>
+      <div class="ov-head"><h2 id="spotlight-chooser-title">Choose strategies</h2><button type="button" class="ov-manage" data-overview-cancel>Cancel</button></div>
+      <label class="ov-search">Find a strategy<input type="search" data-overview-search placeholder="Name or asset" autocomplete="off"></label>
       <div class="ov-choices">
       {% for group in nav.groups %}{% if group.cards %}
         <fieldset data-choice-group><legend>{{ group.label }}</legend>
@@ -78,19 +89,19 @@
         </fieldset>
       {% endif %}{% endfor %}
       </div>
-      <div class="ov-dialog-actions"><span data-spotlight-count></span><button type="submit">Save Spotlight</button></div>
+      <p class="ov-feedback" data-overview-dialog-status role="status"></p>
+      <div class="ov-dialog-actions"><span data-overview-count></span><button type="submit">Save</button></div>
     </form>
   </dialog>
 {% endif %}
-<p class="ov-feedback" data-spotlight-status role="status" aria-live="polite"></p>
+<p class="ov-feedback" data-watch-status role="status" aria-live="polite"></p>
 {% if nav.asset == 'commodities' %}
 <button type="button" data-margin-refresh>Refresh MCX margin estimates</button><span class="muted" data-margin-status role="status"></span>
 {% endif %}
 {% if nav.asset %}
 <p class="ov-foot">Net of charges. Recorded peak at one time is capital committed simultaneously; sequential trades reuse capital. A ~ marks a margin estimate from a current broker quote, scaled to historical entry notional. Returns use peak capital rounded up to two significant digits. Dollar books remain separate; real-money cards show status only.</p>
 {% endif %}
-<noscript><p class="ov-empty">Enable JavaScript to customize Spotlight. Asset pages and strategy details remain available.</p></noscript>
+<noscript><p class="ov-empty">Enable JavaScript to customize your Watch List.</p></noscript>
 </div>
-<script type="application/json" id="spotlight-catalog">{{ overview_cards|map(attribute='key')|list|tojson }}</script>
-<script type="application/json" id="spotlight-for-all">{{ (nav.for_all or [])|tojson }}</script>
-<script src="{{ url_for('static', filename='overview.js') }}" defer></script>
+<script type="application/json" id="overview-catalog">{{ overview_cards|map(attribute='key')|list|tojson }}</script>
+<script src="{{ url_for('static', filename='overview.js', v=2) }}" defer></script>
