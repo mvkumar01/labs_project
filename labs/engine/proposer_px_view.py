@@ -41,7 +41,8 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
             r.update(how.get(r["trade_date"]) or tick_replay.ONE_MINUTE)
     done = [r for r in rows if r["status"] in ("closed", "no_trade")]
     traded = [r for r in done if r["n_trades"]]
-    green = [r for r in traded if float(r["gross_rs"] or 0) > 0]
+    color_pnl = "net_rs" if book.target_floor_only else "gross_rs"
+    green = [r for r in traded if float(r[color_pnl] or 0) > 0]
     closed = [t for t in trades if t["exit_ts"]]
     equity = peak = max_dd = 0.0
     for r in reversed(done):
@@ -55,8 +56,8 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
         m["days"] += 1
         m["trades"] += int(r["n_trades"] or 0)
         m["net_rs"] += float(r["net_rs"] or 0)
-        m["green"] += float(r["gross_rs"] or 0) > 0
-        m["red"] += float(r["gross_rs"] or 0) < 0
+        m["green"] += float(r[color_pnl] or 0) > 0
+        m["red"] += float(r[color_pnl] or 0) < 0
         m["worst_day"] = min(m["worst_day"], float(r["net_rs"] or 0))
     by_rule: dict[str, dict] = {}
     for t in closed:
@@ -67,7 +68,7 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
     net_total = sum(float(r["net_rs"] or 0) for r in done)
     stats = {
         "days": len(done), "traded_days": len(traded), "green_days": len(green),
-        "red_days": sum(1 for r in traded if float(r["gross_rs"] or 0) < 0),
+        "red_days": sum(1 for r in traded if float(r[color_pnl] or 0) < 0),
         "green_pct": round(100 * len(green) / max(len(traded), 1), 1),
         "trades": len(closed),
         "gross_total": round(sum(float(r["gross_rs"] or 0) for r in done), 2),

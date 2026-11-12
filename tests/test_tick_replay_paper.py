@@ -65,6 +65,10 @@ def _book(key):
     return next(b for b in BOOKS if b.key == key)
 
 
+def _books_on_day():
+    return {k for k in tk.TICK_BOOKS if tk.wants_ticks(k, DAY)}
+
+
 class _Trm:
     @staticmethod
     def _with_print_seconds(pts, secs, close):
@@ -95,8 +99,10 @@ def test_option_quotes_fills_and_staleness(archive):
 
 def test_which_days_replay_on_ticks(archive):
     v4, v3 = tr.NIFTY_V4.key, tr.NIFTY_V3_PCLOCK.key
-    assert set(tk.TICK_BOOKS) == {b.key for b in BOOKS}
+    v5 = tr.NIFTY_SCALPER_V5.key
+    assert set(tk.TICK_BOOKS) == {b.key for b in BOOKS} | {v5}
     assert all(tk.TICK_BOOKS[b.key] == "2026-10-27" for b in BOOKS)
+    assert not tk.wants_ticks(v5, "2026-11-11") and tk.wants_ticks(v5, "2026-11-12")
     assert tk.ticks_for(v3, DAY, DAY) is None                                        # not a tick book (V3 Pramanaa clock)
     assert tk.ticks_for(v4, "2026-10-26", "2026-11-07") is None                      # before the option bands
     assert isinstance(tk.ticks_for(v4, DAY, "2026-11-07"), tk.DayTicks)              # compacted: ticks
@@ -159,7 +165,7 @@ def test_persist_records_the_replay_and_the_tab_shows_it(tmp_path):
     assert split["tick_net"] == 1990.0 and split["min_net"] == 990.0
     assert "replay_split" not in view.tab_data(conn, book=tr.NIFTY_V3_PCLOCK)[2]
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(ROOT / "templates")), autoescape=True)
-    for key in tk.TICK_BOOKS:
+    for key in _books_on_day():
         b = _book(key)
         tr._ensure_tables(conn, b)
         tr._persist(conn, _result("2026-10-23", 1000.0), b)
@@ -184,9 +190,9 @@ def test_post_close_replays_then_drops_the_marker(tmp_path, archive):
     tr._ensure_tables(conn, tr.NIFTY_V4)
     tr._persist(conn, _result(DAY, 100.0), tr.NIFTY_V4)                                # intraday, 1-min
     out = tk.post_close(DAY, conn, run_book_day)
-    assert sorted(ran) == sorted(tk.TICK_BOOKS) and out["marker"]
+    assert sorted(ran) == sorted(_books_on_day()) and out["marker"]
     marker = json.loads((tk.DONE_DIR / f"{DAY}.json").read_text(encoding="utf-8"))
-    assert marker["trade_date"] == DAY and sorted(marker["books"]) == sorted(tk.TICK_BOOKS)
+    assert marker["trade_date"] == DAY and set(marker["books"]) == _books_on_day()
     ran.clear()
     assert tk.post_close(DAY, conn, run_book_day) == {"ready": True, "ran": [], "marker": None}   # idempotent
     assert tk.post_close("2026-11-09", conn, run_book_day)["ready"] is False and not ran         # no ticks yet
@@ -205,7 +211,7 @@ def test_post_close_waits_for_the_sensex_ticks(tmp_path, archive):
 
     out = tk.post_close(DAY, conn, run_book_day)
     assert out["ready"] is False and out["marker"] is None and not set(SENSEX_BOOKS) & set(ran)
-    assert sorted(ran) == sorted(k for k in tk.TICK_BOOKS if k not in SENSEX_BOOKS)
+    assert sorted(ran) == sorted(_books_on_day() - set(SENSEX_BOOKS))
     assert not tk.day_done(conn, DAY)                                                      # the downloader keeps them
     (archive.parent / "SENSEX.parquet").rename(archive / "SENSEX.parquet")
     ran.clear()
@@ -331,7 +337,7 @@ def test_live_days_count_as_ticks_and_are_replayed_again_after_compaction(tmp_pa
         tr._persist(conn, _result(day, 50.0, tk.DayTicks(day).summary()), _book(key))
 
     out = tk.post_close(DAY, conn, run_book_day)
-    assert sorted(ran) == sorted(tk.TICK_BOOKS) and out["marker"] and tk.day_done(conn, DAY)
+    assert sorted(ran) == sorted(_books_on_day()) and out["marker"] and tk.day_done(conn, DAY)
 
 
 def test_the_sensex_book_reads_its_live_files(tmp_path, archive):

@@ -45,6 +45,7 @@ INDEX_ALIAS = "NIFTY_50"
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Book key -> first session replayed on ticks (the option bands were recorded from 27 Oct 2026).
 TICK_BOOKS = {"proposer_nifty_v4": "2026-10-27", "proposer_nifty_v4_dt25": "2026-10-27",
+              "proposer_nifty_scalper_v5": "2026-11-12",
               "proposer_nifty_v3": "2026-10-27", "proposer_v6_dt25": "2026-10-27",
               "proposer_v6_dt25_ivh": "2026-10-27",
               "nna_c1": "2026-10-27", "nna_c2": "2026-10-27", "nna_c3": "2026-10-27",

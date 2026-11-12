@@ -67,6 +67,7 @@ def main() -> None:
     from labs.engine.proposer_nifty_v3_pclock_book import run_day as run_proposer_nifty_v3_pclock_day
     from labs.engine.proposer_nifty_v4_book import run_day as run_proposer_nifty_v4_day
     from labs.engine.proposer_nifty_v4_dt25_book import run_day as run_proposer_nifty_v4_dt25_day
+    from labs.engine.proposer_nifty_scalper_v5_book import run_day as run_proposer_nifty_scalper_v5_day
     from labs.engine.proposer_nifty_v4_fc_book import run_day as run_proposer_nifty_v4_fc_day
     from labs.engine.proposer_nifty_v4_dt25_fc_book import run_day as run_proposer_nifty_v4_dt25_fc_day
     from labs.engine.proposer_v3_dt35_clock_book import run_day as run_proposer_v3_dt35_clock_day
@@ -118,6 +119,7 @@ def main() -> None:
         "proposer_nifty_v3_pclock": None,
         "proposer_nifty_v4": None,
         "proposer_nifty_v4_dt25": None,
+        "proposer_nifty_scalper_v5": None,
         "proposer_nifty_v4_fc": None,
         "proposer_nifty_v4_dt25_fc": None,
         "proposer_v3_dt35_clock": None,
@@ -171,6 +173,7 @@ def main() -> None:
                 ("proposer_nifty_v3_pclock", run_proposer_nifty_v3_pclock_day),
                 ("proposer_nifty_v4", run_proposer_nifty_v4_day),
                 ("proposer_nifty_v4_dt25", run_proposer_nifty_v4_dt25_day),
+                ("proposer_nifty_scalper_v5", run_proposer_nifty_scalper_v5_day),
                 ("proposer_nifty_v4_fc", run_proposer_nifty_v4_fc_day),
                 ("proposer_nifty_v4_dt25_fc", run_proposer_nifty_v4_dt25_fc_day),
                 ("proposer_v3_dt35_clock", run_proposer_v3_dt35_clock_day),

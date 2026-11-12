@@ -1,0 +1,74 @@
+<h1>Nifty Scalper V5 (paper)</h1>
+<p class="sub">V4 entries, a <strong>2.5% gross daily target</strong>, and a NIFTY spot loss floor of about
+  46 points. Open positions close at 15:25 IST. The premium budget is ₹12 lakh per entry.</p>
+<p class="note">October 1–November 11 is historical replay. Early October uses recorded Pramanaa option depth,
+  with minute index data where index ticks were missing. Forward paper tracking starts November 12.</p>
+
+{% set stats = proposer_nifty_scalper_v5_stats %}
+{% set rows = proposer_nifty_scalper_v5_rows %}
+{% set trades = proposer_nifty_scalper_v5_trades %}
+<button type="button" id="nifty-v5-refresh" class="btn-secondary">Refresh backfill</button>
+<span id="nifty-v5-status" role="status"></span>
+{% if stats.get('error') %}
+  <p class="empty">V5 book unavailable ({{ stats.error }}).</p>
+{% elif not rows %}
+  <p class="empty">No sessions recorded in this date range.</p>
+{% else %}
+  <div class="cards">
+    <div class="card"><div class="k">Net P&amp;L</div><div class="v">₹{{ "{:,.2f}".format(stats.net_total) }}</div>
+      <div class="sub-k">After ₹{{ "{:,.2f}".format(stats.charges_total) }} charges</div></div>
+    <div class="card"><div class="k">Green sessions</div><div class="v">{{ stats.green_days }}/{{ stats.traded_days }}</div>
+      <div class="sub-k">Closed traded sessions, after charges</div></div>
+    <div class="card"><div class="k">Worst trade</div><div class="v">₹{{ "{:,.2f}".format(stats.worst_trade) }}</div></div>
+  </div>
+  <h2>By month</h2>
+  <table class="perf"><thead><tr><th>Month</th><th>Sessions</th><th>Green</th><th>Red</th><th>Trades</th><th>Net ₹</th></tr></thead><tbody>
+  {% for m in stats.months %}<tr><td>{{ m.month }}</td><td>{{ m.days }}</td><td>{{ m.green }}</td><td>{{ m.red }}</td>
+    <td>{{ m.trades }}</td><td>{{ "{:,.2f}".format(m.net_rs) }}</td></tr>{% endfor %}
+  </tbody></table>
+
+  <h2>Trades</h2>
+  {% if trades %}
+  <table class="perf"><thead><tr><th>Date</th><th>#</th><th>Signal</th><th>Contract</th><th>Entry → Exit</th>
+    <th>Buy</th><th>Sell</th><th>Net ₹</th><th>Exit</th></tr></thead><tbody>
+  {% for t in trades %}<tr><td>{{ t.trade_date }}</td><td>{{ t.seq }}</td><td>{{ t.signal }}</td><td>{{ t.tradingsymbol }}</td>
+    <td>{{ t.entry_ts[11:19] }} → {{ t.exit_ts[11:19] if t.exit_ts else 'open' }}</td>
+    <td>{{ '%.2f'|format(t.entry_price) }}</td><td>{{ '%.2f'|format(t.exit_price) if t.exit_price is not none else '—' }}</td>
+    <td>{{ "{:,.2f}".format(t.net_rs) if t.net_rs is not none else '—' }}</td><td>{{ t.exit_rule }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="empty">No trades in this date range.</p>{% endif %}
+
+  <h2>Daily history</h2>
+  <table class="perf"><thead><tr><th>Date</th><th>Status</th><th>Trades</th><th>Day target</th><th>Replay</th><th>Net ₹</th></tr></thead><tbody>
+  {% for r in rows %}<tr><td>{{ r.trade_date }}</td><td title="{{ r.error or '' }}">{{ r.status }}</td><td>{{ r.n_trades }}</td>
+    <td>{{ 'Banked' if r.day_banked else '—' }}</td>
+    <td>{% if r.replay == 'pramanaa_depth' %}Pramanaa depth{% elif r.replay == 'pramanaa_depth_ohlc' %}Pramanaa depth + index candles{% elif r.replay == 'ticks_live' %}Live tick files{% elif r.replay == 'ticks' %}Recorded ticks{% else %}Minute data{% endif %}
+      {% if r.fb_min or r.fb_opt %} ({{ r.fb_min or 0 }} index-minute / {{ r.fb_opt or 0 }} option fallbacks){% endif %}</td>
+    <td>{{ "{:,.2f}".format(r.net_rs or 0) }}</td></tr>{% endfor %}
+  </tbody></table>
+{% endif %}
+<script>
+  (() => {
+    const button = document.getElementById('nifty-v5-refresh');
+    const status = document.getElementById('nifty-v5-status');
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      status.textContent = 'Refreshing…';
+      try {
+        let result;
+        do {
+          const response = await fetch('{{ url_for("labs.proposer_nifty_scalper_v5_backfill") }}?limit=10', {method: 'POST'});
+          result = await response.json();
+          const errors = Object.values(result.errors || {});
+          if (!response.ok || result.error || errors.length) throw new Error(result.error || errors[0] || 'Backfill failed');
+          if (result.remaining && !result.done.length && !result.unavailable.length) throw new Error('Backfill did not advance');
+          status.textContent = `${result.remaining} sessions remaining`;
+        } while (result.remaining);
+        window.location.reload();
+      } catch (error) {
+        status.textContent = error.message;
+        button.disabled = false;
+      }
+    });
+  })();
+</script>

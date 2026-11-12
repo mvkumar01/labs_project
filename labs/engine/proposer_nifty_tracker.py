@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -87,8 +88,18 @@ def pick_strike(snap: pd.DataFrame, typ: str, spot: float, expiry: date, day: da
     return strike, symbol
 
 
+class _TargetFloorEngine(pe.ProposerEngine):
+    def _evaluate_open(self, p, pos, ltp, spot, closes=None, entry_idx=None):
+        # Entry filtering and regime tracking still see the actual predictor print.
+        return super()._evaluate_open({}, pos, ltp, spot, closes, entry_idx)
+
+
 def _params(day: str, book, ratio: float) -> "pe.ProposerParams":
-    return pe.scaled_for_nifty(tr.params_on(day, book), ratio)
+    params = pe.scaled_for_nifty(tr.params_on(day, book), ratio)
+    if book.target_floor_only:
+        return replace(params, spot_target_decisive_pts=float('inf'), spot_target_neutral_pts=float('inf'),
+                       loss_floor_pct=float('-inf'), bar_exit='', early_adverse_pts=0.0)
+    return params
 
 
 def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = None, book=None,
@@ -155,7 +166,8 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     blocks = book.key in tr.ENTRY_BLOCK_BOOKS
     cpr = entry_blocks.previous_cpr(dday, nifty_bars) if blocks else None
     ratio = nbars[0][1] / sbars[0][1]
-    eng = pe.ProposerEngine(_params(day, book, ratio))
+    engine = _TargetFloorEngine if book.target_floor_only else pe.ProposerEngine
+    eng = engine(_params(day, book, ratio))
     pos, trades, realized, snap, shist = None, [], 0.0, {}, []
 
     def book_state():

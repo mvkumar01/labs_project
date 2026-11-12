@@ -105,6 +105,7 @@ class Book:
     print_gap_s: float = PRINT_EVERY_MIN * 60.0
     forming: bool = False             # Pramanaa's first print: the forming candle counted, 09:21:45
     print_lag_s: float | None = None  # second of the minute its prints are acted on (None: PRINT_LAG_S)
+    target_floor_only: bool = False  # NIFTY paper exit policy
 
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
@@ -152,6 +153,7 @@ NIFTY_V4 = Book("proposer_nifty_v4", pe.STRATEGY_VERSION_V5, 180.0)
 # Nifty Scalper V4 2.5%: the same book with the day target at 2.5% - the live preset with 2.5% chosen on the
 # configure page (alphaIMB v4_tail_risk.py round 4; Vipin, 2026-11-05).
 NIFTY_V4_DT25 = Book("proposer_nifty_v4_dt25", pe.STRATEGY_VERSION_V5, 180.0)
+NIFTY_SCALPER_V5 = Book("proposer_nifty_scalper_v5", pe.STRATEGY_VERSION_V5, 180.0, target_floor_only=True)
 # Nifty Scalper V4 1.5% / 2.5% on a fixed clock: the V4 books with every print acted on exactly 30 s into its minute
 # (prints always on complete SENSEX data) and no new entry after the day's 2nd losing trade - the controllable set-up
 # recommended after the 9 Nov live/paper audit (alphaIMB det_test.py, fixed_report.py: the stop held the worst day
@@ -160,10 +162,10 @@ FIXED_CLOCK_PRINT_S = 30.0
 NIFTY_V4_FC = Book("proposer_nifty_v4_fc", pe.STRATEGY_VERSION_V5, 180.0, print_lag_s=FIXED_CLOCK_PRINT_S)
 NIFTY_V4_DT25_FC = Book("proposer_nifty_v4_dt25_fc", pe.STRATEGY_VERSION_V5, 180.0, print_lag_s=FIXED_CLOCK_PRINT_S)
 NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key, NIFTY_V4_DT25.key,
-                         NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key})
-ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key})
+                         NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key, NIFTY_SCALPER_V5.key})
+ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key, NIFTY_SCALPER_V5.key})
 # Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
-BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key})
+BANK_REGARDLESS_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key, NIFTY_SCALPER_V5.key})
 # Books that take no new entry once the day has this many losing trades (ProposerParams.max_losses_per_day).
 MAX_LOSSES_PER_DAY = {NIFTY_V4_FC.key: 2, NIFTY_V4_DT25_FC.key: 2}
 # Books that take the live preset's early adverse exit: (first session, (points, seconds)) steps in date order, the
@@ -369,11 +371,11 @@ SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "prop
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
                  "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01",
                  "proposer_nifty_v4_dt25": "2026-07-01", "proposer_nifty_v4_fc": "2026-07-01",
-                 "proposer_nifty_v4_dt25_fc": "2026-07-01"}
+                 "proposer_nifty_v4_dt25_fc": "2026-07-01", "proposer_nifty_scalper_v5": "2026-10-01"}
 # Books whose day target differs from their live preset's.
 DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_v6_dt25_f125": 0.025, "proposer_v6_dt25_ivh": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
                   "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015,
-                  "proposer_nifty_v4_dt25": 0.025, "proposer_nifty_v4_fc": 0.015, "proposer_nifty_v4_dt25_fc": 0.025}
+                  "proposer_nifty_v4_dt25": 0.025, "proposer_nifty_v4_fc": 0.015, "proposer_nifty_v4_dt25_fc": 0.025, "proposer_nifty_scalper_v5": 0.025}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
 # switched off (as in the research run: -99.9%).
@@ -423,7 +425,7 @@ DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35"
                                 "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_v6_dt25_f125",
                                 "proposer_v6_dt25_ivh", "proposer_nifty_v5",
                                 "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4",
-                                "proposer_nifty_v4_dt25", "proposer_nifty_v4_fc", "proposer_nifty_v4_dt25_fc"})
+                                "proposer_nifty_v4_dt25", "proposer_nifty_v4_fc", "proposer_nifty_v4_dt25_fc", "proposer_nifty_scalper_v5"})
 
 
 def _entry_strike(day: str, near: pd.DataFrame, t: datetime, spot: float, side: str,
