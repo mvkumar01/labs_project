@@ -20,6 +20,11 @@ Position side, NIFTY:
   the option at its recorded snapshot plus a fitted delta times the spot move, half the recorded spread
   each way; NSE option charges.
 
+A reverse book (Book.reverse, Nifty Scalper V3 Reverse) replays the same trades as an unseen shadow - they drive the
+engine's day target, recovery book and cooldowns - and holds the opposite option instead: the same picker on the
+other side, Rs 12L of premium, bought at the ask when the shadow enters and sold at the bid when it exits (any reason,
+including the shadow's day target). Its trades and P&L are that leg's; the shadow's gross is kept as shadow_gross_rs.
+
 Chosen on 1 Jul - 16 Oct 2026 from 27 variants as the best green-day rate (alphaIMB REBUILD sec. 41-42):
 69 of 72 traded days green, +6.29L, worst day -1.86L, max drawdown 3.53L. In-sample; no NIFTY tick data.
 Paper only: it never calls a broker order API.
@@ -169,6 +174,25 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
     engine = _TargetFloorEngine if book.target_floor_only else pe.ProposerEngine
     eng = engine(_params(day, book, ratio))
     pos, trades, realized, snap, shist = None, [], 0.0, {}, []
+    rpos, rtrades = None, []                     # a reverse book's own leg (the shadow is pos / trades)
+
+    def reverse_close(now_, px, spot_, rule):
+        nonlocal rpos
+        if rpos is None:
+            return
+        px = rpos.pop("tick_exit", px)
+        qty = rpos["qty"]
+        rc = round_trip_charges(rpos["ein"], px, qty)
+        charges = float(rc.get("raw_total", rc.get("total", 0.0)))
+        gross = (px - rpos["ein"]) * qty
+        rtrades[-1].update({"exit_ts": now_.isoformat(timespec="seconds"), "exit_spot": round(spot_, 2),
+                            "exit_price": round(px, 2), "gross_rs": round(gross, 2), "charges_rs": round(charges, 2),
+                            "net_rs": round(gross - charges, 2), "exit_rule": rule})
+        rpos = None
+
+    def reverse_quote_px(at):
+        q = rpos["c"].quote(at) if rpos else None
+        return (q[0] - q[1]) if q else (rpos["last"] - rpos["half"] if rpos else None)
 
     def book_state():
         eng.set_book(day_realized=realized, book_net=book_before + realized,
@@ -199,12 +223,16 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             if pos:
                 q = pos["c"].quote(t)
                 close(t, (q[0] - q[1]) if q else pos["last"] - pos["half"], nb[1], "eod")
+            reverse_close(t, reverse_quote_px(t), nb[1], "eod")
             break
         pending = by_min.get(t, [])
-        anchor_spot, anchor = nb[1], None
+        anchor_spot, anchor, ranchor = nb[1], None, None
         if pos:
             q = pos["c"].quote(t)
             anchor = (q[0], q[1], pos["c"].delta(t)) if q else None
+        if rpos:
+            q = rpos["c"].quote(t)
+            ranchor = (q[0], q[1], rpos["c"].delta(t)) if q else None
         path, i = tr._with_print_seconds(tr._dense(tr._nodes(nb)), [p["sec"] for p in pending], nb[4]), 0
         if ticks is not None:                                    # the minute on the recorded index ticks
             path = ticks.path(t, nb, [p["sec"] for p in pending], tr, path)
@@ -216,6 +244,12 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
             if pending and sec >= pending[-1]["sec"]:
                 snap, pending, fresh = pending[-1], [], True
             book_state()
+            if rpos:                                                 # mark the reverse leg on the same path
+                if ranchor:
+                    rsg = 1 if rpos["side"] == "CE" else -1
+                    rpos["last"], rpos["half"] = max(0.05, ranchor[0] + rsg * ranchor[2] * (spot - anchor_spot)), ranchor[1]
+                if ticks is not None:
+                    ticks.held(rpos, now_, rpos["last"])
             if pos:
                 ltp = None
                 if anchor:
@@ -240,6 +274,11 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                         if ticks is not None:                        # out at the bid, the fill delay later
                             pos["tick_exit"] = ticks.exit_px(pos, now_, mark - pos["half"])
                         close(now_, mark - pos["half"], spot, sig.reason)
+                        if rpos:                                     # the reverse leg leaves with the shadow
+                            rpx = rpos["last"] - rpos["half"]
+                            if ticks is not None:
+                                rpos["tick_exit"] = ticks.exit_px(rpos, now_, rpx)
+                            reverse_close(now_, rpx, spot, sig.reason)
                         book_state()
                         eng.evaluate(now_, snap, pe.Position(), option_ltp=None, spot=spot)
             elif fresh and snap:
@@ -266,6 +305,27 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
                             pos["sym"] = sym or c.symbol(t)
                         anchor = (q[0], q[1], d)
                         eng.mark_entry(snap)
+                        if book.reverse:                             # the book's leg: the opposite option
+                            rtyp = "PE" if typ == "CE" else "CE"
+                            rstrike, rsym = pick_strike(snapdf, rtyp, spot, exp_date, dday)
+                            rquotes = quote_book.get((rtyp, rstrike)) if rstrike else None
+                            rcon = tr._Contract(rquotes, snap_spot) if rquotes is not None else None
+                            rq = rcon.quote(t) if rcon else None
+                            if rq:
+                                rd = rcon.delta(t)
+                                rest = max(0.05, rq[0] + (1 if rtyp == "CE" else -1) * rd * (spot - anchor_spot))
+                                rsym = rsym or rcon.symbol(t)
+                                if ticks is not None:
+                                    rest, rq = ticks.entry(rsym, now_, rest, rq)
+                                rqty = max(1, int(CAPITAL_RS // ((rest + rq[1]) * LOT_SIZE))) * LOT_SIZE
+                                rpos = {"c": rcon, "side": rtyp, "ein": rest + rq[1], "espot": spot, "last": rest,
+                                        "half": rq[1], "qty": rqty, "sym": rsym}
+                                ranchor = (rq[0], rq[1], rd)
+                                rtrades.append({"signal": sig.reason, "side": rtyp, "strike": rstrike,
+                                                "tradingsymbol": rsym, "expiry_code": str(code),
+                                                "entry_ts": now_.isoformat(timespec="seconds"),
+                                                "entry_spot": round(spot, 2), "entry_price": round(rest + rq[1], 2),
+                                                "qty": rqty, "exit_ts": None})
                         trades.append({"signal": sig.reason, "side": typ, "strike": strike,
                                        "tradingsymbol": sym or c.symbol(t), "expiry_code": str(code),
                                        "entry_ts": now_.isoformat(timespec="seconds"),
@@ -285,6 +345,19 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         else:
             trades[-1].update({"exit_price": round(mark, 2), "exit_rule": "open",
                                "gross_rs": round((mark - pos["ein"]) * pos["qty"], 2)})
+    if rpos:
+        rmark = (reverse_quote_px(through + timedelta(minutes=1)) if rpos["c"].quote(through + timedelta(minutes=1))
+                 else reverse_quote_px(through))
+        if final:
+            reverse_close(through, rmark, nbars[-1][4], "eod")
+        else:
+            rtrades[-1].update({"exit_price": round(rmark, 2), "exit_rule": "open",
+                                "gross_rs": round((rmark - rpos["ein"]) * rpos["qty"], 2)})
+    shadow = {}
+    if book.reverse:                                    # the book is the reverse leg; the shadow's gross is kept
+        shadow = {"shadow_gross_rs": round(sum(x["gross_rs"] for x in trades if x.get("exit_ts")), 2),
+                  "shadow_trades": len(trades)}
+        trades = rtrades
     closed = [x for x in trades if x.get("exit_ts")]
     prev_close = prior[-1][1] if prior else None
     return {
@@ -297,7 +370,7 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
         "charges_rs": round(sum(x["charges_rs"] for x in closed), 2),
         "net_rs": round(sum(x["net_rs"] for x in closed), 2),
         "book_gross_before": round(book_before, 2),
-        "through_ts": through.isoformat(timespec="minutes"), "trades": trades,
+        "through_ts": through.isoformat(timespec="minutes"), "trades": trades, **shadow,
         "replay": ticks.summary() if ticks is not None else None,
         "prints": [{"minute": p["t"].strftime("%H:%M"), "sec": p["sec"], "x5": p["x5"],
                     "x5_conf": round(float(p["x5_conf"]), 4)} for p in prints],

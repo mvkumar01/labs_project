@@ -33,6 +33,10 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
             r["day_iv"], r["iv_ref"], r["iv_n"] = iv.get(r["trade_date"], (None, None, None))
             r["half"] = bool(r["qty"] and r["qty"] < QTY)
             r["iv_ratio"] = round(r["day_iv"] / r["iv_ref"], 2) if r["day_iv"] and r["iv_ref"] else None
+    if book.reverse:                                     # the V3 trade the reverse leg mirrors (the shadow)
+        sh = dict(conn.execute(f"SELECT trade_date, shadow_gross_rs FROM {book.key}_daily"))
+        for r in rows:
+            r["shadow_gross_rs"] = sh.get(r["trade_date"])
     from labs.engine import tick_replay
     ticked = book.key in tick_replay.TICK_BOOKS
     if ticked:                                           # how each day was replayed (ticks / one-minute path)
@@ -99,4 +103,6 @@ def tab_data(conn: sqlite3.Connection, date_clause: str = "", date_params=(), bo
             "min_days": len(done) - len(on_ticks),
             "min_net": round(net_total - sum(float(r["net_rs"] or 0) for r in on_ticks), 2),
             "tick_from": tick_replay.TICK_BOOKS[book.key], "latency_s": tick_replay.FILL_LATENCY_S}
+    if book.reverse:
+        stats["shadow_gross"] = round(sum(float(r.get("shadow_gross_rs") or 0) for r in done), 2)
     return rows, trades, stats

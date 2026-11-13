@@ -400,6 +400,7 @@ LIVE_TABS = {
     "proposer_v6_dt25_ivh": "Sensex 2.5% V6 · IV half",
     "proposer_nifty_v5": "Nifty Scalper V1",
     "proposer_nifty_v3": "Nifty Scalper V3",
+    "proposer_nifty_v3_reverse": "Nifty Scalper V3 Reverse",
     "proposer_nifty_v3_pclock": "Nifty Scalper V3 (Pramanaa timing)",
     "proposer_nifty_v4": "Nifty Scalper V4",
     "proposer_nifty_v4_dt25": "Nifty Scalper V4 2.5%",
@@ -463,6 +464,7 @@ def live_strategy():
     proposer_v6_dt25_ivh_rows, proposer_v6_dt25_ivh_trades, proposer_v6_dt25_ivh_stats = [], [], {}
     proposer_nifty_v5_rows, proposer_nifty_v5_trades, proposer_nifty_v5_stats = [], [], {}
     proposer_nifty_v3_rows, proposer_nifty_v3_trades, proposer_nifty_v3_stats = [], [], {}
+    proposer_nifty_v3_reverse_rows, proposer_nifty_v3_reverse_trades, proposer_nifty_v3_reverse_stats = [], [], {}
     proposer_nifty_v3_pclock_rows, proposer_nifty_v3_pclock_trades, proposer_nifty_v3_pclock_stats = [], [], {}
     proposer_nifty_v4_rows, proposer_nifty_v4_trades, proposer_nifty_v4_stats = [], [], {}
     proposer_nifty_v4_dt25_rows, proposer_nifty_v4_dt25_trades, proposer_nifty_v4_dt25_stats = [], [], {}
@@ -1064,6 +1066,16 @@ def live_strategy():
                 if "no such table" not in str(exc):
                     proposer_nifty_v3_stats = {"error": str(exc)}
 
+        # Nifty Scalper V3 Reverse (paper).
+        if active_live_tab == "proposer_nifty_v3_reverse":
+            try:
+                from labs.engine.proposer_nifty_v3_reverse_book import tab_data as proposer_nifty_v3_reverse_tab_data
+                proposer_nifty_v3_reverse_rows, proposer_nifty_v3_reverse_trades, proposer_nifty_v3_reverse_stats = (
+                    proposer_nifty_v3_reverse_tab_data(conn, date_clause, date_params))
+            except Exception as exc:
+                if "no such table" not in str(exc):
+                    proposer_nifty_v3_reverse_stats = {"error": str(exc)}
+
         # Nifty Scalper V3 (Pramanaa timing) (paper).
         if active_live_tab == "proposer_nifty_v3_pclock":
             try:
@@ -1567,6 +1579,9 @@ def live_strategy():
         proposer_nifty_v3_rows=proposer_nifty_v3_rows,
         proposer_nifty_v3_trades=proposer_nifty_v3_trades,
         proposer_nifty_v3_stats=proposer_nifty_v3_stats,
+        proposer_nifty_v3_reverse_rows=proposer_nifty_v3_reverse_rows,
+        proposer_nifty_v3_reverse_trades=proposer_nifty_v3_reverse_trades,
+        proposer_nifty_v3_reverse_stats=proposer_nifty_v3_reverse_stats,
         proposer_nifty_v3_pclock_rows=proposer_nifty_v3_pclock_rows,
         proposer_nifty_v3_pclock_trades=proposer_nifty_v3_pclock_trades,
         proposer_nifty_v3_pclock_stats=proposer_nifty_v3_pclock_stats,
@@ -1753,6 +1768,25 @@ def proposer_nifty_v5_backfill():
 def proposer_nifty_v3_backfill():
     """Backfill bounded batches of the Nifty Scalper V3 paper book."""
     from labs.engine.proposer_nifty_v3_book import DEFAULT_START, run_backfill
+    try:
+        limit = min(max(int(request.args.get("limit", 5)), 1), 20)
+    except (TypeError, ValueError):
+        limit = 5
+    try:
+        return jsonify(run_backfill(
+            start_date=request.args.get("start", DEFAULT_START),
+            end_date=request.args.get("end"),
+            limit=limit,
+            rebuild=request.args.get("rebuild", "0") == "1",
+        ))
+    except Exception as exc:
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@labs_bp.route("/api/proposer_nifty_v3_reverse/backfill", methods=["POST"])
+def proposer_nifty_v3_reverse_backfill():
+    """Backfill bounded batches of the Nifty Scalper V3 Reverse paper book."""
+    from labs.engine.proposer_nifty_v3_reverse_book import DEFAULT_START, run_backfill
     try:
         limit = min(max(int(request.args.get("limit", 5)), 1), 20)
     except (TypeError, ValueError):

@@ -65,6 +65,7 @@ def main() -> None:
     from labs.engine.proposer_v6_dt25_ivh_book import run_day as run_proposer_v6_dt25_ivh_day
     from labs.engine.proposer_nifty_v5_book import run_day as run_proposer_nifty_v5_day
     from labs.engine.proposer_nifty_v3_book import run_day as run_proposer_nifty_v3_day
+    from labs.engine.proposer_nifty_v3_reverse_book import run_day as run_proposer_nifty_v3_reverse_day
     from labs.engine.proposer_nifty_v3_pclock_book import run_day as run_proposer_nifty_v3_pclock_day
     from labs.engine.proposer_nifty_v4_book import run_day as run_proposer_nifty_v4_day
     from labs.engine.proposer_nifty_v4_dt25_book import run_day as run_proposer_nifty_v4_dt25_day
@@ -118,6 +119,7 @@ def main() -> None:
         "proposer_v6_dt25_ivh": None,
         "proposer_nifty_v5": None,
         "proposer_nifty_v3": None,
+        "proposer_nifty_v3_reverse": None,
         "proposer_nifty_v3_pclock": None,
         "proposer_nifty_v4": None,
         "proposer_nifty_v4_dt25": None,
@@ -173,6 +175,7 @@ def main() -> None:
                 ("proposer_v6_dt25_ivh", run_proposer_v6_dt25_ivh_day),
                 ("proposer_nifty_v5", run_proposer_nifty_v5_day),
                 ("proposer_nifty_v3", run_proposer_nifty_v3_day),
+                ("proposer_nifty_v3_reverse", run_proposer_nifty_v3_reverse_day),
                 ("proposer_nifty_v3_pclock", run_proposer_nifty_v3_pclock_day),
                 ("proposer_nifty_v4", run_proposer_nifty_v4_day),
                 ("proposer_nifty_v4_dt25", run_proposer_nifty_v4_dt25_day),

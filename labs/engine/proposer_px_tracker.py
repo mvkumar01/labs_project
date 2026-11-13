@@ -106,6 +106,7 @@ class Book:
     forming: bool = False             # Pramanaa's first print: the forming candle counted, 09:21:45
     print_lag_s: float | None = None  # second of the minute its prints are acted on (None: PRINT_LAG_S)
     target_floor_only: bool = False  # NIFTY paper exit policy
+    reverse: bool = False            # holds the opposite option to the book's own (shadow) trade
 
 
 PX = Book("proposer_px", pe.STRATEGY_VERSION_PX)
@@ -147,6 +148,10 @@ NIFTY_V5 = Book("proposer_nifty_v5", pe.STRATEGY_VERSION_V5)
 # the same on Pramanaa's print clock, paper only (Vipin, 2026-10-28).
 NIFTY_V3 = Book("proposer_nifty_v3", pe.STRATEGY_VERSION_V5, 180.0)
 NIFTY_V3_PCLOCK = Book("proposer_nifty_v3_pclock", pe.STRATEGY_VERSION_V5, PRAMANAA_PRINT_GAP_S, forming=True)
+# Nifty Scalper V3 Reverse: the live preset proposer_nifty_scalper_v3_reverse (live/engine/proposer_reverse.py) - the
+# V3 trade runs as an unseen shadow (its day target, recovery book and cooldowns) and the book holds the opposite
+# option, in and out at the shadow's moments. Paper only (Vipin, 2026-11-13).
+NIFTY_V3_REVERSE = Book("proposer_nifty_v3_reverse", pe.STRATEGY_VERSION_V5, 180.0, reverse=True)
 # Nifty Scalper V4: V3 with the entry blocks of live/engine/entry_blocks.py - the live preset proposer_nifty_scalper_v4
 # (Vipin, 2026-11-02).
 NIFTY_V4 = Book("proposer_nifty_v4", pe.STRATEGY_VERSION_V5, 180.0)
@@ -161,7 +166,8 @@ NIFTY_SCALPER_V5 = Book("proposer_nifty_scalper_v5", pe.STRATEGY_VERSION_V5, 180
 FIXED_CLOCK_PRINT_S = 30.0
 NIFTY_V4_FC = Book("proposer_nifty_v4_fc", pe.STRATEGY_VERSION_V5, 180.0, print_lag_s=FIXED_CLOCK_PRINT_S)
 NIFTY_V4_DT25_FC = Book("proposer_nifty_v4_dt25_fc", pe.STRATEGY_VERSION_V5, 180.0, print_lag_s=FIXED_CLOCK_PRINT_S)
-NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V4.key, NIFTY_V4_DT25.key,
+NIFTY_BOOKS = frozenset({NIFTY_V5.key, NIFTY_V3.key, NIFTY_V3_PCLOCK.key, NIFTY_V3_REVERSE.key, NIFTY_V4.key,
+                         NIFTY_V4_DT25.key,
                          NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key, NIFTY_SCALPER_V5.key})
 ENTRY_BLOCK_BOOKS = frozenset({NIFTY_V4.key, NIFTY_V4_DT25.key, NIFTY_V4_FC.key, NIFTY_V4_DT25_FC.key, NIFTY_SCALPER_V5.key})
 # Books whose day banks at the day target whatever the book (the live preset's bank_regardless_of_book).
@@ -302,6 +308,10 @@ def _ensure_tables(conn: sqlite3.Connection, book: Book = PX) -> None:
         for col in ("day_iv", "iv_ref", "iv_n"):
             if col not in have:
                 conn.execute(f"ALTER TABLE {book.key}_daily ADD COLUMN {col} REAL")
+    if book.reverse:                                   # the shadow's gross: its recovery book, as the live runner keeps it
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({book.key}_daily)")}
+        if "shadow_gross_rs" not in have:
+            conn.execute(f"ALTER TABLE {book.key}_daily ADD COLUMN shadow_gross_rs REAL")
     conn.commit()
 
 
@@ -369,12 +379,13 @@ COOLDOWN_270_FROM = "2026-10-19"
 SETTINGS_FROM = {"proposer_v4": "2026-07-01", "proposer_v5": "2026-07-01", "proposer_v5_dt25": "2026-07-01", "proposer_v6_dt25": "2026-07-01",
                  "proposer_v6_dt25_f125": "2026-07-01", "proposer_v6_dt25_ivh": "2026-07-01",
                  "proposer_nifty_v5": "2026-07-01", "proposer_nifty_v3": "2026-07-01",
-                 "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v4": "2026-07-01",
+                 "proposer_nifty_v3_pclock": "2026-07-01", "proposer_nifty_v3_reverse": "2026-07-01",
+                 "proposer_nifty_v4": "2026-07-01",
                  "proposer_nifty_v4_dt25": "2026-07-01", "proposer_nifty_v4_fc": "2026-07-01",
                  "proposer_nifty_v4_dt25_fc": "2026-07-01", "proposer_nifty_scalper_v5": "2026-10-01"}
 # Books whose day target differs from their live preset's.
 DAY_TARGET_PCT = {"proposer_v5_dt25": 0.025, "proposer_v6_dt25": 0.025, "proposer_v6_dt25_f125": 0.025, "proposer_v6_dt25_ivh": 0.025, "proposer_nifty_v5": 0.015, "proposer_nifty_v3": 0.015,
-                  "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v4": 0.015,
+                  "proposer_nifty_v3_pclock": 0.015, "proposer_nifty_v3_reverse": 0.015, "proposer_nifty_v4": 0.015,
                   "proposer_nifty_v4_dt25": 0.025, "proposer_nifty_v4_fc": 0.015, "proposer_nifty_v4_dt25_fc": 0.025, "proposer_nifty_scalper_v5": 0.025}
 # Books whose loss floor is in SENSEX points instead of a share of the premium. Checked on the same
 # simulated price path as every other exit, after the engine's own exits; the premium floor is
@@ -424,7 +435,8 @@ def spot_floor_exit(eng, sig, pos: dict, spot: float, book) -> "pe.Signal":
 DELTA_STRIKE_BOOKS = frozenset({"proposer_px", "proposer_v3", "proposer_v3_dt35", "proposer_v3_dt35_clock",
                                 "proposer_v4", "proposer_v5", "proposer_v5_dt25", "proposer_v6_dt25", "proposer_v6_dt25_f125",
                                 "proposer_v6_dt25_ivh", "proposer_nifty_v5",
-                                "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v4",
+                                "proposer_nifty_v3", "proposer_nifty_v3_pclock", "proposer_nifty_v3_reverse",
+                                "proposer_nifty_v4",
                                 "proposer_nifty_v4_dt25", "proposer_nifty_v4_fc", "proposer_nifty_v4_dt25_fc", "proposer_nifty_scalper_v5"})
 
 
@@ -751,7 +763,9 @@ def simulate_day(day: str, *, book_before: float = 0.0, now: datetime | None = N
 
 
 def _book_before(conn: sqlite3.Connection, day: str, book: Book = PX) -> float:
-    row = conn.execute(f"SELECT COALESCE(SUM(gross_rs), 0) FROM {book.key}_daily "
+    """The engine's lifetime book before `day`: the book's gross, or for a reverse book its shadow's."""
+    column = "shadow_gross_rs" if book.reverse else "gross_rs"
+    row = conn.execute(f"SELECT COALESCE(SUM({column}), 0) FROM {book.key}_daily "
                        "WHERE trade_date < ? AND status IN ('closed', 'no_trade')", (day,)).fetchone()
     return float(row[0] or 0.0)
 
@@ -815,6 +829,9 @@ def _persist(conn: sqlite3.Connection, r: dict, book: Book = PX) -> None:
     if book.key in IV_HALF_BOOKS:                      # the day's size and the IV that set it
         conn.execute(f"UPDATE {book.key}_daily SET day_iv=?, iv_ref=?, iv_n=? WHERE trade_date=?",
                      (r.get("day_iv"), r.get("iv_ref"), r.get("iv_n"), r["trade_date"]))
+    if book.reverse:
+        conn.execute(f"UPDATE {book.key}_daily SET shadow_gross_rs=? WHERE trade_date=?",
+                     (r.get("shadow_gross_rs"), r["trade_date"]))
     from labs.engine import tick_replay
     if book.key in tick_replay.TICK_BOOKS:             # how the day was replayed, for the tab's Replay column
         tick_replay.record(conn, book.key, r["trade_date"], r.get("replay") or tick_replay.ONE_MINUTE)

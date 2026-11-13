@@ -48,7 +48,7 @@ def archive(tmp_path, monkeypatch):
     return d
 
 
-BOOKS = (tr.NIFTY_V4, tr.NIFTY_V4_DT25, tr.NIFTY_V3, tr.V6_DT25, tr.V6_DT25_IVH,
+BOOKS = (tr.NIFTY_V4, tr.NIFTY_V4_DT25, tr.NIFTY_V3, tr.NIFTY_V3_REVERSE, tr.V6_DT25, tr.V6_DT25_IVH,
          tr.NIFTY_V4_FC, tr.NIFTY_V4_DT25_FC)
 SENSEX_BOOKS = sorted(b.key for b in BOOKS if tk.index_of(b.key) == "SENSEX")
 NNA_TWINS = ("nna_c1", "nna_c2", "nna_c3")          # tick books too; their own post-close test: test_nna_twins.py
