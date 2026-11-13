@@ -94,10 +94,12 @@ def _book(key: str):
 
 
 def _rebase(conn: sqlite3.Connection, key: str, first: str | None) -> None:
-    """book_gross_before = the gross of every earlier closed / no-trade session, from `first` on."""
+    """book_gross_before = the gross of every earlier closed / no-trade session, from `first` on (a reverse book: its
+    shadow's gross, the book its engine carries - proposer_px_tracker._book_before)."""
     if not first:
         return
-    rows = conn.execute(f"SELECT trade_date, status, gross_rs FROM {key}_daily ORDER BY trade_date").fetchall()
+    column = "shadow_gross_rs" if _book(key).reverse else "gross_rs"
+    rows = conn.execute(f"SELECT trade_date, status, {column} FROM {key}_daily ORDER BY trade_date").fetchall()
     running = 0.0
     for day, status, gross in rows:
         if day >= first:

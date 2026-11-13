@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 import jinja2
+import pytest
 
 from labs.engine import proposer_nifty_v3_reverse_book as rev
 from labs.engine import proposer_px_tracker as tr
@@ -64,3 +65,17 @@ def test_registered_as_a_tab_a_loop_runner_and_an_overview_card():
     assert f"{{% include '_{key}.html' %}}" in page and f"/labs/api/{key}/backfill" in page
     loop = (ROOT / "pa_paper_tracker_loop.py").read_text(encoding="utf-8")
     assert f'("{key}", run_{key}_day)' in loop
+
+
+def test_an_import_carries_the_shadows_book(tmp_path):
+    from labs.engine import paper_day_transfer as xfer
+    target = sqlite3.connect(tmp_path / "pa.db")
+    tr._ensure_tables(target, rev.BOOK)
+    tr._persist(target, _day(trade_date="2026-11-11", shadow_gross_rs=16_000.0), rev.BOOK)
+    # replayed elsewhere with the shadow's carried book (16,000), not the book's own gross (-25,000)
+    payload = xfer.export_days(rev.BOOK, [_day(book_gross_before=16_000.0, shadow_gross_rs=-5_000.0)])
+    assert xfer.import_days(target, [payload]) == {rev.BOOK.key: [DAY]}
+    assert tr._book_before(target, "2026-11-13", rev.BOOK) == 11_000.0
+    wrong = xfer.export_days(rev.BOOK, [_day(book_gross_before=-25_000.0)])
+    with pytest.raises(ValueError, match="nothing was imported"):
+        xfer.import_days(target, [wrong])
