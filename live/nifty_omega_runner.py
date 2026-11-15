@@ -25,6 +25,15 @@ def prior_entry(user_id, conn_id, day, dry_run):
         conn.close()
 
 
+def entry_contract(user_id, conn_id, day):
+    """Strike and entry ask of today's Omega position (written just before the entry order), or None."""
+    raw = svc.get_config(user_id, conn_id, 'omega_entry')
+    record = json.loads(raw) if raw else None
+    if not record or record.get('day') != day:
+        return None
+    return dict(strike=int(record['strike']), ask=float(record['ask']))
+
+
 def execute(user_id, conn_id, adapter, now, dry_run):
     from live import live_runner as runner
 
@@ -97,27 +106,40 @@ def execute(user_id, conn_id, adapter, now, dry_run):
                 # A mismatch can be an unrecorded broker fill. Avoid a new order.
                 runner.log.warning('Omega position needs reconciliation conn=%s', conn_id)
                 return
-        quantity, reason, price = 0, '', None
+        quantity, reason, price, stop_mark = 0, '', None, None
+        side = 1 if state['side'] == 'CALL' else -1
         if minute.time() >= time(15,26):
             quantity, reason = held, 'omega_eod'
         else:
             data = omega.snapshots(day, minute)
             entry = runner._to_ist_minute_naive(state['entry_time'])
-            side = 1 if state['side'] == 'CALL' else -1
-            targets = [25,40] if held == 2*omega.LOT else [25] if state.get('entry_rule')=='omega_single25' else [40]
+            first, second = omega.PREMIUM_TARGETS
+            # 'omega_single25' = one lot bought (funds); it carries lot 1's target.
+            targets = [first, second] if held == 2*omega.LOT else [first] if state.get('entry_rule')=='omega_single25' else [second]
+            contract = entry_contract(user_id, conn_id, day)
+            if contract is None:
+                runner.log.warning('Omega entry contract unknown conn=%s: alpha and EOD exits only', conn_id)
             decision = entry+omega.MINUTE
             while decision < minute:
-                bar = data['bars'].get(decision-omega.MINUTE)
-                if bar is not None:
-                    hits, cause = omega.decision_exit(data['alpha'].get(decision), side, bar,
-                                                      state['entry_spot'], targets)
-                    if hits:
-                        # A newer alpha exit or +40 hit takes precedence over a pending +25.
-                        quantity = max(quantity, len(hits)*omega.LOT)
-                        reason = 'omega_'+cause
+                quote = omega.contract_quote(data, decision, contract['strike'], side) if contract else None
+                hits, cause = omega.decision_exit(data['alpha'].get(decision), side,
+                                                  float(quote.bid) if quote is not None else None,
+                                                  contract['ask'] if contract else None, targets)
+                if hits:
+                    quantity = max(quantity, len(hits)*omega.LOT)
+                    reason = 'omega_'+cause
+                    if len(hits) == len(targets):
+                        # The first minute that closes every held lot decides, as in the research.
+                        stop_mark = decision if cause == 'alpha_stop' else None
+                        break
                 decision += omega.MINUTE
         if not quantity:
             return
+        if quantity == held:
+            # Arm (PUT loss exit) or clear the one re-entry with the exit that flattens the position.
+            arm = dict(day=day, side=side, mark=stop_mark.isoformat(), used=False, dry_run=int(dry_run)) \
+                if stop_mark is not None and side in omega.REENTRY_SIDES else None
+            svc.set_config(user_id, conn_id, 'omega_reentry', json.dumps(arm) if arm else '')
         price = runner._fast_ltp(adapter, symbol)
         result = runner._route_order(adapter, user_id, conn_id, action='EXIT', side=state['side'],
                                      symbol=symbol, qty=quantity, price=price, dry_run=dry_run,
@@ -138,20 +160,32 @@ def execute(user_id, conn_id, adapter, now, dry_run):
         return
     if svc.get_lots(user_id, conn_id) != 2 or not runner.check_daily_loss(user_id, conn_id, dry_run=dry_run):
         return
-    if minute.time() > time(15,16) or prior_entry(user_id, conn_id, day, dry_run):
+    if minute.time() > time(15,16):
         return
-    data = omega.snapshots(day, minute)
-    signal = omega.first_signal(data, day, minute-omega.MINUTE)
+    arm = None
+    if prior_entry(user_id, conn_id, day, dry_run):
+        # Only the one PUT re-entry after a loss exit; armed by the exit that flattened the first trade.
+        raw = svc.get_config(user_id, conn_id, 'omega_reentry')
+        arm = json.loads(raw) if raw else None
+        if not arm or arm.get('day') != day or arm.get('used') or bool(arm.get('dry_run')) != dry_run:
+            return
+        data = omega.snapshots(day, minute)
+        signal = omega.reentry_signal(data, day, int(arm['side']), datetime.fromisoformat(arm['mark']),
+                                      minute-omega.MINUTE)
+    else:
+        data = omega.snapshots(day, minute)
+        signal = omega.first_signal(data, day, minute-omega.MINUTE)
     if signal is None or signal[0]+omega.MINUTE != minute:
         return
-    _, side, strike = signal
-    quote = omega.contract_quote(data, minute, strike, side)
-    if quote is None:
-        return
+    _, side, atm = signal
     bar = data['bars'].get(minute)
     # The live collector can publish the option snapshot before the spot bar.
     anchor = float(bar[0]) if bar else runner._fast_spot()
     if anchor is None or not isfinite(anchor) or anchor <= 0:
+        return
+    strike = omega.pick_strike(data, day, minute, atm, side, anchor)
+    quote = omega.contract_quote(data, minute, strike, side)
+    if quote is None:
         return
     label = 'CALL' if side == 1 else 'PUT'
     price = float(quote.ask)
@@ -171,6 +205,10 @@ def execute(user_id, conn_id, adapter, now, dry_run):
                                    dry_run=dry_run, entry_rule='omega_single25' if count==1 else 'omega_ema9_21',
                                    attempt=attempt)
 
+    if arm is not None:
+        svc.set_config(user_id, conn_id, 'omega_reentry', json.dumps(dict(arm, used=True)))
+    # The premium targets are measured from this quote's ask, as in the paper book.
+    svc.set_config(user_id, conn_id, 'omega_entry', json.dumps(dict(day=day, strike=int(strike), ask=price)))
     result = buy(lots)
     if not dry_run and not ex.filled_qty(result) and ex.stepped_down_lots(lots, result) == 1:
         lots = 1

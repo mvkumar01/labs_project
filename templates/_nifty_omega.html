@@ -1,5 +1,5 @@
 <h1>Nifty Omega (paper)</h1>
-<p class="sub">Forward paper starts 12 November 2026. NIFTY weekly ATM options, two lots. A fresh five-minute alpha crossing of +30 or −30 requires EMA9 and EMA21 to agree on the completed candle. One lot exits at +25 spot points and one at +40. Alpha and end-of-day exits apply to open lots.</p>
+<p class="sub">Forward paper starts 12 November 2026; rules refined 16 November 2026. NIFTY weekly options, two lots. A fresh five-minute alpha crossing of +30 or −30 requires EMA9 and EMA21 to agree on the completed candle. It is skipped when spot is within 10 points of the day&#39;s high (CALL) or low (PUT) as it stood 45 minutes earlier, or through it by less than 10; a later crossing can still trade. No entry on a Friday from 12:00. The strike is ATM, or on 0–1 days to expiry the strike with delta nearest 0.70 (up to 300 points in the money). One lot is sold when the bid reaches the entry ask +12.5, the other at +20. Both lots exit when alpha reaches +100 in favour, at −30 against a CALL or +20 against a PUT, and at the end of the day. After a PUT loss exit, one PUT re-entry is allowed when alpha crosses below 0 with the EMAs bearish, by 15:15.</p>
 {% if not nna_tw_rows %}
   <p class="empty">No sessions recorded in this date range.</p>
 {% else %}
