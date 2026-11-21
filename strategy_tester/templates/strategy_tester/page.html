@@ -1,0 +1,37 @@
+{% from "_chrome.html" import theme_head, labs_nav %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Backtest - Labs</title>
+  <link rel="stylesheet" href="/static/labs.css">
+  {{ theme_head() }}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>window.labsThemeLive = true;</script>
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <span class="logo">Labs</span>
+    {{ labs_nav('backtest') }}
+  </header>
+
+  <main>
+    <div class="detail-header">
+      <div>
+        <h1>Backtest</h1>
+        <p class="meta">Describe a strategy or ask about an instrument in plain English. Covers equities, indexes, commodities and forex, using Yahoo Finance data.</p>
+      </div>
+    </div>
+    <div id="st-root" style="margin-top:18px"
+         data-base="{{ base }}"
+         data-css="{{ url_for('strategy_tester.static', filename='st.css') }}?v={{ version }}"></div>
+  </main>
+</div>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="{{ url_for('strategy_tester.static', filename='st.js') }}?v={{ version }}"></script>
+</body>
+</html>
