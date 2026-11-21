@@ -13,6 +13,19 @@ from .data import PriceData, load
 DEFAULT_COSTS_BPS = {  # (commission, slippage) per side, in basis points
     "equity": (5, 2), "etf": (2, 1), "index": (2, 1), "commodity": (3, 3), "forex": (1, 1), "crypto": (10, 5),
 }
+# Indian statutory charges, per side, averaged over the buy and the sell (discount broker, zero delivery brokerage):
+#  cash delivery: STT 0.1% each side, stamp 0.015% on the buy, NSE turnover 0.00297%, SEBI 0.0001%, GST 18% on
+#                 the exchange + SEBI fees -> ~11.9 bps buy / ~10.4 bps sell -> 11.2 bps, plus 3 bps slippage;
+#  index (traded as futures): STT 0.02% on the sell, stamp 0.002% on the buy, NSE 0.00173%, SEBI, GST, Rs 20 an
+#                 order -> ~1.3 bps, plus 1 bp slippage.
+INDIA_COSTS_BPS = {"equity": (11.2, 3), "etf": (11.2, 3), "index": (1.3, 1)}
+
+
+def default_costs(asset_class: str, ticker: str | None = None) -> tuple[float, float]:
+    from .data import is_indian
+    if ticker and is_indian(ticker) and asset_class in INDIA_COSTS_BPS:
+        return INDIA_COSTS_BPS[asset_class]
+    return DEFAULT_COSTS_BPS.get(asset_class, (5, 2))
 
 
 @dataclass
@@ -26,8 +39,8 @@ class BacktestConfig:
     trailing_stop_pct: float | None = None
     position_size: float = 1.0  # fraction of equity per trade
 
-    def resolved(self, asset_class: str) -> "BacktestConfig":
-        c, s = DEFAULT_COSTS_BPS.get(asset_class, (5, 2))
+    def resolved(self, asset_class: str, ticker: str | None = None) -> "BacktestConfig":
+        c, s = default_costs(asset_class, ticker)
         out = BacktestConfig(**asdict(self))
         if out.commission_bps is None:
             out.commission_bps = c
@@ -287,7 +300,12 @@ def run_backtest(ticker: str, strategy_key: str, params: dict | None, start: str
         if p["fast"] == p["slow"]:
             p["slow"] = p["fast"] + 1
     pdata, trade_start = load(ticker, start, end, interval, warmup_bars=strat.warmup(p))
-    cfg = (cfg or BacktestConfig()).resolved(pdata.asset_class)
+    cfg = (cfg or BacktestConfig()).resolved(pdata.asset_class, ticker)
+    notes: list[str] = []
+    from .data import is_indian
+    if cfg.allow_short and pdata.asset_class in ("equity", "etf") and is_indian(ticker) and interval in ("1d", "1wk", "1mo"):
+        cfg.allow_short = False   # Indian cash shares cannot be shorted overnight (only intraday, or via F&O)
+        notes.append("Short selling was switched off: Indian cash shares cannot be held short overnight.")
     df = pdata.df
     start_i = int(df.index.searchsorted(trade_start))
     target = strat.fn(df, p, cfg.allow_short)
@@ -305,7 +323,7 @@ def run_backtest(ticker: str, strategy_key: str, params: dict | None, start: str
         "strategy_description": strat.description, "family": strat.family, "params": p,
         "config": asdict(cfg),
         "period": {"start": out.equity.index[0].strftime("%Y-%m-%d"), "end": out.equity.index[-1].strftime("%Y-%m-%d")},
-        "metrics": metrics, "benchmark": bmetrics,
+        "metrics": metrics, "benchmark": bmetrics, "notes": notes,
     }
     if not detail:
         result["series"] = {"equity": _line(out.equity, interval not in ("1d", "1wk", "1mo"), 2)}

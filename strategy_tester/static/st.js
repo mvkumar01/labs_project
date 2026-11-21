@@ -394,6 +394,7 @@
           ${opts.back && state.compare ? `<button class="back-btn" id="backBtn">${ICON.back} Back to comparison</button>` : ""}
         </div>
         ${specChips(resp.spec, r)}
+        ${(r.notes || []).length ? `<div class="notes">${r.notes.map((n) => `<div>${esc(n)}</div>`).join("")}</div>` : ""}
       </div>`);
     if (r.verdict && r.verdict.label !== "Benchmark") {
       html.push(verdictBlock(null, { label: r.verdict.label, score: r.verdict.score, summary: r.verdict.summary, pros: r.verdict.pros, cons: r.verdict.cons }));

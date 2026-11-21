@@ -15,7 +15,10 @@ log = logging.getLogger("strategy-tester")
 # Threads are not available in some WSGI hosts (e.g. PythonAnywhere web apps); run sequentially there.
 PARALLEL = os.environ.get("ST_PARALLEL", "0") == "1"
 _pool = ThreadPoolExecutor(max_workers=6) if PARALLEL else None
-MAX_JOBS = int(os.environ.get("ST_MAX_JOBS", "24"))
+MAX_JOBS = int(os.environ.get("ST_MAX_JOBS", "12"))
+# Wall-clock budget for one request: PA web workers are shared with the rest of the labs site, so a big comparison
+# stops starting new runs once this is spent and reports the rest as skipped.
+TIME_BUDGET_S = float(os.environ.get("ST_TIME_BUDGET_S", "40"))
 
 
 class ServiceError(Exception):
@@ -33,10 +36,17 @@ def strategies() -> list[dict]:
     return catalog()
 
 
-def _map(fn, items):
+class BudgetExceeded(Exception):
+    pass
+
+
+def _map(fn, items, deadline: float | None = None):
     if _pool is None:
         out = []
         for it in items:
+            if deadline is not None and time.time() > deadline:
+                out.append((it, None, BudgetExceeded("skipped: the request ran out of time")))
+                continue
             try:
                 out.append((it, fn(it), None))
             except Exception as e:  # keep the other runs
@@ -127,14 +137,18 @@ def query(prompt: str) -> dict:
             response["commentary"] = llm.commentary(prompt, {"analyses": [_compact(r) for r in results]})
         else:
             strats = spec.get("strategies") or [{"key": "sma_cross", "params": {}}]
-            jobs = [(s, st) for s in symbols for st in strats][:MAX_JOBS]
+            all_jobs = [(s, st) for s in symbols for st in strats]
+            jobs = all_jobs[:MAX_JOBS]
+            if len(all_jobs) > len(jobs):
+                spec.setdefault("notes", []).append(
+                    f"Only the first {len(jobs)} of {len(all_jobs)} strategy x market runs were made (limit per request).")
             single = len(jobs) == 1
 
             def run(job):
                 sym, st = job
                 return engine.run_backtest(sym, st["key"], st.get("params"), spec.get("start"), spec.get("end"),
                                            spec.get("interval", "1d"), cfg, robustness=single, detail=True)
-            done = _map(run, jobs)
+            done = _map(run, jobs, deadline=t0 + TIME_BUDGET_S)
             results = [r for _, r, e in done if r is not None]
             errors = [f"{j[0]} / {j[1]['key']}: {e}" for j, _, e in done if e is not None]
             if not results:

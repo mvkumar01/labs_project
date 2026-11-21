@@ -207,6 +207,12 @@ ASSET_LABELS = {"equity": "Equity", "index": "Index", "commodity": "Commodity", 
                 "crypto": "Crypto", "etf": "ETF"}
 
 
+def is_indian(ticker: str) -> bool:
+    """NSE / BSE listings and the Indian indices (used for the Indian cost model and the no-overnight-short rule)."""
+    t = ticker.upper()
+    return t.endswith((".NS", ".BO")) or t in {"^NSEI", "^NSEBANK", "^BSESN", "^CNXIT", "^NSMIDCP", "^CNXFIN"}
+
+
 def asset_class(ticker: str) -> str:
     t = ticker.upper()
     if t.endswith("=X"):
@@ -346,8 +352,11 @@ class PriceData:
 _mem_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
+CACHE_VERSION = "v2"  # v2: intraday bars kept on the exchange clock (v1 cached them in UTC)
+
+
 def _cache_key(ticker: str, interval: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", f"{ticker}_{interval}")
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", f"{ticker}_{interval}_{CACHE_VERSION}")
 
 
 def _download(ticker: str, interval: str) -> pd.DataFrame:
@@ -364,8 +373,9 @@ def _download(ticker: str, interval: str) -> pd.DataFrame:
         raise ValueError(f"No data returned by Yahoo Finance for '{ticker}'. Check the symbol.")
     df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     if df.index.tz is not None:
-        df.index = df.index.tz_localize(None) if interval not in ("1h", "60m", "30m", "15m") \
-            else df.index.tz_convert("UTC").tz_localize(None)
+        # Both providers return bars on the exchange's own clock; keep it (NIFTY's first hourly bar is 09:15,
+        # not 03:45 UTC). Charts receive these wall-clock times as-is.
+        df.index = df.index.tz_localize(None)
     if interval in ("1d", "1wk", "1mo"):
         df.index = df.index.normalize()
     df = df[~df.index.duplicated(keep="last")].sort_index()
@@ -404,7 +414,8 @@ def load(ticker: str, start: str | None, end: str | None, interval: str = "1d",
     df = get_history(ticker, interval)
     end_ts = pd.Timestamp(end) if end else None
     if end_ts is not None:
-        df = df[df.index <= end_ts + pd.Timedelta(days=1)]
+        # the end date is inclusive: every bar ON that date, none from the next trading day
+        df = df[df.index < end_ts.normalize() + pd.Timedelta(days=1)]
     start_ts = pd.Timestamp(start) if start else df.index[0]
     if start_ts < df.index[0]:
         start_ts = df.index[0]

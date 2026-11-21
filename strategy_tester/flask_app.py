@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import threading
+import time
+from collections import deque
 from pathlib import Path
 
 from flask import Blueprint, Response, json, jsonify, render_template, request
@@ -42,6 +46,34 @@ def _json(payload, status: int = 200) -> Response:
     return Response(json.dumps(_clean(payload), default=str), status=status, mimetype="application/json")
 
 
+# Per-visitor limit on the endpoints that download data and run backtests (the page is public, PA web workers are
+# few and shared with the labs site, and a Claude key would make every query cost money).
+RATE_LIMIT = int(os.environ.get("ST_RATE_LIMIT", "20"))          # requests ...
+RATE_WINDOW_S = float(os.environ.get("ST_RATE_WINDOW_S", "300"))  # ... per this many seconds, per client
+_hits: dict[str, deque] = {}
+_hits_lock = threading.Lock()
+
+
+def _client_id() -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return (fwd.split(",")[0].strip() if fwd else "") or request.remote_addr or "?"
+
+
+def _rate_limited() -> bool:
+    now, key = time.time(), _client_id()
+    with _hits_lock:
+        q = _hits.setdefault(key, deque())
+        while q and now - q[0] > RATE_WINDOW_S:
+            q.popleft()
+        if len(q) >= RATE_LIMIT:
+            return True
+        q.append(now)
+        if len(_hits) > 5000:                      # forget idle clients
+            for k in [k for k, v in _hits.items() if not v or now - v[-1] > RATE_WINDOW_S]:
+                _hits.pop(k, None)
+    return False
+
+
 def _guard(fn, *args):
     try:
         return _json(fn(*args))
@@ -64,12 +96,16 @@ def api_strategies():
 
 @bp.post("/api/query")
 def api_query():
+    if _rate_limited():
+        return _json({"detail": "Too many requests - wait a few minutes and try again."}, 429)
     body = request.get_json(silent=True) or {}
     return _guard(service.query, body.get("prompt", ""))
 
 
 @bp.post("/api/backtest")
 def api_backtest():
+    if _rate_limited():
+        return _json({"detail": "Too many requests - wait a few minutes and try again."}, 429)
     return _guard(service.detail, request.get_json(silent=True) or {})
 
 
