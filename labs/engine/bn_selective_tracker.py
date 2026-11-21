@@ -1,27 +1,48 @@
 """Bank Nifty Selective: independent paper ledger, never broker orders.
 
 PC +/-400; fresh +/-30 cross already at |alpha|>=60 (<=200); one trade/day.
-Original BN exits: trail100/50, alpha target100, adverse alpha-30, EOD15:25.
-One losing trade/day is implied by the one-trade cap. Historical rows are
-replays; genuine forward comparison starts 11 November 2026.
+Original BN exits: trail100/50, alpha target100, adverse alpha-30, EOD15:25,
+plus a fixed 200-pt spot stop from entry (v2, 2026-11-21).
+Live timing (v2): a mark's spot is the close of minute T-1 and its trail/stop
+window ends at T-1, as a live bot that acts a few seconds after the mark sees it
+(Pramanaa's convention). One losing trade/day is implied by the one-trade cap.
+Historical rows are replays; genuine forward comparison starts 11 November 2026.
 """
 from __future__ import annotations
 from datetime import datetime,time,timedelta
 import sqlite3
+import numpy as np
 from labs.engine import bn_alpha_tracker as core
 from storage.db import get_conn
 
 KEY='bn_selective'
 LABEL='Bank Nifty Selective'
-STRATEGY_VERSION='bn_selective_pc400_cross30_land60_max1_sl30_trail100_50_v1'
+STRATEGY_VERSION='bn_selective_pc400_cross30_land60_max1_sl30_trail100_50_stop200_livetiming_v2'
 FIRST_FORWARD='2026-11-11'
 PAPER_START=core.PAPER_START
 LANDING=60.0
 MAX_TRADES=1
 MAX_LOSSES=1
+STOP_PTS=200.0      # fixed spot stop from entry (live book only; the guard overlay keeps its own rules)
 
 
-def simulate(inp):
+def live_timing(inp,bars):
+    """The session inputs as a live bot sees them: spot at a mark = the close of minute T-1 (the bar
+    completed when the 5-min OI snapshot is read) and the trail/stop window = minutes (prev mark-1, T-1]."""
+    out=dict(inp);minutes=sorted(bars);marks=inp['marks'];sp,wh,wl=[],[],[]
+    for j,m in enumerate(marks):
+        k=m-timedelta(minutes=1)
+        sp.append(bars[k][3] if k in bars else bars[m][0])
+        start=marks[j-1] if j else k
+        win=[bars[t] for t in minutes if start<=t<=k]
+        wh.append(max(b[1] for b in win) if win else np.nan);wl.append(min(b[2] for b in win) if win else np.nan)
+    out['spot'],out['win_high'],out['win_low']=np.array(sp,float),np.array(wh,float),np.array(wl,float)
+    return out
+
+
+def simulate(inp,stop_pts=None):
+    """stop_pts: fixed spot stop from entry (None = the original rules, used by the guard overlay).
+    Trail and stop are checked on the window's 1-min highs/lows; when both are hit the worse fill counts."""
     a,s,h,l,marks=inp['alpha'],inp['spot'],inp['win_high'],inp['win_low'],inp['marks']
     trades=[];pos=0;entry=best=0.;ei=0;entries=0
     def record(i,px,why):
@@ -30,11 +51,18 @@ def simulate(inp):
             exit_reason=why,spot_pts=round(float((px-entry)*pos),2),entry_i=ei,exit_i=i)
     for i in range(1,len(a)):
         if pos:
+            hits=[]
             if (best-entry)*pos>=core.TRAIL_ARM:
                 stop=best-core.TRAIL_DIST*pos
                 if (pos==1 and l[i]<=stop) or (pos==-1 and h[i]>=stop):
-                    trades.append(record(i,min(stop,s[i-1]) if pos==1 else max(stop,s[i-1]),'TRAIL'))
-                    pos=0;continue
+                    hits.append((min(stop,s[i-1]) if pos==1 else max(stop,s[i-1]),'TRAIL'))
+            if stop_pts:
+                fixed=entry-stop_pts*pos
+                if (pos==1 and l[i]<=fixed) or (pos==-1 and h[i]>=fixed):
+                    hits.append((fixed,'SPOT_STOP'))
+            if hits:
+                px,why=min(hits,key=lambda x:(x[0]-entry)*pos)
+                trades.append(record(i,px,why));pos=0;continue
             best=max(best,h[i]) if pos==1 else min(best,l[i])
             if abs(a[i])<=core.ALPHA_SKIP:
                 if a[i]*pos>=core.ALPHA_TGT:
@@ -63,8 +91,8 @@ def replay_day(day,*,now=None,kite=None,known_close=None):
     base,base_date=core.baseline(day,expiry)
     bars=core.spot_bars(day)
     if not bars:raise core.BnAlphaInputError(f'No BANKNIFTY spot bars for {day}')
-    inp=core.session_inputs(day,close=close,frame=frame,bars=bars,base=base,now=now)
-    closed,opened=simulate(inp)
+    inp=live_timing(core.session_inputs(day,close=close,frame=frame,bars=bars,base=base,now=now),bars)
+    closed,opened=simulate(inp,stop_pts=STOP_PTS)
     trades=[dict(core.price_trade(t,inp),status='closed') for t in closed]
     if opened:trades.append(dict(core.price_trade(opened,inp),status='open'))
     return dict(inp=inp,trades=trades,prev_close=close,prev_close_date=close_date,

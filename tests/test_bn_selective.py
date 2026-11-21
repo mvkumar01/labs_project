@@ -55,3 +55,29 @@ def test_registered_in_reports_overview_and_loop():
     env=jinja2.Environment(loader=jinja2.FileSystemLoader(root/'templates'))
     html=env.get_template('_bn_selective.html').render(bn_selective_stats={},bn_selective_rows=[])
     assert 'Bank Nifty Selective' in html and '11 November 2026' in html
+
+
+def test_fixed_spot_stop_200_closes_at_the_stop_level():
+    i=inp([0,-70,-70,-70],[55600,55600,55650,55900])
+    i['win_high']=np.array([55600,55600,55700,55900.]);i['win_low']=np.array([55600,55600,55600,55650.])
+    t,_=book.simulate(i,stop_pts=200)
+    assert t[0]['exit_reason']=='SPOT_STOP' and t[0]['exit_spot']==55800 and t[0]['spot_pts']==-200
+    t,opened=book.simulate(dict(i,session_done=False))          # the guard's call: original rules, no stop
+    assert not t and opened['status']=='open'
+
+
+def test_trail_and_stop_in_one_window_take_the_worse_fill():
+    i=inp([0,65,65,65],[55600,55600,55720,55700])
+    i['win_high']=np.array([55600,55600,55720,55720.]);i['win_low']=np.array([55600,55600,55600,55350.])
+    t,_=book.simulate(i,stop_pts=200)
+    assert t[0]['exit_reason']=='SPOT_STOP' and t[0]['spot_pts']==-200
+
+
+def test_live_timing_uses_the_minute_before_each_mark():
+    m0=datetime(2026,11,20,9,15)
+    bars={m0+timedelta(minutes=k):(100.+k,101.+k,99.+k,100.5+k) for k in range(-1,11)}
+    marks=[m0,m0+timedelta(minutes=5),m0+timedelta(minutes=10)]
+    out=book.live_timing(dict(marks=marks,spot=np.zeros(3),win_high=np.zeros(3),win_low=np.zeros(3)),bars)
+    assert list(out['spot'])==[bars[m0-timedelta(minutes=1)][3],bars[m0+timedelta(minutes=4)][3],bars[m0+timedelta(minutes=9)][3]]
+    assert out['win_high'][1]==max(bars[m0+timedelta(minutes=k)][1] for k in range(0,5))
+    assert out['win_low'][1]==min(bars[m0+timedelta(minutes=k)][2] for k in range(0,5))

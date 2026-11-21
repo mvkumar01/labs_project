@@ -7,8 +7,11 @@
   alpha 200 are skipped. A later continuation to 60 does not qualify without a new fresh crossing.</p>
 <p class="note"><strong>Risk:</strong> maximum one trade per day, so a losing trade ends the session.
   Original exits apply: spot trail arms at +100 and trails by 50; alpha target at 100 in the trade's
-  direction, alpha stop at -30 against it; otherwise close at 15:25. Entry ask, exit bid and charges
-  determine option net P&amp;L.</p>
+  direction, alpha stop at -30 against it; otherwise close at 15:25. A fixed spot stop 200 points
+  against the entry also closes the trade. Entry ask, exit bid and charges determine option net P&amp;L.</p>
+<p class="note"><strong>Timing:</strong> a mark's spot is the close of the minute before the mark (what a
+  live bot sees a few seconds after the five-minute reading); the trail and stop check the one-minute
+  highs and lows up to that minute.</p>
 <p class="note">Dates before <strong>11 November 2026</strong> are historical research replays.
   Forward paper tracking starts from that date. This is a separate simulated book.</p>
 {% if st.get('error') %}<p class="empty">{{ st.error }}</p>
