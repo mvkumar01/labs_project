@@ -88,7 +88,7 @@ def walk_forward(mk: E.Market, rule: Rule, days: np.ndarray, ev, grid_pnl: dict,
     uy = sorted(set(years))
     if len(uy) < 5 or len(grid_pnl) < 2:
         return None
-    folds, pieces = [], []
+    folds, pieces, bench_pieces = [], [], []
     chosen = []
     for i in range(3, len(uy)):
         tr_m = (years >= uy[i - 3]) & (years < uy[i])
@@ -97,7 +97,9 @@ def walk_forward(mk: E.Market, rule: Rule, days: np.ndarray, ev, grid_pnl: dict,
         te = grid_pnl[best][te_m]
         chosen.append(best)
         dd = days[te_m]
-        bh = float(np.sum(mk.o[dd, E.EOD_K] - mk.o[dd, 0]))
+        bh_pts = mk.o[dd, E.EOD_K] - mk.o[dd, 0] - (mk.o[dd, E.EOD_K] + mk.o[dd, 0]) * sum(E.COST_BPS) / 1e4
+        bench_pieces.append(bh_pts)
+        bh = float(np.sum(bh_pts))
         folds.append({"train_start": str(uy[i - 3]), "test_start": str(mk.days[days[te_m][0]].date()),
                       "test_end": str(mk.days[days[te_m][-1]].date()),
                       "params": {k: v for k, v in (("stop" if rule.stop_pts else "trail", best[0]), ("target", best[1])) if v is not None},
@@ -116,7 +118,8 @@ def walk_forward(mk: E.Market, rule: Rule, days: np.ndarray, ev, grid_pnl: dict,
                     "max_drawdown": round(float((cum - np.maximum.accumulate(np.r_[0.0, cum])[1:]).min() / CAPITAL * 100), 2),
                     "total_return": round(float(oos.sum() * rs_per_pt / CAPITAL * 100), 2),
                     "start": str(eq.index[0].date()), "end": str(eq.index[-1].date())},
-            "oos_benchmark": {"sharpe": None, "cagr": None},
+            "oos_benchmark": {"sharpe": round(_sharpe(np.concatenate(bench_pieces)), 2),
+                              "cagr": float(np.concatenate(bench_pieces).sum() * rs_per_pt / CAPITAL / yrs * 100)},
             "folds_positive": sum(1 for f in folds if f["test_return"] > 0),
             "folds_beat_bh": sum(1 for f in folds if f["test_return"] > f["bh_return"]),
             "param_stability": round(stable * 100, 1), "equity": eq}
@@ -228,7 +231,10 @@ def run(rule: Rule, start: str | None, end: str | None, validate: bool = True) -
                    "trailing_stop_pct": None, "position_size": 1.0},
         "period": {"start": str(mk.days[days[0]].date()), "end": str(mk.days[days[-1]].date())},
         "metrics": metrics, "benchmark": bmetrics,
-        "notes": ["Benchmark (B&H) here = buy at 09:15 and sell at 15:25 every day, 1 lot, same costs."],
+        "notes": [f"In points: {pnl.sum():+,.0f} over {len(trades):,} trades ({(pnl.sum() / max(len(trades), 1)):+.1f} a trade), "
+                  f"worst day {pnl.min():+,.0f}, on {int((pnl != 0).sum()):,} trading days. Rs {rs_per_pt} a point "
+                  f"({max(rule.lots, 1)} lot of {meta['lot']}); percentages are of Rs {CAPITAL:,.0f} capital.",
+                  "Benchmark (B&H) here = buy at 09:15 and sell at 15:25 every day, 1 lot, same costs."],
     }
     # daily candles + markers for the price chart (minute bars for years would be too many)
     candles = [{"time": str(mk.days[d].date()), "open": round(float(mk.o[d, 0]), 2), "high": round(float(mk.h[d].max()), 2),

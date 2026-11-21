@@ -169,7 +169,7 @@ def intraday_query(prompt: str, t0: float) -> dict:
         raise ServiceError(422, str(e))
     spec = {"intent": "backtest", "evaluate": False, "symbols": [rule.symbol],
             "strategies": [{"key": "intraday_rule", "params": rule.to_dict()}], "start": start, "end": end,
-            "interval": "1m", "config": {}, "notes": notes + result.get("notes", []), "parser": "rules", "rule": rule.to_dict()}
+            "interval": "1m", "config": {}, "notes": notes, "parser": "rules", "rule": rule.to_dict()}
     response = {"prompt": prompt, "spec": spec, "intent": "backtest", "results": [result], "errors": [],
                 "commentary": llm.commentary(prompt, {"results": [_compact(result)]})}
     response["elapsed"] = round(time.time() - t0, 2)
