@@ -7,7 +7,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import advisor, data, engine, llm, parser
+from . import advisor, data, engine, llm, parser, validation
 from .strategies import STRATEGIES, catalog
 
 log = logging.getLogger("strategy-tester")
@@ -18,7 +18,7 @@ _pool = ThreadPoolExecutor(max_workers=6) if PARALLEL else None
 MAX_JOBS = int(os.environ.get("ST_MAX_JOBS", "12"))
 # Wall-clock budget for one request: PA web workers are shared with the rest of the labs site, so a big comparison
 # stops starting new runs once this is spent and reports the rest as skipped.
-TIME_BUDGET_S = float(os.environ.get("ST_TIME_BUDGET_S", "40"))
+TIME_BUDGET_S = float(os.environ.get("ST_TIME_BUDGET_S", "90"))
 
 
 class ServiceError(Exception):
@@ -99,6 +99,27 @@ def _compact(r: dict) -> dict:
     return keep
 
 
+def _deflate(results: list[dict], spec: dict) -> None:
+    """Several strategies on one market: the top one is partly luck. Re-score each result's Sharpe confidence as
+    the best of the strategies tried on that market (deflated Sharpe ratio) and redo its verdict."""
+    by_symbol: dict[str, list[dict]] = {}
+    for r in results:
+        by_symbol.setdefault(r["symbol"], []).append(r)
+    for sym, rs in by_symbol.items():
+        if len(rs) < 2:
+            continue
+        sharpes = [x["metrics"].get("sharpe") or 0.0 for x in rs]
+        for x in rs:
+            v = x.get("validation") or {}
+            st = v.get("sr_stats")
+            years = x["metrics"].get("years") or 1.0
+            ppy = (st["T"] / years) if st else 252.0
+            v["confidence"] = validation.sharpe_confidence(st, len(rs), sharpes, ppy)
+            x["verdict"] = engine.strategy_verdict(x)
+        spec.setdefault("notes", []).append(
+            f"{len(rs)} strategies were tried on {sym}: the 'likely real' figures allow for picking the best of {len(rs)}.")
+
+
 def query(prompt: str) -> dict:
     prompt = (prompt or "").strip()
     if not prompt:
@@ -154,6 +175,7 @@ def query(prompt: str) -> dict:
             if not results:
                 raise ValueError("; ".join(errors) or "No results")
             if not single:
+                _deflate(results, spec)
                 results.sort(key=lambda r: (r["metrics"].get("sharpe") or -99), reverse=True)
                 one_symbol = len({r["symbol"] for r in results}) == 1
                 for i, r in enumerate(results):

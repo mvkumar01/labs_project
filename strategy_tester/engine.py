@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from . import strategies as strat_lib
+from . import validation as V
 from .data import PriceData, load
 
 DEFAULT_COSTS_BPS = {  # (commission, slippage) per side, in basis points
@@ -325,6 +326,12 @@ def run_backtest(ticker: str, strategy_key: str, params: dict | None, start: str
         "period": {"start": out.equity.index[0].strftime("%Y-%m-%d"), "end": out.equity.index[-1].strftime("%Y-%m-%d")},
         "metrics": metrics, "benchmark": bmetrics, "notes": notes,
     }
+    ppy = periods_per_year(out.equity.index)
+    val: dict = {"monthly": V.monthly_stability(out.equity, cfg.capital, bench), "sr_stats": V.sr_stats(out.equity)}
+    val["confidence"] = V.sharpe_confidence(val["sr_stats"], 1, None, ppy)
+    if strategy_key != "buy_hold":
+        val["random"] = V.random_entries(df, out.trades, start_i, 2 * (cfg.commission_bps + cfg.slippage_bps) / 1e4)
+    result["validation"] = val
     if not detail:
         result["series"] = {"equity": _line(out.equity, interval not in ("1d", "1wk", "1mo"), 2)}
         return result
@@ -360,6 +367,11 @@ def run_backtest(ticker: str, strategy_key: str, params: dict | None, start: str
     result["benchmark_monthly"] = monthly_table(bench, cfg.capital)
     if robustness and strategy_key != "buy_hold":
         result["robustness"] = robustness_report(df, strat, p, start_i, cfg, out.equity)
+        wf = V.walk_forward(df, strat, p, start_i, cfg, ppy, simulate)
+        if wf:
+            result["series"]["walk_forward"] = _line(wf.pop("equity"), intraday, 2)
+        val["walk_forward"] = wf
+        val["bootstrap"] = V.bootstrap(out.equity, cfg.capital)
     result["verdict"] = strategy_verdict(result)
     return result
 
@@ -457,9 +469,41 @@ def strategy_verdict(r: dict) -> dict:
     if split:
         o = split["out_of_sample"]["sharpe"]
         if o > 0.3:
-            score += 10; pros.append(f"Held up in the most recent 30% of the data (Sharpe {o:.2f} after {split['split_date']}).")
+            score += 5; pros.append(f"Still worked in the most recent 30% of the data (Sharpe {o:.2f} after {split['split_date']}).")
         elif o <= 0:
-            score -= 15; cons.append(f"Did not work in the most recent 30% of the data (Sharpe {o:.2f} after {split['split_date']}).")
+            score -= 10; cons.append(f"Did not work in the most recent 30% of the data (Sharpe {o:.2f} after {split['split_date']}).")
+    val = r.get("validation") or {}
+    wf = val.get("walk_forward")
+    if wf:
+        o, c_ = wf["oos"]["sharpe"], wf["oos"]["cagr"] or 0
+        nf = len(wf["folds"])
+        if o > 0.3 and c_ > 0:
+            score += 15; pros.append(f"Passed walk-forward: settings picked on past data only made {c_:.1f}% a year on "
+                                     f"{nf} unseen periods (Sharpe {o:.2f}; {wf['folds_positive']}/{nf} periods positive).")
+        elif o <= 0:
+            score -= 20; cons.append(f"Failed walk-forward: with settings picked on past data only, the unseen periods "
+                                     f"lost money (Sharpe {o:.2f}; {wf['folds_positive']}/{nf} periods positive).")
+        else:
+            cons.append(f"Weak walk-forward result on {nf} unseen periods (Sharpe {o:.2f}).")
+    rnd = val.get("random")
+    if rnd:
+        if rnd["p_value"] <= 0.05:
+            score += 10; pros.append(f"Entry timing beat {rnd['percentile']:.0f}% of random entries with the same holding times.")
+        elif rnd["p_value"] > 0.3:
+            score -= 15; cons.append(f"Random entries with the same holding times did about as well (the strategy beat only "
+                                     f"{rnd['percentile']:.0f}% of them) - the result may come from the market, not the signal.")
+    conf = val.get("confidence")
+    if conf:
+        pr, tr_ = conf["probability"], conf["trials"]
+        what = f"after allowing for picking the best of {tr_} strategies" if tr_ > 1 else "from this sample"
+        if pr < 70:
+            score -= 10; cons.append(f"Only {pr:.0f}% likely that the true Sharpe is above zero {what}.")
+        elif pr >= 95:
+            pros.append(f"{pr:.0f}% likely that the true Sharpe is above zero {what}.")
+    mon = val.get("monthly") or {}
+    if mon.get("positive_months") is not None and mon["months"] >= 12:
+        if mon["positive_months"] < 45:
+            cons.append(f"Only {mon['positive_months']:.0f}% of months were positive (worst {mon['worst_month']:.1f}%).")
     sens = rob.get("sensitivity")
     if sens and sens.get("stability") is not None:
         st = sens["stability"]
@@ -469,8 +513,12 @@ def strategy_verdict(r: dict) -> dict:
             score -= 15; cons.append(f"Fragile: only {st:.0f}% of nearby parameter settings work, a sign of curve-fitting.")
     score = max(0, min(100, score))
     oos_ok = not split or split["out_of_sample"]["sharpe"] > 0
-    if (sh < 0.5 or not oos_ok) and score >= 65:
-        score = 60  # gate: "Promising" needs a decent absolute Sharpe and a working recent period
+    wf_ok = not wf or (wf["oos"]["sharpe"] > 0 and (wf["oos"]["cagr"] or 0) > 0)
+    rnd_ok = not rnd or rnd["p_value"] <= 0.2
+    conf_ok = not conf or conf["probability"] >= 80
+    if (sh < 0.5 or not oos_ok or not wf_ok or not rnd_ok or not conf_ok) and score >= 65:
+        score = 60  # gate: "Promising" needs a decent Sharpe, a working recent period, a passed walk-forward,
+        #             timing better than random entries and a Sharpe that is likely real
     if sh < 0:
         score = min(score, 35)
     label = "Promising" if score >= 65 else ("Mixed" if score >= 40 else "Weak")

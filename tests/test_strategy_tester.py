@@ -133,3 +133,77 @@ def test_rate_limit(monkeypatch):
     assert codes == [200, 200, 429]
     assert c.post("/labs/strategy-tester/api/query", json={"prompt": "x"},
                   headers={"X-Forwarded-For": "5.6.7.8"}).status_code == 200
+
+
+# ------------------------------------------------------------------------------------------------ validation
+from strategy_tester import validation as V  # noqa: E402
+
+
+def _run(prices, key="sma_cross", params=None, **kw):
+    return engine.run_backtest("^NSEI", key, params or {"fast": 20, "slow": 50}, "2017-01-02", None, "1d",
+                               engine.BacktestConfig(**ZERO), **kw)
+
+
+def test_walk_forward_uses_only_the_past(prices, monkeypatch):
+    r = _run(prices)
+    wf = r["validation"]["walk_forward"]
+    assert wf and len(wf["folds"]) >= 2 and r["series"]["walk_forward"]
+    first = wf["folds"][0]
+    # change every price after the first unseen period: that fold's choice and result must not move
+    base = prices["^NSEI"]
+    bumped = base.copy()
+    bumped.loc[bumped.index > pd.Timestamp(first["test_end"]), ["Open", "High", "Low", "Close"]] *= 1.5
+    monkeypatch.setattr(data, "get_history", lambda t, interval="1d": bumped)
+    wf2 = _run(prices)["validation"]["walk_forward"]
+    assert wf2["folds"][0] == first
+
+
+def test_random_entry_baseline_separates_foresight_from_noise(prices):
+    df = prices["^NSEI"]
+    i0 = 300
+    nxt = (df.Open.shift(-2) > df.Open.shift(-1)).astype(float)        # knows the next bar: cheating on purpose
+    cheat = engine.simulate(df, nxt, i0, engine.BacktestConfig(**ZERO))
+    rc = V.random_entries(df, cheat.trades, i0, 0.0)
+    assert rc["p_value"] < 0.01 and rc["percentile"] > 99
+    rng = np.random.default_rng(1)
+    noise = pd.Series(rng.integers(0, 2, len(df)).astype(float), index=df.index)
+    rn = engine.simulate(df, noise, i0, engine.BacktestConfig(**ZERO))
+    assert V.random_entries(df, rn.trades, i0, 0.0)["p_value"] > 0.05
+
+
+def test_sharpe_confidence_falls_with_more_trials(prices):
+    eq = _run(prices)["series"]["equity"]
+    s = pd.Series([x["value"] for x in eq], index=pd.to_datetime([x["time"] for x in eq]))
+    st = V.sr_stats(s)
+    one = V.sharpe_confidence(st, 1)["probability"]
+    many = V.sharpe_confidence(st, 20, [0.1, 0.5, 0.9, -0.2, 0.3])["probability"]
+    assert many < one
+
+
+def test_monthly_and_bootstrap(prices):
+    v = _run(prices)["validation"]
+    assert 0 <= v["monthly"]["positive_months"] <= 100 and v["monthly"]["months"] > 50
+    assert v["bootstrap"]["cagr_p05"] <= v["bootstrap"]["cagr_p95"]
+
+
+def test_verdict_cannot_be_promising_without_passing_validation():
+    base = {"strategy": "sma_cross", "metrics": {"cagr": 20, "sharpe": 1.5, "max_drawdown": -10, "trades": 80},
+            "benchmark": {"cagr": 8, "sharpe": 0.5, "max_drawdown": -30},
+            "robustness": {"split": {"split_date": "2023-01-01", "out_of_sample": {"sharpe": 1.0}},
+                           "sensitivity": {"stability": 90}}}
+    good = {**base, "validation": {"walk_forward": {"oos": {"sharpe": 1.0, "cagr": 12}, "folds": [{}] * 5,
+                                                    "folds_positive": 4},
+                                   "random": {"p_value": 0.01, "percentile": 99}, "confidence": {"probability": 97, "trials": 1}}}
+    assert engine.strategy_verdict(good)["label"] == "Promising"
+    for bad in ({"walk_forward": {"oos": {"sharpe": -0.2, "cagr": -3}, "folds": [{}] * 5, "folds_positive": 1}},
+                {"random": {"p_value": 0.6, "percentile": 40}},
+                {"confidence": {"probability": 55, "trials": 11}}):
+        assert engine.strategy_verdict({**good, "validation": {**good["validation"], **bad}})["label"] != "Promising"
+
+
+def test_compare_deflates_for_the_number_tried(prices):
+    r = service.query("which strategy works best on nifty since 2017")
+    assert len(r["results"]) > 3
+    assert all((x["validation"]["confidence"] or {}).get("trials", 0) == len(r["results"]) for x in r["results"]
+               if x["validation"].get("confidence"))
+    assert any("best of" in n for n in r["spec"]["notes"])

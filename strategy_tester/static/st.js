@@ -433,7 +433,7 @@
       <div class="card fade-in"><div class="card-title"><span>Monthly returns</span><span class="hint">strategy, %</span></div><div id="monthly"></div></div>
       <div class="card fade-in"><div class="card-title"><span>Performance summary</span></div><div class="table-wrap">${metricsTable(m, b, sym)}</div></div>
     </div>`);
-    if (r.robustness) html.push(robustnessCard(r));
+    if ((r.robustness || r.validation) && r.strategy !== "buy_hold") html.push(robustnessCard(r));
     html.push(commentaryCard(resp.commentary));
     html.push(tradesCard(r));
     out.insertAdjacentHTML("beforeend", html.join(""));
@@ -535,12 +535,34 @@
   }
 
   function robustnessCard(r) {
-    const sp = r.robustness.split, s = r.robustness.sensitivity;
-    const box = (lbl, x) => `<div class="split-box"><div class="lbl">${lbl}</div><div class="v ${x.sharpe > 0 ? "" : "neg"}">${num(x.sharpe)}<small>Sharpe</small> <small>· CAGR ${pct(x.cagr, 1, true)}</small></div></div>`;
+    const sp = r.robustness?.split, s = r.robustness?.sensitivity, v = r.validation || {};
+    const wf = v.walk_forward, rnd = v.random, conf = v.confidence, mon = v.monthly, bs = v.bootstrap;
+    const box = (lbl, value, sub, bad) => `<div class="split-box"><div class="lbl">${lbl}</div><div class="v ${bad ? "neg" : ""}">${value}<small>${sub}</small></div></div>`;
+    const parts = [];
+    if (wf) {
+      const rows = wf.folds.map((f) => `<tr><td class="num">${esc(f.test_start)} → ${esc(f.test_end)}</td><td>${esc(Object.entries(f.params).map(([k, x]) => `${k} ${x}`).join(", "))}</td>
+        <td class="n">${num(f.train_sharpe)}</td><td class="n ${cls(f.test_return)}">${pct(f.test_return, 1, true)}</td><td class="n ${cls(f.bh_return)}">${pct(f.bh_return, 1, true)}</td></tr>`).join("");
+      parts.push(`<div class="card-title" style="margin-bottom:8px"><span>Walk-forward <span class="hint">· settings picked on the previous ${wf.train_bars} bars only, then traded on the next ${wf.test_bars} unseen bars</span></span></div>
+        <div class="split-row">${box("Unseen periods, chained", `${pct(wf.oos.cagr, 1, true)}`, ` a year · Sharpe ${num(wf.oos.sharpe)} · max DD ${pct(wf.oos.max_drawdown, 1)}`, !(wf.oos.sharpe > 0))}
+        ${box("Buy &amp; hold, same periods", `${pct(wf.oos_benchmark.cagr, 1, true)}`, ` a year · Sharpe ${num(wf.oos_benchmark.sharpe)}`, false)}</div>
+        <div class="hint" style="margin:-6px 0 8px">${wf.folds_positive}/${wf.folds.length} periods positive · ${wf.folds_beat_bh}/${wf.folds.length} beat buy &amp; hold · the same settings were picked ${Math.round(wf.param_stability)}% of the time</div>
+        <div class="table-wrap"><table><thead><tr><th>Unseen period</th><th>Settings picked</th><th class="n">Train Sharpe</th><th class="n">Result</th><th class="n">B&amp;H</th></tr></thead><tbody>${rows}</tbody></table></div>`);
+    }
+    const tiles = [];
+    if (rnd) tiles.push(box("Timing vs random entries", `beat ${Math.round(rnd.percentile)}%`,
+      ` of ${rnd.samples} random sets · avg trade ${pct(rnd.actual_avg_trade, 2, true)} vs ${pct(rnd.random_median, 2, true)}`, rnd.p_value > 0.2));
+    if (conf) tiles.push(box(conf.trials > 1 ? `Likely real (best of ${conf.trials})` : "Likely real", `${Math.round(conf.probability)}%`,
+      ` chance the true Sharpe is above ${conf.trials > 1 ? num(conf.hurdle_sharpe) + " (luck hurdle)" : "zero"}`, conf.probability < 80));
+    if (mon && mon.positive_months != null) tiles.push(box("Monthly stability", `${Math.round(mon.positive_months)}%`,
+      ` of ${mon.months} months positive · worst ${pct(mon.worst_month, 1)} · ${mon.positive_years}/${mon.years} years up`, mon.positive_months < 45));
+    if (bs) tiles.push(box("90% range (resampled months)", `${pct(bs.cagr_p05, 1, true)} … ${pct(bs.cagr_p95, 1, true)}`,
+      ` a year · Sharpe ${num(bs.sharpe_p05)} … ${num(bs.sharpe_p95)}`, bs.cagr_p05 < 0));
+    if (sp) tiles.push(box(`Most recent 30% · after ${sp.split_date}`, num(sp.out_of_sample.sharpe), ` Sharpe · earlier 70%: ${num(sp.in_sample.sharpe)}`, !(sp.out_of_sample.sharpe > 0)));
+    if (tiles.length) parts.push(`<div class="card-title" style="margin:14px 0 8px"><span>Is the edge real?</span></div><div class="split-row">${tiles.join("")}</div>`);
+    if (s) parts.push(`<div class="card-title" style="margin-bottom:8px"><span>Parameter sensitivity <span class="hint">· Sharpe ratio across nearby settings${isNum(s.stability) ? ` · ${Math.round(s.stability)}% hold up` : ""}</span></span></div><div id="sensHeat"></div>`);
     return `<div class="card fade-in">
-      <div class="card-title"><span>Robustness checks</span><span class="hint">Is the result real, or curve-fit?</span></div>
-      <div class="split-row">${box(`In-sample · before ${sp.split_date}`, sp.in_sample)}${box(`Out-of-sample · after ${sp.split_date}`, sp.out_of_sample)}</div>
-      ${s ? `<div class="card-title" style="margin-bottom:8px"><span>Parameter sensitivity <span class="hint">· Sharpe ratio across nearby settings${isNum(s.stability) ? ` · ${Math.round(s.stability)}% hold up` : ""}</span></span></div><div id="sensHeat"></div>` : ""}
+      <div class="card-title"><span>Validation</span><span class="hint">Would it have worked without hindsight?</span></div>
+      ${parts.join("")}
     </div>`;
   }
 
@@ -605,7 +627,7 @@
     html.push(`<div class="card fade-in">
       <div class="r-kicker">${[...new Set(rs.map((r) => r.asset_class))].map(assetPill).join("")}<span>${INTERVALS[first.interval] || ""}</span><span>·</span><span class="num">${first.period.start} → ${first.period.end}</span>${parserPill(spec)}</div>
       <h2 class="r-title">${esc(title)}${oneSymbol ? ` <span class="sym">${esc(first.symbol)}</span>` : ""}</h2>
-      <div class="r-sub">Ranked by Sharpe ratio. <b>${esc(best.strategy_name)}</b>${oneSymbol ? "" : ` on <b>${esc(best.name)}</b>`} came out on top, and ${bhBeat} of ${rs.length} beat buy &amp; hold on risk-adjusted return. Click any row for the full report.</div>
+      <div class="r-sub">Ranked by Sharpe ratio over the whole period - the top row is partly luck when many strategies are tried; "Likely real" allows for that. <b>${esc(best.strategy_name)}</b>${oneSymbol ? "" : ` on <b>${esc(best.name)}</b>`} came out on top, and ${bhBeat} of ${rs.length} beat buy &amp; hold on risk-adjusted return. Click any row for the full report.</div>
       ${specChips(spec, { config: first.config, symbol: first.symbol })}
       ${(resp.errors || []).length ? `<div class="notes">${resp.errors.map((e) => `<div>Skipped: ${esc(e)}</div>`).join("")}</div>` : ""}
     </div>`);
@@ -626,12 +648,13 @@
         <td class="n">${int(r.metrics.trades)}</td>
         <td class="n">${pct(r.metrics.exposure, 0)}</td>
         <td class="n ${cls(vs)}">${pct(vs, 2, true)}</td>
+        <td class="n">${isNum(r.validation?.confidence?.probability) ? Math.round(r.validation.confidence.probability) + "%" : "–"}</td>
         <td>${vpill(r.verdict?.label)}</td></tr>`;
     }).join("");
     const bhRow = oneSymbol ? `<tr><td></td><td><div class="name-cell"><span class="sw" style="height:3px;background:repeating-linear-gradient(90deg,var(--bench) 0 4px,transparent 4px 6px)"></span><div><div class="t">Buy &amp; hold</div><div class="s">Benchmark</div></div></div></td>
-      <td class="n ${cls(first.benchmark.cagr)}">${pct(first.benchmark.cagr, 2, true)}</td><td class="n"><b>${num(first.benchmark.sharpe)}</b></td><td class="n neg">${pct(first.benchmark.max_drawdown, 1)}</td><td class="n">–</td><td class="n">1</td><td class="n">100%</td><td class="n">–</td><td></td></tr>` : "";
+      <td class="n ${cls(first.benchmark.cagr)}">${pct(first.benchmark.cagr, 2, true)}</td><td class="n"><b>${num(first.benchmark.sharpe)}</b></td><td class="n neg">${pct(first.benchmark.max_drawdown, 1)}</td><td class="n">–</td><td class="n">1</td><td class="n">100%</td><td class="n">–</td><td class="n">–</td><td></td></tr>` : "";
     html.push(`<div class="card fade-in"><div class="card-title"><span>Leaderboard</span><span class="hint">vs B&amp;H = CAGR difference to buying and holding</span></div>
-      <div class="table-wrap"><table><thead><tr><th>#</th><th>${bySymbol ? "Market" : "Strategy"}</th><th class="n">CAGR</th><th class="n">Sharpe</th><th class="n">Max DD</th><th class="n">Win rate</th><th class="n">Trades</th><th class="n">Exposure</th><th class="n">vs B&amp;H</th><th>Verdict</th></tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>#</th><th>${bySymbol ? "Market" : "Strategy"}</th><th class="n">CAGR</th><th class="n">Sharpe</th><th class="n">Max DD</th><th class="n">Win rate</th><th class="n">Trades</th><th class="n">Exposure</th><th class="n">vs B&amp;H</th><th class="n" title="Chance the true Sharpe is above what the best of these strategies would reach by luck">Likely real</th><th>Verdict</th></tr></thead>
       <tbody>${rows}${bhRow}</tbody></table></div></div>`);
     html.push(`<div class="card fade-in"><div class="card-title"><span>Equity curves <span class="hint">· top ${shown.length}, same starting capital</span></span>
       <div class="seg" id="scaleSeg"><button class="on" data-mode="0">Linear</button><button data-mode="1">Log</button></div></div>
