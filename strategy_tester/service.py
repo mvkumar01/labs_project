@@ -73,6 +73,39 @@ def _resolve_symbols(spec: dict) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def _check_symbols(symbols: list[str], spec: dict) -> list[str]:
+    """Load each symbol once up front (the data is cached for the runs). A symbol Yahoo does not know is usually a
+    typo: replace it with the closest known one and say so, or stop with a clear message."""
+    interval = spec.get("interval", "1d") if spec.get("intent") != "analyze" else "1d"
+    out: list[str] = []
+    for sym in symbols:
+        try:
+            data.get_history(sym, interval)
+            out.append(sym)
+            continue
+        except data.SymbolNotFound:
+            pass
+        guess = data.suggest_symbol(sym)
+        if guess:
+            try:
+                data.get_history(guess[0], interval)
+            except data.SymbolNotFound:
+                guess = None
+        if guess:
+            out.append(guess[0])
+            spec.setdefault("notes", []).append(f"'{sym}' was not found on Yahoo Finance, so it was read as "
+                                                f"{guess[0]} ({guess[1]}).")
+        elif len(symbols) == 1:
+            raise ServiceError(422, f"Couldn't find '{sym}' on Yahoo Finance. Check the spelling or use the exact "
+                                    f"ticker, e.g. NVDA, RELIANCE.NS, ^NSEI (Nifty 50) or GC=F (gold).")
+        else:
+            spec.setdefault("notes", []).append(f"'{sym}' was not found on Yahoo Finance and was left out.")
+    out = list(dict.fromkeys(out))
+    if not out:
+        raise ServiceError(422, "None of those symbols were found on Yahoo Finance. Check the spelling.")
+    return out
+
+
 def _cfg(spec: dict) -> engine.BacktestConfig:
     c = spec.get("config") or {}
     allowed = engine.BacktestConfig.__dataclass_fields__.keys()
@@ -138,7 +171,7 @@ def query(prompt: str) -> dict:
     if not symbols:
         raise ServiceError(422, "I couldn't tell which instrument you mean. Try a ticker like AAPL, RELIANCE.NS, "
                                 "GC=F (gold), EURUSD or ^NSEI (Nifty 50).")
-    spec["symbols"] = symbols
+    spec["symbols"] = symbols = _check_symbols(symbols, spec)
     intent = spec.get("intent", "backtest")
     cfg = _cfg(spec)
     if cfg.stop_loss_pct or cfg.trailing_stop_pct or cfg.take_profit_pct:

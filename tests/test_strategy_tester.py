@@ -207,3 +207,19 @@ def test_compare_deflates_for_the_number_tried(prices):
     assert all((x["validation"]["confidence"] or {}).get("trials", 0) == len(r["results"]) for x in r["results"]
                if x["validation"].get("confidence"))
     assert any("best of" in n for n in r["spec"]["notes"])
+
+
+def test_unknown_symbol_is_corrected_or_reported(prices, monkeypatch):
+    def hist(t, interval="1d"):
+        if t not in prices:
+            raise data.SymbolNotFound("Yahoo Finance has no such symbol")
+        return prices[t]
+    monkeypatch.setattr(data, "get_history", hist)
+    monkeypatch.setattr(data, "search_symbol", lambda q: None)
+    prices["NVDA"] = prices["AAPL"]
+    assert data.suggest_symbol("NVDIA")[0] == "NVDA" and data.suggest_symbol("infosis")[0] == "INFY.NS"
+    r = service.query("backtest golden cross on NVDIA since 2018")
+    assert r["spec"]["symbols"] == ["NVDA"] and any("read as NVDA" in n for n in r["spec"]["notes"])
+    with pytest.raises(service.ServiceError) as e:
+        service.query("backtest golden cross on QZXWV since 2018")
+    assert e.value.status == 422 and "Couldn't find 'QZXWV'" in e.value.message

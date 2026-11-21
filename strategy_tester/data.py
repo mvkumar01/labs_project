@@ -9,6 +9,7 @@ Set ST_DATA_PROVIDER=direct or =yfinance to force one.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import os
 import re
@@ -24,6 +25,10 @@ import pandas as pd
 import requests
 
 log = logging.getLogger("strategy-tester.data")
+
+
+class SymbolNotFound(ValueError):
+    """Yahoo has no data for this symbol (as opposed to Yahoo being unreachable)."""
 
 CACHE_DIR = Path(os.environ.get("ST_CACHE_DIR") or Path(__file__).resolve().parent / "data_cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,6 +76,8 @@ class _YahooDirect:
                 continue
             if r.status_code == 200:
                 return r
+            if r.status_code == 404:          # Yahoo answers 404 for a symbol it does not know
+                raise SymbolNotFound("Yahoo Finance has no such symbol")
             last = RuntimeError(f"Yahoo returned HTTP {r.status_code}")
         raise ValueError(f"Could not reach Yahoo Finance ({last}).")
 
@@ -336,6 +343,25 @@ def search_symbol(query: str) -> str | None:
     return quotes[0]["symbol"] if quotes else None
 
 
+def suggest_symbol(raw: str) -> tuple[str, str] | None:
+    """Best guess for a symbol Yahoo does not know (usually a typo): (ticker, how it was read). Close names in the
+    alias table first ("nvdia" -> nvidia -> NVDA), then close tickers ("NVDIA" -> NVDA), then Yahoo's search."""
+    word = raw.strip().lstrip("$^")
+    low = word.lower()
+    m = difflib.get_close_matches(low, list(ALL_ALIASES), n=1, cutoff=0.75)
+    if m:
+        return ALL_ALIASES[m[0]], f"{m[0]}"
+    tickers = sorted(set(ALL_ALIASES.values()) | {t.split(".")[0] for t in ALL_ALIASES.values()})
+    m = difflib.get_close_matches(word.upper(), tickers, n=1, cutoff=0.8)
+    if m:
+        t = m[0] if m[0] in ALL_ALIASES.values() else next(v for v in ALL_ALIASES.values() if v.split(".")[0] == m[0])
+        return t, FRIENDLY_NAMES.get(t, t)
+    s = search_symbol(word)
+    if s and s.upper() != word.upper():
+        return s, s
+    return None
+
+
 # --------------------------------------------------------------------------------------
 # Price history
 # --------------------------------------------------------------------------------------
@@ -370,7 +396,7 @@ def _download(ticker: str, interval: str) -> pd.DataFrame:
     else:
         df = _direct.history(ticker, interval)
     if df is None or df.empty:
-        raise ValueError(f"No data returned by Yahoo Finance for '{ticker}'. Check the symbol.")
+        raise SymbolNotFound(f"No data returned by Yahoo Finance for '{ticker}'. Check the symbol.")
     df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
     if df.index.tz is not None:
         # Both providers return bars on the exchange's own clock; keep it (NIFTY's first hourly bar is 09:15,

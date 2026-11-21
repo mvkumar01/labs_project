@@ -690,6 +690,7 @@
         <div class="r-kicker">${assetPill(r.asset_class)}${f.sector ? `<span>${esc(f.sector)}</span><span>·</span><span>${esc(f.industry || "")}</span>` : ""}${parserPill(resp.spec)}</div>
         <h2 class="r-title">${esc(r.name)} <span class="sym">${esc(sym)}</span></h2>
         <div class="r-sub">Investment scorecard based on trend, momentum, risk and track record${r.asset_class === "equity" ? ", plus valuation and business quality" : ""}. Data to ${st.date}.</div>
+        ${idx === 0 && (resp.spec?.notes || []).length ? `<div class="notes">${resp.spec.notes.map((n) => `<div>${esc(n)}</div>`).join("")}</div>` : ""}
       </div>
       <div class="price-head"><div class="price-big">${currency(sym)}${priceFmt(st.price)}</div><div class="${cls(st.change_1d)}" style="font-weight:600">${pct(st.change_1d, 2, true)} today</div></div>
     </div></div>`);
