@@ -200,6 +200,11 @@
 
   // ------------------------------------------------------------------ sidebar + examples
   const EXAMPLES = [
+    ["Intraday · NIFTY / BANKNIFTY / SENSEX (1-minute)", "--s2", [
+      "Nifty 15 min opening range breakout both sides, stop 40 points, target 80 points, exit at 3:15 pm",
+      "Buy Nifty at 9:20 on gap up more than 0.3%, stop 30 points, target 60 points",
+      "Sell Bank Nifty on a break of the previous day low, trail 60 points, max 2 trades",
+    ]],
     ["Equities", "--s1", [
       "Backtest a 50/200 SMA crossover on AAPL since 2012 with a 10% trailing stop",
       "RSI(2) below 10, exit above 70 on MSFT over the last 8 years",
@@ -542,7 +547,7 @@
     if (wf) {
       const rows = wf.folds.map((f) => `<tr><td class="num">${esc(f.test_start)} → ${esc(f.test_end)}</td><td>${esc(Object.entries(f.params).map(([k, x]) => `${k} ${x}`).join(", "))}</td>
         <td class="n">${num(f.train_sharpe)}</td><td class="n ${cls(f.test_return)}">${pct(f.test_return, 1, true)}</td><td class="n ${cls(f.bh_return)}">${pct(f.bh_return, 1, true)}</td></tr>`).join("");
-      parts.push(`<div class="card-title" style="margin-bottom:8px"><span>Walk-forward <span class="hint">· settings picked on the previous ${wf.train_bars} bars only, then traded on the next ${wf.test_bars} unseen bars</span></span></div>
+      parts.push(`<div class="card-title" style="margin-bottom:8px"><span>Walk-forward <span class="hint">· settings picked on the previous ${isNum(wf.train_bars) ? wf.train_bars + " bars" : esc(wf.train_bars)} only, then traded on the next ${isNum(wf.test_bars) ? wf.test_bars + " unseen bars" : "unseen " + esc(wf.test_bars)}</span></span></div>
         <div class="split-row">${box("Unseen periods, chained", `${pct(wf.oos.cagr, 1, true)}`, ` a year · Sharpe ${num(wf.oos.sharpe)} · max DD ${pct(wf.oos.max_drawdown, 1)}`, !(wf.oos.sharpe > 0))}
         ${box("Buy &amp; hold, same periods", `${pct(wf.oos_benchmark.cagr, 1, true)}`, ` a year · Sharpe ${num(wf.oos_benchmark.sharpe)}`, false)}</div>
         <div class="hint" style="margin:-6px 0 8px">${wf.folds_positive}/${wf.folds.length} periods positive · ${wf.folds_beat_bh}/${wf.folds.length} beat buy &amp; hold · the same settings were picked ${Math.round(wf.param_stability)}% of the time</div>

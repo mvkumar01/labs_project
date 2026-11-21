@@ -153,6 +153,27 @@ def _deflate(results: list[dict], spec: dict) -> None:
             f"{len(rs)} strategies were tried on {sym}: the 'likely real' figures allow for picking the best of {len(rs)}.")
 
 
+def intraday_query(prompt: str, t0: float) -> dict:
+    """NIFTY / BANKNIFTY / SENSEX intraday rule on one-minute bars."""
+    from .intraday import rules as irules, run as irun, store as istore
+    rule, notes = irules.parse(prompt)
+    start, end = parser._dates(prompt, "1d", notes)
+    try:
+        result = irun.run(rule, start, end)
+    except istore.StoreUnavailable as e:
+        raise ServiceError(503, f"Intraday history is not available yet: {e}")
+    except ValueError as e:
+        raise ServiceError(422, str(e))
+    spec = {"intent": "backtest", "evaluate": False, "symbols": [rule.symbol],
+            "strategies": [{"key": "intraday_rule", "params": rule.to_dict()}], "start": start, "end": end,
+            "interval": "1m", "config": {}, "notes": notes + result.get("notes", []), "parser": "rules", "rule": rule.to_dict()}
+    response = {"prompt": prompt, "spec": spec, "intent": "backtest", "results": [result], "errors": [],
+                "commentary": llm.commentary(prompt, {"results": [_compact(result)]})}
+    response["elapsed"] = round(time.time() - t0, 2)
+    log.info("intraday query '%s' -> %s in %.2fs", prompt[:80], rule.to_dict(), response["elapsed"])
+    return response
+
+
 def query(prompt: str) -> dict:
     prompt = (prompt or "").strip()
     if not prompt:
@@ -160,6 +181,9 @@ def query(prompt: str) -> dict:
     if len(prompt) > 600:
         raise ServiceError(400, "That request is too long. Keep it under 600 characters.")
     t0 = time.time()
+    from .intraday import rules as irules
+    if irules.is_intraday(prompt):
+        return intraday_query(prompt, t0)
     spec = llm.parse(prompt) or parser.parse(prompt)
     if spec.get("parser") == "claude":
         rb = parser.parse(prompt)  # fill gaps Claude may have left
