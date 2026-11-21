@@ -87,6 +87,8 @@ SOURCES['nna_c3'] = Source('nna_c3_trades', 'NIFTY', 65)
 SOURCES['oi_unwind_nifty'] = Source('oi_unwind_nifty_trades', 'NIFTY', 65)
 SOURCES['oi_unwind_sensex'] = Source('oi_unwind_sensex_trades', 'SENSEX', 20)
 PAGE_SIZES = (10, 20, 25, 50, 100, 150, 200)
+# Books whose sessions before a date are a backfill (replayed afterwards, not traded forward): key -> first forward date.
+BACKFILL_BEFORE = {'nifty_omega': '2026-11-12'}
 
 def page_size(value):
     try:
@@ -342,6 +344,9 @@ def normalized_trades(raw, spec, key):
 def make_report(raw, spec, key, title, page=1, per_page=100):
     per_page = page_size(per_page)
     trades = normalized_trades(raw, spec, key)
+    cut = BACKFILL_BEFORE.get(key)
+    for t in trades:
+        t['backfill'] = bool(cut and t['date'] < cut)
     trades.sort(key=lambda t:(t['date'],t['entry_ts'] or '',t['id']),reverse=True)
     months=defaultdict(list)
     for t in trades:
@@ -352,7 +357,10 @@ def make_report(raw, spec, key, title, page=1, per_page=100):
                 pages=max(1,math.ceil(len(trades)/per_page)), daily_only=False,
                 notes=['Metrics use closed, priced trades. Break-even trades/days stay in the denominators.',
                        'Entry capital uses recorded margin/allocation or the premium paid for long options. Unrecorded capital is unavailable.',
-                       'Peak and post-exit values are gross hypothetical P&L from the original entry, not additional realized profit.'])
+                       'Peak and post-exit values are gross hypothetical P&L from the original entry, not additional realized profit.']
+                      + ([f'Backfill: trades dated before {cut} were not traded forward; they were replayed afterwards with the '
+                          'current rules on recorded quotes and are marked "backfill". The rules were tuned on those months, so '
+                          'that part is in-sample.'] if cut else []))
 
 
 def daily_report(conn,key,spec,start,end,title):

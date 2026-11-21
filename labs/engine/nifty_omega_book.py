@@ -1,12 +1,25 @@
-"""Forward Nifty Omega paper ledger. No broker order methods. Rules: live/engine/nifty_omega.py."""
-from datetime import datetime, time
+"""Forward Nifty Omega paper ledger. No broker order methods. Rules: live/engine/nifty_omega.py.
 
-from labs.engine import nna_twins_tracker as twins, tick_replay
+BACKFILL: sessions before the forward start (omega.START, 12 Nov 2026) were not traded forward. run_backfill() replays
+them after the fact with the current rules on the recorded quotes and stores them with strategy_version
+BACKFILL_VERSION; the tab and the trade report label every row dated before omega.START as backfill."""
+from datetime import date, datetime, time, timedelta
+
+from labs.engine import nna_tracker as nna, nna_twins_tracker as twins, tick_replay
 from labs.engine.charges import BROKERAGE_PER_LEG, GST, round_trip_charges
 from live.engine import nifty_omega as omega
 from storage.db import get_conn
 
 BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False, omega.ABI, {})
+BACKFILL_START = nna.PAPER_START                        # first month with option quotes in the shared archive
+BACKFILL_VERSION = omega.ABI+'+backfill'
+BACKFILL_BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False,
+                           BACKFILL_VERSION, {})
+
+
+def is_backfill(day):
+    """True for a session before the forward paper start: its rows are a backfill, not forward paper."""
+    return str(day) < omega.START
 
 
 def _trade(day, data, asof, signal):
@@ -99,12 +112,7 @@ def replay(day, data, asof):
     return trades
 
 
-def run_paper_day(trade_date=None, now=None):
-    now = now or datetime.now(omega.core.IST)
-    asof = now.astimezone(omega.core.IST).replace(tzinfo=None) if now.tzinfo else now
-    day = trade_date or asof.date().isoformat()
-    if day < omega.START:
-        return None
+def _record(day, asof, book):
     data = omega.snapshots(day, asof)
     trades = replay(day, data, asof)
     marks = sorted(data['alpha'])
@@ -117,13 +125,46 @@ def run_paper_day(trade_date=None, now=None):
     conn = get_conn()
     try:
         twins._ensure_tables(conn, omega.KEY)
-        twins._save(conn, day, BOOK, result)
+        twins._save(conn, day, book, result)
     finally:
         conn.close()
     return dict(trades=len(trades), net_rs=sum(t['net_rs'] or 0 for t in trades))
 
 
+def run_paper_day(trade_date=None, now=None):
+    now = now or datetime.now(omega.core.IST)
+    asof = now.astimezone(omega.core.IST).replace(tzinfo=None) if now.tzinfo else now
+    day = trade_date or asof.date().isoformat()
+    if day < omega.START:
+        return None
+    return _record(day, asof, BOOK)
+
+
+def run_backfill(start=BACKFILL_START, end=None, sessions=None):
+    """BACKFILL of the sessions before omega.START: each replayed to 15:30 with the current rules and saved with
+    BACKFILL_VERSION. Forward sessions (omega.START on) are never touched. A session whose inputs are missing is
+    saved as 'unavailable' with the reason. Returns {'done': {day: result}, 'failed': {day: reason}}."""
+    last = (date.fromisoformat(omega.START)-timedelta(days=1)).isoformat()
+    end = min(end or last, last)
+    days = sessions(start, end) if sessions else nna.sessions_with_quotes(start, end)
+    done, failed = {}, {}
+    for day in days:
+        if not is_backfill(day):
+            continue
+        try:
+            done[day] = _record(day, datetime.combine(date.fromisoformat(day), time(15,30)), BACKFILL_BOOK)
+        except Exception as exc:                    # one bad session must not stop the backfill
+            failed[day] = f'{type(exc).__name__}: {exc}'
+            conn = get_conn()
+            try:
+                twins._ensure_tables(conn, omega.KEY)
+                twins._save(conn, day, BACKFILL_BOOK, None, error=failed[day])
+            finally:
+                conn.close()
+    return dict(done=done, failed=failed)
+
+
 def tab_data(conn, date_clause='', date_params=()):
     twins._ensure_tables(conn, omega.KEY)
     return omega.core.tab_data(conn, date_clause, date_params, prefix=omega.KEY,
-                               first_unseen=omega.START, extra={'label':omega.LABEL})
+                               first_unseen=omega.START, extra={'label':omega.LABEL, 'backfill_before':omega.START})

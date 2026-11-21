@@ -48,7 +48,7 @@
   <table class="perf report-table report-trades report-compact"><thead><tr>{% for label in ['Date','Entry','Exit','Duration','Dir','Instrument','Qty','Entry ₹' if panel.currency=='INR' else 'Entry $','Exit ₹' if panel.currency=='INR' else 'Exit $','Capital','Pts','P&L','P&L %','Exit rule','Peak P&L','Post-exit peak',''] %}<th scope="col">{{ label if label else 'More' }}</th>{% endfor %}</tr></thead><tbody>
   {% for t in panel.trades %}
   <tr data-trade-id="{{ t.id }}" data-trade-date="{{ t.date }}">
-    <td data-label="Date">{{ t.date[8:10] }}/{{ t.date[5:7] }}<small class="report-cell-note">{{ t.date[:4] }}</small></td>
+    <td data-label="Date">{{ t.date[8:10] }}/{{ t.date[5:7] }}<small class="report-cell-note">{{ t.date[:4] }}</small>{% if t.backfill %}<small class="report-cell-note">backfill</small>{% endif %}</td>
     <td data-label="Entry">{{ t.entry_ts[11:19] if t.entry_ts and t.entry_has_time else '—' }}</td>
     <td data-label="Exit">{{ t.exit_ts[11:19] if t.exit_ts and t.exit_has_time else '—' }}{% if t.status=='Open' %}<span class="trade-status">Open</span>{% endif %}</td>
     <td data-label="Duration">{{ t.duration[6:] if t.duration and t.duration.startswith('0h 0m ') else t.duration[3:] if t.duration and t.duration.startswith('0h ') else t.duration or '—' }}</td>
