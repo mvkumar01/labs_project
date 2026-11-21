@@ -68,7 +68,12 @@ class Market:
         self.r1, self.s1 = 2 * p - pl, 2 * p - ph
         self.gap_pct = (self.day_open / self.prev_close - 1) * 100
         self.weekday = self.days.weekday.to_numpy()
-        self.vix = (vix.reindex(self.days).to_numpy(float) if vix is not None and len(vix) else np.full(n, np.nan))
+        if vix is not None and len(vix):
+            vix = vix[~pd.DatetimeIndex(vix.index).normalize().duplicated(keep="last")]
+            vix.index = pd.DatetimeIndex(vix.index).normalize()
+            self.vix = vix.reindex(self.days).to_numpy(float)
+        else:
+            self.vix = np.full(n, np.nan)
         self._ind_cache: dict = {}
 
     def slice_days(self, start: str | None, end: str | None) -> np.ndarray:
@@ -204,13 +209,14 @@ def day_filter(mk: Market, rule: Rule, sign: int, d: int, k: int) -> bool:
 
 
 def simulate(mk: Market, rule: Rule, day_idx: np.ndarray, ev: np.ndarray | None = None,
-             stop: float | None = ..., target: float | None = ...) -> tuple[list[dict], np.ndarray]:
+             stop: float | None = ..., target: float | None = ..., trail: float | None = ...) -> tuple[list[dict], np.ndarray]:
     """Trades and the per-day net P&L in index points for the given days. `stop` / `target` override the rule's
     (used by the sensitivity grid / walk-forward)."""
     ev = events(mk, rule) if ev is None else ev
     sp = rule.stop_pts if stop is ... else stop
     tp = rule.target_pts if target is ... else target
-    tr, tr_after = rule.trail_pts, rule.trail_after_pts or 0.0
+    tr = rule.trail_pts if trail is ... else trail
+    tr_after = rule.trail_after_pts or 0.0
     k_exit = min(k_of(rule.exit_time), EOD_K) if rule.exit_time else EOD_K
     cost_frac = sum(COST_BPS) / 1e4
     trades: list[dict] = []

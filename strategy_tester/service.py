@@ -157,7 +157,10 @@ def intraday_query(prompt: str, t0: float) -> dict:
     """NIFTY / BANKNIFTY / SENSEX intraday rule on one-minute bars."""
     from .intraday import rules as irules, run as irun, store as istore
     rule, notes = irules.parse(prompt)
-    start, end = parser._dates(prompt, "1d", notes)
+    import re as _re
+    date_text = _re.sub(r"(?i)(?:previous|prior|last|yesterday'?s?)\s+(?:trading\s+)?(?:day|session)'?s?\s*(?:high|low|close|range)?|"
+                        r"yesterday'?s?\s+(?:high|low|close)", " ", prompt)
+    start, end = parser._dates(date_text, "1d", notes)
     try:
         result = irun.run(rule, start, end)
     except istore.StoreUnavailable as e:

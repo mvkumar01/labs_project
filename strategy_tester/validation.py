@@ -167,36 +167,48 @@ def _monthly_returns(equity: pd.Series, capital: float) -> pd.Series:
     return me / prev - 1
 
 
-def monthly_stability(equity: pd.Series, capital: float, bench: pd.Series | None = None) -> dict:
-    mr = _monthly_returns(equity, capital)
+def monthly_stability(equity: pd.Series | None, capital: float, bench: pd.Series | None = None,
+                      monthly: pd.Series | None = None, yearly: pd.Series | None = None,
+                      bench_monthly: pd.Series | None = None) -> dict:
+    """From an equity curve, or (non-compounding P&L, e.g. intraday) from monthly / yearly returns given directly."""
+    mr = monthly if monthly is not None else _monthly_returns(equity, capital)
     streak = worst_streak = 0
     for v in mr:
         streak = streak + 1 if v < 0 else 0
         worst_streak = max(worst_streak, streak)
-    yearly = equity.groupby(equity.index.year).last()
-    yprev = yearly.shift(1)
-    yprev.iloc[0] = capital
-    yr = yearly / yprev - 1
+    if yearly is not None:
+        yr = yearly
+    else:
+        ye = equity.groupby(equity.index.year).last()
+        yprev = ye.shift(1)
+        yprev.iloc[0] = capital
+        yr = ye / yprev - 1
     out = {"months": int(len(mr)), "positive_months": float((mr > 0).mean() * 100) if len(mr) else None,
            "worst_month": float(mr.min() * 100) if len(mr) else None, "best_month": float(mr.max() * 100) if len(mr) else None,
            "longest_losing_streak": int(worst_streak), "years": int(len(yr)), "positive_years": int((yr > 0).sum())}
-    if bench is not None and len(mr):
-        bm = _monthly_returns(bench, capital).reindex(mr.index)
+    if (bench is not None or bench_monthly is not None) and len(mr):
+        bm = (bench_monthly if bench_monthly is not None else _monthly_returns(bench, capital)).reindex(mr.index)
         up, down = bm > 0, bm <= 0
         out["avg_in_up_months"] = float(mr[up].mean() * 100) if up.any() else None
         out["avg_in_down_months"] = float(mr[down].mean() * 100) if down.any() else None
     return out
 
 
-def bootstrap(equity: pd.Series, capital: float, n: int = 1000, seed: int = 11) -> dict | None:
-    """90% ranges for CAGR and Sharpe from resampling whole months with replacement."""
-    mr = _monthly_returns(equity, capital).to_numpy(float)
+def bootstrap(equity: pd.Series | None, capital: float, n: int = 1000, seed: int = 11,
+              monthly: pd.Series | None = None) -> dict | None:
+    """90% ranges for CAGR and Sharpe from resampling whole months with replacement. With `monthly` (non-compounding
+    P&L as a share of capital, e.g. intraday) the 'CAGR' is the simple yearly return (12 x the monthly mean)."""
+    simple = monthly is not None
+    mr = (monthly if simple else _monthly_returns(equity, capital)).to_numpy(float)
     if len(mr) < 12:
         return None
     rng = np.random.default_rng(seed)
     s = mr[rng.integers(0, len(mr), (n, len(mr)))]
-    growth = np.prod(1 + s, axis=1)
-    cagr = (np.where(growth > 0, growth, np.nan) ** (12 / len(mr)) - 1) * 100
+    if simple:
+        cagr = s.mean(axis=1) * 12 * 100
+    else:
+        growth = np.prod(1 + s, axis=1)
+        cagr = (np.where(growth > 0, growth, np.nan) ** (12 / len(mr)) - 1) * 100
     sd = s.std(axis=1, ddof=1)
     sh = np.where(sd > 0, s.mean(axis=1) / np.where(sd > 0, sd, 1) * math.sqrt(12), 0.0)
     return {"months": int(len(mr)), "cagr_p05": float(np.nanpercentile(cagr, 5)), "cagr_p95": float(np.nanpercentile(cagr, 95)),
@@ -205,9 +217,10 @@ def bootstrap(equity: pd.Series, capital: float, n: int = 1000, seed: int = 11) 
 
 
 # ------------------------------------------------------------------------------------------ Sharpe confidence
-def sr_stats(equity: pd.Series) -> dict | None:
-    """Per-bar Sharpe, skew, kurtosis and length: what the probabilistic Sharpe needs."""
-    r = equity.pct_change().dropna().to_numpy(float)
+def sr_stats(equity: pd.Series | None, returns: np.ndarray | None = None) -> dict | None:
+    """Per-bar Sharpe, skew, kurtosis and length: what the probabilistic Sharpe needs (from an equity curve, or from
+    per-period returns / P&L given directly)."""
+    r = np.asarray(returns, float) if returns is not None else equity.pct_change().dropna().to_numpy(float)
     if len(r) < 30 or r.std() == 0:
         return None
     z = (r - r.mean()) / r.std(ddof=1)

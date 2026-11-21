@@ -175,6 +175,7 @@ def daily_vix(kite=None) -> pd.Series:
     try:
         f = _fetch(kite or _kite(), VIX_TOKEN, date(FIRST_YEAR, 1, 1), date.today(), "day")
         f.index = pd.DatetimeIndex(f.index).normalize()
+        f = f[~f.index.duplicated(keep="last")]
         ROOT.mkdir(parents=True, exist_ok=True)
         f.to_csv(p, compression="gzip")
         return f["Open"]

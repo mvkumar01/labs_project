@@ -47,11 +47,14 @@ def _sharpe(pnl: np.ndarray) -> float:
     return float(pnl.mean() / pnl.std() * math.sqrt(252)) if len(pnl) > 5 and pnl.std() > 0 else 0.0
 
 
-def _grid(rule: Rule) -> tuple[list, list]:
+def _grid(rule: Rule) -> tuple[str | None, list, list]:
+    """x axis: the stop (or the trailing distance when there is no fixed stop); y axis: the target."""
     mults = (0.5, 0.75, 1.0, 1.25, 1.5)
-    xs = sorted({round(rule.stop_pts * m) for m in mults}) if rule.stop_pts else [None]
+    xkey = "stop" if rule.stop_pts else ("trail" if rule.trail_pts else None)
+    base = rule.stop_pts or rule.trail_pts
+    xs = sorted({round(base * m) for m in mults}) if xkey else [None]
     ys = sorted({round(rule.target_pts * m) for m in mults}) if rule.target_pts else [None]
-    return xs, ys
+    return xkey, xs, ys
 
 
 def random_entries(mk: E.Market, rule: Rule, trades: list[dict], days: np.ndarray, n: int = 500, seed: int = 7) -> dict | None:
@@ -97,7 +100,7 @@ def walk_forward(mk: E.Market, rule: Rule, days: np.ndarray, ev, grid_pnl: dict,
         bh = float(np.sum(mk.o[dd, E.EOD_K] - mk.o[dd, 0]))
         folds.append({"train_start": str(uy[i - 3]), "test_start": str(mk.days[days[te_m][0]].date()),
                       "test_end": str(mk.days[days[te_m][-1]].date()),
-                      "params": {"stop": best[0], "target": best[1]},
+                      "params": {k: v for k, v in (("stop" if rule.stop_pts else "trail", best[0]), ("target", best[1])) if v is not None},
                       "train_sharpe": round(_sharpe(grid_pnl[best][tr_m]), 2), "test_sharpe": round(_sharpe(te), 2),
                       "test_return": round(float(te.sum() * rs_per_pt / CAPITAL * 100), 2),
                       "bh_return": round(float(bh * rs_per_pt / CAPITAL * 100), 2)})
@@ -106,14 +109,83 @@ def walk_forward(mk: E.Market, rule: Rule, days: np.ndarray, ev, grid_pnl: dict,
     first = int(np.flatnonzero(years == uy[3])[0])
     eq = pd.Series(CAPITAL + np.cumsum(oos) * rs_per_pt, index=mk.days[days[first:first + len(oos)]])
     stable = max(chosen.count(x) for x in set(chosen)) / len(chosen)
+    yrs = max((eq.index[-1] - eq.index[0]).days / 365.25, 1 / 365.25)
+    cum = np.cumsum(oos) * rs_per_pt
     return {"folds": folds, "train_bars": "3 years", "test_bars": "1 year",
-            "oos": {"sharpe": round(_sharpe(oos), 2), "cagr": V._cagr(eq), "max_drawdown": round(V._max_dd(eq), 2),
+            "oos": {"sharpe": round(_sharpe(oos), 2), "cagr": float(oos.sum() * rs_per_pt / CAPITAL / yrs * 100),
+                    "max_drawdown": round(float((cum - np.maximum.accumulate(np.r_[0.0, cum])[1:]).min() / CAPITAL * 100), 2),
                     "total_return": round(float(oos.sum() * rs_per_pt / CAPITAL * 100), 2),
                     "start": str(eq.index[0].date()), "end": str(eq.index[-1].date())},
             "oos_benchmark": {"sharpe": None, "cagr": None},
             "folds_positive": sum(1 for f in folds if f["test_return"] > 0),
             "folds_beat_bh": sum(1 for f in folds if f["test_return"] > f["bh_return"]),
             "param_stability": round(stable * 100, 1), "equity": eq}
+
+
+def _period(pnl_rs: pd.Series, kind: str) -> pd.Series:
+    """P&L summed by month ("M") or year ("Y") as a share of the fixed capital (no compounding: lots stay fixed)."""
+    keys = [pnl_rs.index.year, pnl_rs.index.month] if kind == "M" else [pnl_rs.index.year]
+    return pnl_rs.groupby(keys).sum() / CAPITAL
+
+
+def _monthly_table(mret: pd.Series, yret: pd.Series) -> dict:
+    rows = []
+    for y in sorted({k[0] for k in mret.index}):
+        months = [None] * 12
+        for (yy, mm), v in mret.items():
+            if yy == y:
+                months[mm - 1] = round(float(v) * 100, 2)
+        rows.append({"year": int(y), "months": months, "total": round(float(yret.get(y, 0.0)) * 100, 2)})
+    return {"rows": rows}
+
+
+def _dd_pct(pnl_rs: pd.Series) -> pd.Series:
+    cum = pnl_rs.cumsum()
+    return (cum - cum.cummax().clip(lower=0)) / CAPITAL * 100
+
+
+def pnl_metrics(pnl_rs: pd.Series, trades: list[dict] | None) -> dict:
+    """Headline figures from daily rupee P&L on a fixed capital (intraday lots do not compound). Returns are simple
+    shares of CAPITAL; drawdown is the fall from the best cumulative P&L, as a share of CAPITAL (can exceed 100%:
+    the rule would have lost more than the capital)."""
+    r = pnl_rs.to_numpy(float) / CAPITAL
+    yrs = max((pnl_rs.index[-1] - pnl_rs.index[0]).days / 365.25, 1 / 365.25)
+    cum = pnl_rs.cumsum()
+    dd = cum - cum.cummax().clip(lower=0)
+    under = dd < 0
+    longest, start = 0, None
+    for t, u in under.items():
+        if u and start is None:
+            start = t
+        elif not u and start is not None:
+            longest = max(longest, (t - start).days); start = None
+    if start is not None:
+        longest = max(longest, (dd.index[-1] - start).days)
+    sd = r.std()
+    neg = r[r < 0]
+    dstd = np.sqrt((neg ** 2).sum() / max(len(r), 1)) * np.sqrt(252)
+    total = float(r.sum())
+    annual = total / yrs
+    max_dd = float(dd.min() / CAPITAL)
+    m = {"total_return": total * 100, "cagr": annual * 100, "volatility": float(sd * np.sqrt(252) * 100),
+         "sharpe": float(r.mean() / sd * np.sqrt(252)) if sd > 0 else 0.0,
+         "sortino": float(r.mean() * 252 / dstd) if dstd > 0 else 0.0, "max_drawdown": max_dd * 100,
+         "max_dd_days": int(longest), "calmar": (annual / abs(max_dd)) if max_dd < 0 else None,
+         "final_equity": float(CAPITAL + cum.iloc[-1]), "years": yrs,
+         "best_day": float(r.max() * 100), "worst_day": float(r.min() * 100), "max_drawdown_rs": float(dd.min())}
+    if trades is not None:
+        pnl_t = np.array([t["pnl"] for t in trades]) if trades else np.array([])
+        ret = np.array([t["return_pct"] for t in trades]) if trades else np.array([])
+        wins, losses = pnl_t[pnl_t > 0], pnl_t[pnl_t <= 0]
+        m.update({"trades": len(trades), "win_rate": float(len(wins) / len(trades) * 100) if trades else None,
+                  "profit_factor": float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() != 0 else None,
+                  "avg_trade": float(ret.mean()) if len(ret) else None,
+                  "avg_win": float(ret[ret > 0].mean()) if (ret > 0).any() else None,
+                  "avg_loss": float(ret[ret <= 0].mean()) if (ret <= 0).any() else None,
+                  "best_trade": float(ret.max()) if len(ret) else None, "worst_trade": float(ret.min()) if len(ret) else None,
+                  "avg_bars": float(np.mean([t["bars"] for t in trades])) if trades else None,
+                  "trades_per_year": len(trades) / yrs, "exposure": float((pnl_rs != 0).mean() * 100)})
+    return {k: (None if isinstance(v, float) and not np.isfinite(v) else v) for k, v in m.items()}
 
 
 def run(rule: Rule, start: str | None, end: str | None, validate: bool = True) -> dict:
@@ -134,11 +206,13 @@ def run(rule: Rule, start: str | None, end: str | None, validate: bool = True) -
                    "entry_price": t["entry_price"], "exit_price": t["exit_price"],
                    "return_pct": t["net_pts"] / t["entry_price"] * 100, "pnl": t["net_pts"] * rs_per_pt,
                    "points": t["net_pts"], "bars": t["k_out"] - t["k_in"], "exit_reason": t["exit_reason"]} for t in trades]
-    metrics = daily_engine.perf_metrics(equity, CAPITAL, out_trades, pd.Series((pnl != 0).astype(float), index=equity.index), bench)
+    metrics = pnl_metrics(pd.Series(pnl * rs_per_pt, index=mk.days[days]), out_trades)
     metrics.update({"points_total": float(pnl.sum()), "points_per_trade": float(np.mean([t["net_pts"] for t in trades])) if trades else None,
                     "days_traded": int((pnl != 0).sum()), "winning_days": float((pnl[pnl != 0] > 0).mean() * 100) if (pnl != 0).any() else None,
                     "worst_day_pts": float(pnl.min()), "best_day_pts": float(pnl.max()), "rs_per_point": rs_per_pt})
-    bmetrics = daily_engine.perf_metrics(bench, CAPITAL)
+    bench_rs = pd.Series(bench_pts * rs_per_pt, index=mk.days[days])
+    bmetrics = pnl_metrics(bench_rs, None)
+    pnl_rs = pd.Series(pnl * rs_per_pt, index=mk.days[days])
     name = E.describe(rule)
     result = {
         "kind": "backtest", "mode": "intraday", "symbol": rule.symbol, "name": meta["name"], "asset_class": "index",
@@ -165,30 +239,37 @@ def run(rule: Rule, start: str | None, end: str | None, validate: bool = True) -
         markers.append({"time": t["entry_time"].strftime("%Y-%m-%d"), "position": "belowBar" if long_ else "aboveBar",
                         "shape": "arrowUp" if long_ else "arrowDown", "kind": "entry", "text": "Buy" if long_ else "Short"})
     result["series"] = {"equity": daily_engine._line(equity, False, 2), "benchmark": daily_engine._line(bench, False, 2),
-                        "drawdown": daily_engine._line(daily_engine.drawdown(equity) * 100, False, 2),
-                        "benchmark_drawdown": daily_engine._line(daily_engine.drawdown(bench) * 100, False, 2),
+                        "drawdown": daily_engine._line(_dd_pct(pnl_rs), False, 2),
+                        "benchmark_drawdown": daily_engine._line(_dd_pct(bench_rs), False, 2),
                         "price": candles, "overlays": {}}
     result["markers"] = sorted(markers, key=lambda m: m["time"])
     result["trades"] = [{**t, "entry_time": t["entry_time"].strftime("%Y-%m-%d %H:%M"),
                          "exit_time": t["exit_time"].strftime("%Y-%m-%d %H:%M")} for t in out_trades]
-    result["monthly"] = daily_engine.monthly_table(equity, CAPITAL)
-    result["benchmark_monthly"] = daily_engine.monthly_table(bench, CAPITAL)
-    val: dict = {"monthly": V.monthly_stability(equity, CAPITAL, bench), "sr_stats": V.sr_stats(equity)}
+    mret, yret, bmret = _period(pnl_rs, "M"), _period(pnl_rs, "Y"), _period(bench_rs, "M")
+    result["monthly"] = _monthly_table(mret, yret)
+    result["benchmark_monthly"] = _monthly_table(bmret, _period(bench_rs, "Y"))
+    val: dict = {"monthly": V.monthly_stability(None, CAPITAL, monthly=mret, yearly=yret, bench_monthly=bmret),
+                 "sr_stats": V.sr_stats(None, returns=pnl_rs.to_numpy() / CAPITAL)}
     val["confidence"] = V.sharpe_confidence(val["sr_stats"], 1, None, 252.0)
     val["random"] = random_entries(mk, rule, trades, days)
     if validate:
-        xs, ys = _grid(rule)
+        xkey, xs, ys = _grid(rule)
+        xbase = rule.stop_pts if xkey == "stop" else rule.trail_pts
         grid_pnl = {}
         cells = []
         for y in ys:
             row = []
             for x in xs:
                 key = (x, y)
-                if x == rule.stop_pts and y == rule.target_pts:
+                if x == xbase and y == rule.target_pts:
                     p = pnl
                 else:
-                    p = E.simulate(mk, rule, days, ev, stop=x if x is not None else rule.stop_pts,
-                                   target=y if y is not None else rule.target_pts)[1]
+                    kw = {"target": y if y is not None else rule.target_pts}
+                    if xkey == "stop":
+                        kw["stop"] = x
+                    elif xkey == "trail":
+                        kw["trail"] = x
+                    p = E.simulate(mk, rule, days, ev, **kw)[1]
                 grid_pnl[key] = p
                 row.append(round(_sharpe(p), 2))
             cells.append(row)
@@ -197,14 +278,15 @@ def run(rule: Rule, start: str | None, end: str | None, validate: bool = True) -
             base = _sharpe(pnl)
             stab = sum(1 for v in flat if v > 0 and (base <= 0 or v >= 0.5 * base)) / len(flat)
             result["robustness"] = {"split": None, "sensitivity": {
-                "x_param": "Stop (pts)", "y_param": "Target (pts)" if rule.target_pts else None,
+                "x_param": "Stop (pts)" if xkey == "stop" else "Trailing stop (pts)",
+                "y_param": "Target (pts)" if rule.target_pts else None,
                 "x_values": xs, "y_values": ys if rule.target_pts else [], "sharpe": cells,
-                "base": {"x": rule.stop_pts, "y": rule.target_pts}, "stability": stab * 100}}
+                "base": {"x": xbase, "y": rule.target_pts}, "stability": stab * 100}}
             wf = walk_forward(mk, rule, days, ev, grid_pnl, rs_per_pt)
             if wf:
                 result["series"]["walk_forward"] = daily_engine._line(wf.pop("equity"), False, 2)
             val["walk_forward"] = wf
-        val["bootstrap"] = V.bootstrap(equity, CAPITAL)
+        val["bootstrap"] = V.bootstrap(None, CAPITAL, monthly=mret)
     result["validation"] = val
     result["verdict"] = daily_engine.strategy_verdict(result)
     return result
