@@ -2,7 +2,10 @@
 
 BACKFILL: sessions before the forward start (omega.START, 12 Nov 2026) were not traded forward. run_backfill() replays
 them after the fact with the current rules on the recorded quotes and stores them with strategy_version
-BACKFILL_VERSION; the tab and the trade report label every row dated before omega.START as backfill."""
+BACKFILL_VERSION; the tab and the trade report label every row dated before omega.START as backfill.
+
+SNAP EXIT: from omega.SNAP_START (23 Nov 2026) the book runs the snap exit and the one fresh entry after it
+(omega module notes); sessions before that keep the earlier rules and omega.PRE_SNAP_ABI."""
 from datetime import date, datetime, time, timedelta
 
 from labs.engine import nna_tracker as nna, nna_twins_tracker as twins, tick_replay
@@ -12,7 +15,9 @@ from storage.db import get_conn
 
 BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False, omega.ABI, {})
 BACKFILL_START = nna.PAPER_START                        # first month with option quotes in the shared archive
-BACKFILL_VERSION = omega.ABI+'+backfill'
+BACKFILL_VERSION = omega.PRE_SNAP_ABI+'+backfill'                # sessions before omega.START: the v2 rules
+PRE_SNAP_BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False,
+                           omega.PRE_SNAP_ABI, {})
 BACKFILL_BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False,
                            BACKFILL_VERSION, {})
 
@@ -22,10 +27,10 @@ def is_backfill(day):
     return str(day) < omega.START
 
 
-def _trade(day, data, asof, signal):
+def _trade(day, data, asof, signal, snap=True):
     """One entry on `signal` (mark, side, ATM): both lots at the next minute's ask, lot 1 / lot 2 sold at the
-    minute after the bid first reaches ask + 12.5 / + 20, or on an alpha or end-of-day exit.
-    Returns (trade row or None, the 5-min mark of a loss exit that closed the last lot, or None)."""
+    minute after the bid first reaches ask + 12.5 / + 20, or on an alpha, snap or end-of-day exit.
+    Returns (trade row or None, (reason, decision minute) of the exit that closed the last lot, or None)."""
     mark, side, atm = signal
     entry = mark+omega.MINUTE
     bar = data['bars'].get(entry)
@@ -42,14 +47,14 @@ def _trade(day, data, asof, signal):
     exits = {}
     decision = entry+omega.MINUTE
     end = datetime.combine(entry.date(), time(15,25))
-    exit_alpha, stop_mark = None, None
+    exit_alpha, closing = None, None
     while remaining and decision <= min(asof, end):
         alpha = data['alpha'].get(decision)
         if decision.minute % 5 == 0 and alpha is None:
             raise omega.core.BnAlphaInputError(f'Omega missing holding alpha {decision:%H:%M}')
         now_q = omega.contract_quote(data, decision, strike, side)
-        hit, reason = omega.decision_exit(alpha, side, float(now_q.bid) if now_q is not None else None, ask,
-                                          remaining, decision == end)
+        hit, reason = omega.decide(data, mark, decision, side, float(now_q.bid) if now_q is not None else None,
+                                   ask, remaining, decision == end, snap)
         if hit:
             fill = decision+omega.MINUTE
             if fill > asof:
@@ -62,8 +67,8 @@ def _trade(day, data, asof, signal):
                 exits[target] = (fill, float(bid.bid), reason, spot)
                 remaining.remove(target)
             exit_alpha = alpha
-            if not remaining and reason == 'alpha_stop':
-                stop_mark = decision
+            if not remaining:
+                closing = reason, decision
         decision += omega.MINUTE
     a, b = exits.get(lots[0]), exits.get(lots[1])
     closed = a is not None and b is not None
@@ -88,27 +93,34 @@ def _trade(day, data, asof, signal):
                 lotA_bid=a[1] if a else None, exit_bid=b[1] if b else None,
                 option_pts=gross/(2*omega.LOT) if closed else None, gross_rs=gross,
                 charges_rs=fee, net_rs=round(gross-fee,2) if closed else None,
-                qty=2*omega.LOT, lots=2, quote_status='priced' if closed else 'open'), stop_mark
+                qty=2*omega.LOT, lots=2, quote_status='priced' if closed else 'open'), closing
 
 
-def replay(day, data, asof):
-    """The day's trades: the first signal that passes the filters, then (PUT only) one re-entry after a loss exit."""
+def replay(day, data, asof, snap=None):
+    """The day's trades: the first signal that passes the filters; after a snap exit (the first of the day) one
+    fresh entry on the next signal; after a PUT loss exit (or a later PUT snap exit) the day's one re-entry.
+    snap: run the snap exit (default: sessions from omega.SNAP_START)."""
+    snap = day >= omega.SNAP_START if snap is None else snap
     signal = omega.first_signal(data, day, asof)
-    if signal is None:
-        return []
-    trade, stop_mark = _trade(day, data, asof, signal)
-    if trade is None:
-        return []
-    trades = [trade]
-    if stop_mark is not None:
-        again = omega.reentry_signal(data, day, signal[1], stop_mark, asof)
-        if again is not None:
-            try:
-                second, _ = _trade(day, data, asof, again)
-            except omega.core.BnAlphaInputError:
-                second = None                   # as the research: a re-entry that cannot be priced is not taken
-            if second is not None:
-                trades.append(second)
+    trades, used = [], set()
+    while signal is not None:
+        try:
+            trade, closing = _trade(day, data, asof, signal, snap)
+        except omega.core.BnAlphaInputError:
+            if not trades:
+                raise
+            break                               # as the research: a later entry that cannot be priced is not taken
+        if trade is None:
+            break
+        trades.append(trade)
+        side = signal[1]
+        allowed = omega.after_exit(closing[0], side, closing[1], used) if closing else None
+        signal = None
+        if allowed is not None:
+            kind, mark = allowed
+            used.add(kind)
+            signal = (omega.fresh_signal(data, day, mark, asof) if kind == 'fresh'
+                      else omega.reentry_signal(data, day, side, mark, asof))
     return trades
 
 
@@ -137,7 +149,7 @@ def run_paper_day(trade_date=None, now=None):
     day = trade_date or asof.date().isoformat()
     if day < omega.START:
         return None
-    return _record(day, asof, BOOK)
+    return _record(day, asof, BOOK if day >= omega.SNAP_START else PRE_SNAP_BOOK)
 
 
 def run_backfill(start=BACKFILL_START, end=None, sessions=None):

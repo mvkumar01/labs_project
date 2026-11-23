@@ -1,4 +1,8 @@
-"""Nifty Omega execution through the existing live runner and order rails."""
+"""Nifty Omega execution through the existing live runner and order rails.
+
+After the first entry of the day, a new entry needs the arm in config 'omega_reentry', written by the exit that
+flattened the previous trade (omega.after_exit): kind 'reclaim' (PUT loss exit, the day's one re-entry) or 'fresh'
+(the day's first snap exit, one fresh signal on either side). 'taken' carries the kinds already used today."""
 from datetime import datetime, time
 import json
 from math import isfinite
@@ -32,6 +36,22 @@ def entry_contract(user_id, conn_id, day):
     if not record or record.get('day') != day:
         return None
     return dict(strike=int(record['strike']), ask=float(record['ask']))
+
+
+def day_arm(user_id, conn_id, day, dry_run):
+    """Today's re-entry arm for this mode, or None. A record without 'kind' is a PUT reclaim (before the snap exit)."""
+    raw = svc.get_config(user_id, conn_id, 'omega_reentry')
+    arm = json.loads(raw) if raw else None
+    if not arm or arm.get('day') != day or bool(arm.get('dry_run')) != dry_run:
+        return None
+    return dict(arm, kind=arm.get('kind') or 'reclaim')
+
+
+def taken_today(arm):
+    """Entry kinds ('reclaim', 'fresh') already used today."""
+    if not arm:
+        return set()
+    return set(arm.get('taken') or ()) | ({arm['kind']} if arm.get('used') else set())
 
 
 def execute(user_id, conn_id, adapter, now, dry_run):
@@ -106,7 +126,7 @@ def execute(user_id, conn_id, adapter, now, dry_run):
                 # A mismatch can be an unrecorded broker fill. Avoid a new order.
                 runner.log.warning('Omega position needs reconciliation conn=%s', conn_id)
                 return
-        quantity, reason, price, stop_mark = 0, '', None, None
+        quantity, reason, price, closing = 0, '', None, None
         side = 1 if state['side'] == 'CALL' else -1
         if minute.time() >= time(15,26):
             quantity, reason = held, 'omega_eod'
@@ -120,25 +140,29 @@ def execute(user_id, conn_id, adapter, now, dry_run):
             if contract is None:
                 runner.log.warning('Omega entry contract unknown conn=%s: alpha and EOD exits only', conn_id)
             decision = entry+omega.MINUTE
+            signal_mark = entry-omega.MINUTE
             while decision < minute:
                 quote = omega.contract_quote(data, decision, contract['strike'], side) if contract else None
-                hits, cause = omega.decision_exit(data['alpha'].get(decision), side,
-                                                  float(quote.bid) if quote is not None else None,
-                                                  contract['ask'] if contract else None, targets)
+                hits, cause = omega.decide(data, signal_mark, decision, side,
+                                           float(quote.bid) if quote is not None else None,
+                                           contract['ask'] if contract else None, targets,
+                                           snap=day >= omega.SNAP_START)
                 if hits:
                     quantity = max(quantity, len(hits)*omega.LOT)
                     reason = 'omega_'+cause
                     if len(hits) == len(targets):
                         # The first minute that closes every held lot decides, as in the research.
-                        stop_mark = decision if cause == 'alpha_stop' else None
+                        closing = cause, decision
                         break
                 decision += omega.MINUTE
         if not quantity:
             return
         if quantity == held:
-            # Arm (PUT loss exit) or clear the one re-entry with the exit that flattens the position.
-            arm = dict(day=day, side=side, mark=stop_mark.isoformat(), used=False, dry_run=int(dry_run)) \
-                if stop_mark is not None and side in omega.REENTRY_SIDES else None
+            # Arm (PUT loss exit: reclaim; first snap exit: one fresh entry) or clear, with the exit that flattens.
+            taken = taken_today(day_arm(user_id, conn_id, day, dry_run))
+            allowed = omega.after_exit(closing[0], side, closing[1], taken) if closing else None
+            arm = dict(day=day, side=side, kind=allowed[0], mark=allowed[1].isoformat(), used=False,
+                       taken=sorted(taken), dry_run=int(dry_run)) if allowed else None
             svc.set_config(user_id, conn_id, 'omega_reentry', json.dumps(arm) if arm else '')
         price = runner._fast_ltp(adapter, symbol)
         result = runner._route_order(adapter, user_id, conn_id, action='EXIT', side=state['side'],
@@ -164,14 +188,16 @@ def execute(user_id, conn_id, adapter, now, dry_run):
         return
     arm = None
     if prior_entry(user_id, conn_id, day, dry_run):
-        # Only the one PUT re-entry after a loss exit; armed by the exit that flattened the first trade.
-        raw = svc.get_config(user_id, conn_id, 'omega_reentry')
-        arm = json.loads(raw) if raw else None
-        if not arm or arm.get('day') != day or arm.get('used') or bool(arm.get('dry_run')) != dry_run:
+        # Only an entry armed by the exit that flattened the previous trade (see the module notes).
+        arm = day_arm(user_id, conn_id, day, dry_run)
+        if not arm or arm.get('used'):
             return
         data = omega.snapshots(day, minute)
-        signal = omega.reentry_signal(data, day, int(arm['side']), datetime.fromisoformat(arm['mark']),
-                                      minute-omega.MINUTE)
+        if arm['kind'] == 'fresh':
+            signal = omega.fresh_signal(data, day, datetime.fromisoformat(arm['mark']), minute-omega.MINUTE)
+        else:
+            signal = omega.reentry_signal(data, day, int(arm['side']), datetime.fromisoformat(arm['mark']),
+                                          minute-omega.MINUTE)
     else:
         data = omega.snapshots(day, minute)
         signal = omega.first_signal(data, day, minute-omega.MINUTE)

@@ -10,6 +10,17 @@ Refinements of 2026-11-15 (alphaIMB research/experiments/2026-11-14_alpha_veloci
            as it stood 45 minutes before the signal; a later fresh cross may still trade.
   loss     PUT: both lots out when alpha reaches +20, then ONE re-entry when alpha crosses from >= 0 to < 0 on a
            5-min mark with the EMA gate bearish (fresh strike, same exits, by 15:15). CALL: alpha -30, no re-entry.
+
+Snap exit (Vipin 2026-11-23, from SNAP_START; research README 69-71, snap_oi_filter.py / snap_reentry.py):
+  snap     every attempt, both sides: on minutes s+2 .. s+5 (s = the signal mark, entry at s+1), when no premium
+           target and no 5-min alpha exit fired that minute, both lots go at the next minute's bid if the 1-min
+           directional alpha is below +15 (|alpha| <= 200) AND >= 60% of the in-range OI flow since s is against
+           the trade (P, C = cumulative put / call OI change vs baseline on the alpha range; PUT against =
+           max(dP,0) + max(-dC,0), CALL mirrored; share of |dP| + |dC|). Reason 'snap_oi'.
+  after    the first snap exit of the day arms no PUT reclaim; it allows ONE fresh entry instead: the next normal
+           signal (either side, same filters and strike rule) from the first 5-min mark at or after the exit fill
+           minute. That trade runs the full rules. A later snap exit is treated like a loss exit (PUT: the day's one
+           reclaim if unused; otherwise flat).
 """
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
@@ -24,9 +35,11 @@ from market_data.expiry import expiry_sort_date
 
 KEY = 'nifty_omega'
 LABEL = 'Nifty Omega'
-ABI = 'nifty-omega-v2-delta70-prem12.5-20-fri12-retest45-put20'
+ABI = 'nifty-omega-v2-snapoi15-60-fresh1-delta70-prem12.5-20-fri12-retest45-put20'
+PRE_SNAP_ABI = 'nifty-omega-v2-delta70-prem12.5-20-fri12-retest45-put20'   # paper rows before SNAP_START
 LOT = nna.LOT_SIZE
 START = '2026-11-12'
+SNAP_START = '2026-11-23'
 MINUTE = timedelta(minutes=1)
 PREMIUM_TARGETS = (12.5, 20.0)        # lot 1, lot 2: bid above the entry ask
 ADVERSE = {1: -30.0, -1: -20.0}       # alpha*side at or below this exits both lots
@@ -35,6 +48,8 @@ LAST_MARK = time(15, 15)
 FRIDAY_CUT = time(12, 0)
 RETEST_AGE, RETEST_NEAR, RETEST_BREAK = 45, 10.0, 10.0
 DELTA_TARGET, DELTA_MAX_DTE, DELTA_DEPTH = 0.70, 1, 300
+SNAP_FROM, SNAP_TO = 2, 5              # minutes after the signal mark checked for a snap exit
+SNAP_BELOW, SNAP_SHARE = 15.0, 0.60
 
 
 def decision_exit(alpha, side, bid, ask, targets, end=False):
@@ -54,6 +69,54 @@ def decision_exit(alpha, side, bid, ask, targets, end=False):
     if end:
         return list(targets), 'eod'
     return hit, 'premium'
+
+
+def against_share(then, now, side):
+    """Share of the in-range OI flow between two (put, call) cumulative changes that is against `side`."""
+    dp, dc = now[0]-then[0], now[1]-then[1]
+    flow = abs(dp) + abs(dc)
+    if not flow:
+        return 0.0
+    return ((max(dp, 0) + max(-dc, 0)) if side == -1 else (max(dc, 0) + max(-dp, 0))) / flow
+
+
+def snap_exit(data, side, signal_mark, minute):
+    """The snap condition at `minute` for a trade signalled on `signal_mark` (see the module notes). Missing
+    one-minute OI at either end means no snap."""
+    if not SNAP_FROM*MINUTE <= minute-signal_mark <= SNAP_TO*MINUTE:
+        return False
+    flow = data.get('pc') or {}
+    then, now = flow.get(signal_mark), flow.get(minute)
+    if then is None or now is None:
+        return False
+    den = now[0] + now[1]
+    alpha = 100*(now[0]-now[1])/den if den else 0.0
+    if abs(alpha) > 200 or alpha*side >= SNAP_BELOW:
+        return False
+    return against_share(then, now, side) >= SNAP_SHARE
+
+
+def decide(data, signal_mark, minute, side, bid, ask, targets, end=False, snap=True):
+    """decision_exit for `minute`, then the snap check when no exit fired for every held lot. A premium lot sold
+    on the snap minute names the exit 'premium' (as a premium + alpha tie, and as the research's lot-1 reason)."""
+    hit, reason = decision_exit(data['alpha'].get(minute), side, bid, ask, targets, end)
+    if len(hit) < len(targets) and snap and snap_exit(data, side, signal_mark, minute):
+        return list(targets), 'premium' if hit else 'snap_oi'
+    return hit, reason
+
+
+def _ceil5(minute):
+    return minute + timedelta(minutes=-minute.minute % 5)
+
+
+def after_exit(cause, side, decision, used):
+    """What the exit that flattened a trade (decided at minute `decision`) allows next, given the kinds already
+    taken today (`used`): ('fresh', first mark to scan), ('reclaim', loss mark) or None."""
+    if cause == 'snap_oi' and 'fresh' not in used:
+        return 'fresh', _ceil5(decision+MINUTE)
+    if cause in ('alpha_stop', 'snap_oi') and side in REENTRY_SIDES and 'reclaim' not in used:
+        return 'reclaim', decision - timedelta(minutes=decision.minute % 5)
+    return None
 
 
 @lru_cache(maxsize=3)
@@ -102,6 +165,12 @@ def snapshots(day, asof):
     expected = pd.MultiIndex.from_product([range(lo, hi+1, 50), ['ce','pe']], names=['strike','type'])
     b = base.set_index(['strike','type']).oi.reindex(expected, fill_value=0)
     marks = frame[(frame.minute.dt.minute % 5 == 0) & frame.strike.between(lo, hi)]
+    rows = frame[frame.strike.between(lo, hi)].set_index(['minute','strike','type']).oi.unstack(['strike','type'])
+    rows = rows.reindex(columns=expected).dropna()
+    delta = rows - b.to_numpy()
+    pc = {m.to_pydatetime(): (float(p), float(c)) for m, p, c in
+          zip(delta.index, delta.xs('pe', axis=1, level='type').sum(axis=1),
+              delta.xs('ce', axis=1, level='type').sum(axis=1))}
     alpha = {}
     for minute, group in marks.groupby('minute'):
         oi = group.set_index(['strike','type']).oi.reindex(expected)
@@ -114,7 +183,7 @@ def snapshots(day, asof):
     closes = pd.concat([warmup(day), completed_closes(bars, asof)])
     ema = compute_ema(closes, 9)-compute_ema(closes, 21)
     ema = ema.where(closes.notna() & (closes.notna().cumsum() >= 21))
-    return dict(bars=bars, alpha=alpha, ema=ema, frame=frame, expiry=expiry, expiry_date=expiry_sort_date(expiry),
+    return dict(bars=bars, alpha=alpha, pc=pc, ema=ema, frame=frame, expiry=expiry, expiry_date=expiry_sort_date(expiry),
                 prev_close=close, prev_close_date=close_date, prev_close_source=source,
                 baseline_date=baseline_date, range_lo=lo, range_hi=hi)
 
@@ -161,15 +230,19 @@ def _friday_cut(day, mark):
     return date.fromisoformat(day).weekday() == 4 and mark.time() >= FRIDAY_CUT
 
 
-def signals(data, day, asof):
+def signals(data, day, asof, start=None):
     """Fresh +-30 crosses on 5-min marks with EMA9/21 agreeing that pass the Friday and retest filters,
-    in time order: (mark, side, ATM strike). Nothing from a Friday 12:00 signal on."""
+    in time order: (mark, side, ATM strike). Nothing from a Friday 12:00 signal on. With `start` (the fresh entry
+    after a snap exit) the scan begins on that mark and a mark without alpha is skipped, as in the research."""
     origin = datetime.fromisoformat(day+'T09:15')
-    mark = origin + 5*MINUTE
+    mark = max(start, origin + 5*MINUTE) if start else origin + 5*MINUTE
     while mark <= min(asof, datetime.combine(origin.date(), LAST_MARK)):
         current = data['alpha'].get(mark)
         previous = data['alpha'].get(mark-5*MINUTE)
         if current is None or previous is None:
+            if start:
+                mark += 5*MINUTE
+                continue
             raise core.BnAlphaInputError(f'Omega missing alpha mark {mark:%H:%M}')
         side = 1 if previous <= 30 < current else -1 if previous >= -30 > current else 0
         if side and abs(current) <= 200 and _ema_agrees(data, mark, side):
@@ -182,6 +255,11 @@ def signals(data, day, asof):
 
 def first_signal(data, day, asof):
     return next(signals(data, day, asof), None)
+
+
+def fresh_signal(data, day, start, asof):
+    """The one fresh entry after a snap exit: the first normal signal from the mark `start`, or None."""
+    return next(signals(data, day, asof, start), None)
 
 
 def reentry_signal(data, day, side, stop_mark, asof):
