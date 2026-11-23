@@ -21,6 +21,17 @@ Snap exit (Vipin 2026-11-23, from SNAP_START; research README 69-71, snap_oi_fil
            signal (either side, same filters and strike rule) from the first 5-min mark at or after the exit fill
            minute. That trade runs the full rules. A later snap exit is treated like a loss exit (PUT: the day's one
            reclaim if unused; otherwise flat).
+
+Late EMA entry (Vipin 2026-11-23, from LATE_START; research README 72-73, late_ema_growth_drop.py sig86G(d, 30, 8, 80)):
+  pending  a fresh +-30 cross (|alpha| <= 200) that fails ONLY the EMA 9/21 gate waits: side, mark k0, x0 = alpha*side.
+           (A cross that passes the EMA but is retest-blocked is skipped as before and does not become pending.)
+  later    on each later 5-min mark (|alpha| > 200 skipped): cancel if alpha*side <= 30 or more than LATE_WAIT
+           minutes after k0. At the FIRST mark where the EMA agrees: growth x - x0 >= LATE_GROWTH and x <= LATE_CAP,
+           else the pending cross is dropped for good; passing, the Friday 12:00 rule and the retest filter apply at
+           that mark (retest-blocked: still pending) and it enters like a v2 signal on that mark.
+  scope    only the day's first entry: whichever comes first, a v2 signal or a confirmed pending cross; a newer
+           EMA-blocked cross replaces an older pending one. The fresh entry after a snap and the PUT reclaim do not
+           use pending crosses. Everything after the entry is unchanged.
 """
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
@@ -35,11 +46,13 @@ from market_data.expiry import expiry_sort_date
 
 KEY = 'nifty_omega'
 LABEL = 'Nifty Omega'
-ABI = 'nifty-omega-v2-snapoi15-60-fresh1-delta70-prem12.5-20-fri12-retest45-put20'
+ABI = 'nifty-omega-v2-lateema30-g8-cap80-snapoi15-60-fresh1-delta70-prem12.5-20-fri12-retest45-put20'
+SNAP_ABI = 'nifty-omega-v2-snapoi15-60-fresh1-delta70-prem12.5-20-fri12-retest45-put20'   # paper rows SNAP_START .. LATE_START
 PRE_SNAP_ABI = 'nifty-omega-v2-delta70-prem12.5-20-fri12-retest45-put20'   # paper rows before SNAP_START
 LOT = nna.LOT_SIZE
 START = '2026-11-12'
 SNAP_START = '2026-11-23'
+LATE_START = '2026-11-24'             # first session on the late EMA entry
 MINUTE = timedelta(minutes=1)
 PREMIUM_TARGETS = (12.5, 20.0)        # lot 1, lot 2: bid above the entry ask
 ADVERSE = {1: -30.0, -1: -20.0}       # alpha*side at or below this exits both lots
@@ -50,6 +63,7 @@ RETEST_AGE, RETEST_NEAR, RETEST_BREAK = 45, 10.0, 10.0
 DELTA_TARGET, DELTA_MAX_DTE, DELTA_DEPTH = 0.70, 1, 300
 SNAP_FROM, SNAP_TO = 2, 5              # minutes after the signal mark checked for a snap exit
 SNAP_BELOW, SNAP_SHARE = 15.0, 0.60
+LATE_WAIT, LATE_GROWTH, LATE_CAP = 30, 8.0, 80.0   # minutes, alpha points, alpha
 
 
 def decision_exit(alpha, side, bid, ask, targets, end=False):
@@ -230,12 +244,14 @@ def _friday_cut(day, mark):
     return date.fromisoformat(day).weekday() == 4 and mark.time() >= FRIDAY_CUT
 
 
-def signals(data, day, asof, start=None):
+def signals(data, day, asof, start=None, late=False):
     """Fresh +-30 crosses on 5-min marks with EMA9/21 agreeing that pass the Friday and retest filters,
     in time order: (mark, side, ATM strike). Nothing from a Friday 12:00 signal on. With `start` (the fresh entry
-    after a snap exit) the scan begins on that mark and a mark without alpha is skipped, as in the research."""
+    after a snap exit) the scan begins on that mark and a mark without alpha is skipped, as in the research.
+    late: also yield EMA-blocked crosses confirmed later (the late EMA entry, module notes); first entry only."""
     origin = datetime.fromisoformat(day+'T09:15')
     mark = max(start, origin + 5*MINUTE) if start else origin + 5*MINUTE
+    pending = None                                  # (side, k0, x0) of an EMA-blocked cross
     while mark <= min(asof, datetime.combine(origin.date(), LAST_MARK)):
         current = data['alpha'].get(mark)
         previous = data['alpha'].get(mark-5*MINUTE)
@@ -245,7 +261,29 @@ def signals(data, day, asof, start=None):
                 continue
             raise core.BnAlphaInputError(f'Omega missing alpha mark {mark:%H:%M}')
         side = 1 if previous <= 30 < current else -1 if previous >= -30 > current else 0
-        if side and abs(current) <= 200 and _ema_agrees(data, mark, side):
+        if late and pending and abs(current) <= 200:
+            held, k0, x0 = pending
+            x = current*held
+            ema = data['ema'].get(mark, float('nan'))
+            if x <= 30 or mark-k0 > timedelta(minutes=LATE_WAIT):
+                pending = None
+            elif not side and isfinite(ema) and ema*held > 0:      # the first mark the EMA agrees
+                if not (x-x0 >= LATE_GROWTH and x <= LATE_CAP):
+                    pending = None
+                else:
+                    if _friday_cut(day, mark):
+                        return
+                    if not retest_blocked(data, day, mark, held):
+                        pending = None
+                        yield mark, held, _atm(data, mark)
+                mark += 5*MINUTE
+                continue
+        if side and abs(current) <= 200:
+            if not _ema_agrees(data, mark, side):
+                if late:
+                    pending = (side, mark, current*side)
+                mark += 5*MINUTE
+                continue
             if _friday_cut(day, mark):
                 return
             if not retest_blocked(data, day, mark, side):
@@ -253,8 +291,9 @@ def signals(data, day, asof, start=None):
         mark += 5*MINUTE
 
 
-def first_signal(data, day, asof):
-    return next(signals(data, day, asof), None)
+def first_signal(data, day, asof, late=False):
+    """The day's first entry signal; late: with the late EMA entry (sessions from LATE_START)."""
+    return next(signals(data, day, asof, late=late), None)
 
 
 def fresh_signal(data, day, start, asof):

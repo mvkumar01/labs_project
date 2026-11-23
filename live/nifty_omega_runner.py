@@ -200,7 +200,7 @@ def execute(user_id, conn_id, adapter, now, dry_run):
                                           minute-omega.MINUTE)
     else:
         data = omega.snapshots(day, minute)
-        signal = omega.first_signal(data, day, minute-omega.MINUTE)
+        signal = omega.first_signal(data, day, minute-omega.MINUTE, late=day >= omega.LATE_START)
     if signal is None or signal[0]+omega.MINUTE != minute:
         return
     _, side, atm = signal

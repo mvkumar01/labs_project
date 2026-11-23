@@ -579,7 +579,7 @@ SENSEX_V45_FLOORS = {
     "spot_150": ("proposer_dt35_v5", "SENSEX 150 points against the entry (Sensex V5, no premium floor)"),
 }
 STRATEGY_LABELS = {
-    "nifty_omega": "Nifty Omega (premium +12.5 / +20, delta 0.70 near expiry, PUT stop +20 with one re-entry, snap exit on OI with one fresh entry)",
+    "nifty_omega": "Nifty Omega (premium +12.5 / +20, delta 0.70 near expiry, PUT stop +20 with one re-entry, snap exit on OI with one fresh entry, late EMA entry)",
     "gold_cci_v2": "Gold CCI V2 (GOLD futures short; 3% daily net target; bullish entry filter)",
     "crudem_combo_v1": "CRUDEOILM Combo (six rules, long and short; stop at Angel One, flat 23:29)",
     "legacy_v211":   "Alpha v2.11 (legacy)",

@@ -23,9 +23,9 @@ def put_snap_day(**kw):
 
 
 def test_contract_and_paper_versions():
-    assert omega.ABI.startswith('nifty-omega-v2-snapoi15-60-fresh1') and omega.SNAP_START == '2026-11-23'
+    assert omega.SNAP_ABI.startswith('nifty-omega-v2-snapoi15-60-fresh1') and omega.SNAP_START == '2026-11-23'
     assert live_executor.expected_decision_abi(omega.KEY) == omega.ABI
-    assert book.BOOK.version == omega.ABI and book.PRE_SNAP_BOOK.version == omega.PRE_SNAP_ABI
+    assert book.SNAP_BOOK.version == omega.SNAP_ABI and book.PRE_SNAP_BOOK.version == omega.PRE_SNAP_ABI
     assert book.BACKFILL_VERSION == omega.PRE_SNAP_ABI+'+backfill'          # the stored backfill rows' label
 
 

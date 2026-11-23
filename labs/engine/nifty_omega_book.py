@@ -5,7 +5,10 @@ them after the fact with the current rules on the recorded quotes and stores the
 BACKFILL_VERSION; the tab and the trade report label every row dated before omega.START as backfill.
 
 SNAP EXIT: from omega.SNAP_START (23 Nov 2026) the book runs the snap exit and the one fresh entry after it
-(omega module notes); sessions before that keep the earlier rules and omega.PRE_SNAP_ABI."""
+(omega module notes); sessions before that keep the earlier rules and omega.PRE_SNAP_ABI.
+
+LATE EMA ENTRY: from omega.LATE_START the day's first entry may also come from an EMA-blocked cross confirmed later
+(omega module notes); sessions SNAP_START .. LATE_START keep omega.SNAP_ABI."""
 from datetime import date, datetime, time, timedelta
 
 from labs.engine import nna_tracker as nna, nna_twins_tracker as twins, tick_replay
@@ -16,6 +19,8 @@ from storage.db import get_conn
 BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False, omega.ABI, {})
 BACKFILL_START = nna.PAPER_START                        # first month with option quotes in the shared archive
 BACKFILL_VERSION = omega.PRE_SNAP_ABI+'+backfill'                # sessions before omega.START: the v2 rules
+SNAP_BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False,
+                       omega.SNAP_ABI, {})
 PRE_SNAP_BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False,
                            omega.PRE_SNAP_ABI, {})
 BACKFILL_BOOK = twins.Twin(omega.KEY, omega.LABEL, 2, omega.PREMIUM_TARGETS[0], omega.ADVERSE[1], False,
@@ -96,12 +101,14 @@ def _trade(day, data, asof, signal, snap=True):
                 qty=2*omega.LOT, lots=2, quote_status='priced' if closed else 'open'), closing
 
 
-def replay(day, data, asof, snap=None):
+def replay(day, data, asof, snap=None, late=None):
     """The day's trades: the first signal that passes the filters; after a snap exit (the first of the day) one
     fresh entry on the next signal; after a PUT loss exit (or a later PUT snap exit) the day's one re-entry.
-    snap: run the snap exit (default: sessions from omega.SNAP_START)."""
+    snap: run the snap exit (default: sessions from omega.SNAP_START). late: the late EMA first entry (default:
+    sessions from omega.LATE_START)."""
     snap = day >= omega.SNAP_START if snap is None else snap
-    signal = omega.first_signal(data, day, asof)
+    late = day >= omega.LATE_START if late is None else late
+    signal = omega.first_signal(data, day, asof, late=late)
     trades, used = [], set()
     while signal is not None:
         try:
@@ -149,7 +156,9 @@ def run_paper_day(trade_date=None, now=None):
     day = trade_date or asof.date().isoformat()
     if day < omega.START:
         return None
-    return _record(day, asof, BOOK if day >= omega.SNAP_START else PRE_SNAP_BOOK)
+    if day < omega.SNAP_START:
+        return _record(day, asof, PRE_SNAP_BOOK)
+    return _record(day, asof, BOOK if day >= omega.LATE_START else SNAP_BOOK)
 
 
 def run_backfill(start=BACKFILL_START, end=None, sessions=None):
