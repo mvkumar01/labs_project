@@ -81,6 +81,8 @@ SOURCES['sx_pc400'] = Source('sx_pc400_trades', 'SENSEX', 20)
 SOURCES['sx_open1400'] = Source('sx_open1400_trades', 'SENSEX', 20)
 SOURCES['nna_v1'] = Source('nna_v1_trades', 'NIFTY', 65)
 SOURCES['nifty_omega'] = Source('nifty_omega_trades', 'NIFTY', 130)
+SOURCES['omega_chop_half'] = Source('omega_chop_half_trades', 'NIFTY', 260)        # qty per row (130 or 260)
+SOURCES['omega_fade_streak'] = Source('omega_fade_streak_trades', 'NIFTY', 130)    # qty per row (130 or 260)
 SOURCES['nna_c1'] = Source('nna_c1_trades', 'NIFTY', 130)
 SOURCES['nna_c2'] = Source('nna_c2_trades', 'NIFTY', 130)
 SOURCES['nna_c3'] = Source('nna_c3_trades', 'NIFTY', 65)
@@ -88,7 +90,7 @@ SOURCES['oi_unwind_nifty'] = Source('oi_unwind_nifty_trades', 'NIFTY', 65)
 SOURCES['oi_unwind_sensex'] = Source('oi_unwind_sensex_trades', 'SENSEX', 20)
 PAGE_SIZES = (10, 20, 25, 50, 100, 150, 200)
 # Books whose sessions before a date are a backfill (replayed afterwards, not traded forward): key -> first forward date.
-BACKFILL_BEFORE = {'nifty_omega': '2026-11-12'}
+BACKFILL_BEFORE = {'nifty_omega': '2026-11-12', 'omega_chop_half': '2026-11-25', 'omega_fade_streak': '2026-11-25'}
 
 def page_size(value):
     try:

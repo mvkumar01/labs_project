@@ -241,6 +241,8 @@
     {% include '_nna_alpha.html' %}
     {% elif active_live_tab == 'nifty_omega' %}
     {% include '_nifty_omega.html' %}
+    {% elif active_live_tab in ['omega_chop_half', 'omega_fade_streak'] %}
+    {% include '_omega_twins.html' %}
     {% elif active_live_tab in ['nna_c1', 'nna_c2', 'nna_c3'] %}
     {% include '_nna_twins.html' %}
     {% elif active_live_tab in ['sx_pc400', 'sx_open1400'] %}

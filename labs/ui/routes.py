@@ -389,6 +389,8 @@ LIVE_TABS = {
     "sx_open1400": "SENSEX Alpha OPEN1400",
     "nna_v1": "Nifty New Alpha V1",
     "nifty_omega": "Nifty Omega",
+    "omega_chop_half": "Omega 3 · half after chop",
+    "omega_fade_streak": "Omega 3 · fade 2-day streak",
     "nna_c1": "NNA V1 · win rate",
     "nna_c2": "NNA V1 · balanced",
     "nna_c3": "NNA V1 · points",
@@ -1198,6 +1200,11 @@ def live_strategy():
         if active_live_tab == "nifty_omega":
             from labs.engine.nifty_omega_book import tab_data as omega_tab
             nna_tw_rows, nna_tw_trades, nna_tw_stats = omega_tab(conn, date_clause, date_params)
+
+        # Nifty Omega 3 sizing twins (paper): Omega's trades, another size.
+        if active_live_tab in ("omega_chop_half", "omega_fade_streak"):
+            from labs.engine.omega_sizing_twins import tab_data as omega_twin_tab
+            nna_tw_rows, nna_tw_trades, nna_tw_stats = omega_twin_tab(conn, active_live_tab, date_clause, date_params)
 
         if active_live_tab in ("nna_c1", "nna_c2", "nna_c3"):
             try:
