@@ -191,7 +191,156 @@ def pnl_metrics(pnl_rs: pd.Series, trades: list[dict] | None) -> dict:
     return {k: (None if isinstance(v, float) and not np.isfinite(v) else v) for k, v in m.items()}
 
 
+def _sensitivity(xlabel, xs, ylabel, ys, cells, xbase, ybase, base_sharpe) -> dict:
+    flat = [v for r_ in cells for v in r_]
+    stab = sum(1 for v in flat if v > 0 and (base_sharpe <= 0 or v >= 0.5 * base_sharpe)) / len(flat)
+    return {"x_param": xlabel, "y_param": ylabel, "x_values": xs, "y_values": ys if ylabel else [], "sharpe": cells,
+            "base": {"x": xbase, "y": ybase}, "stability": stab * 100}
+
+
+def run_options(rule: Rule, start: str | None, end: str | None, validate: bool = True) -> dict:
+    """The rule's signals traded in real options, priced on the labs one-minute option quotes."""
+    from . import options as O
+    meta = store.INDICES[rule.symbol]
+    mk = market(rule.symbol)
+    try:
+        book = O.load(rule.symbol)
+    except O.OptionsUnavailable as e:
+        raise store.StoreUnavailable(str(e))
+    days = O.usable_days(mk, book, start, end)
+    in_range = [d for d in book.days if (not start or d >= pd.Timestamp(start).date()) and (not end or d <= pd.Timestamp(end).date())]
+    left_out = len(in_range) - len(days)
+    first_q = book.days[0] if book.days else None
+    if len(days) < 20:
+        raise ValueError(f"Only {len(days)} sessions of {rule.symbol} option quotes in that period (quotes start "
+                         f"{first_q}). Leave the dates out to use all of them.")
+    opt = rule.option or {}
+    qty = meta["lot"] * max(rule.lots, 1)
+    ev = E.events(mk, rule)
+    trades, pnl, stats = O.simulate(mk, rule, book, days, ev)
+    idx = mk.days[days]
+    pnl_rs = pd.Series(pnl, index=idx)
+    equity = pd.Series(CAPITAL + np.cumsum(pnl), index=idx)
+    cost = sum(E.COST_BPS) / 1e4
+    bench_pts = mk.o[days, E.EOD_K] - mk.o[days, 0] - (mk.o[days, E.EOD_K] + mk.o[days, 0]) * cost
+    bench_rs = pd.Series(bench_pts * qty, index=idx)
+    bench = CAPITAL + bench_rs.cumsum()
+    out_trades = [{"side": t["side"], "contract": t["contract"], "entry_time": E.stamp(mk, t["day"], t["k_in"]),
+                   "exit_time": E.stamp(mk, t["day"], t["k_out"]), "entry_price": t["entry_price"],
+                   "exit_price": t["exit_price"], "return_pct": t["net_rs"] / (t["entry_price"] * t["qty"]) * 100,
+                   "pnl": t["net_rs"], "points": t["premium_pts"], "bars": t["k_out"] - t["k_in"],
+                   "index_in": t["index_in"], "index_out": t["index_out"], "charges": t["charges"],
+                   "exit_reason": t["exit_reason"]} for t in trades]
+    metrics = pnl_metrics(pnl_rs, out_trades)
+    nt = max(len(trades), 1)
+    metrics.update({"points_total": float(sum(t["premium_pts"] for t in trades)),
+                    "points_per_trade": float(np.mean([t["premium_pts"] for t in trades])) if trades else None,
+                    "days_traded": int((pnl != 0).sum()),
+                    "winning_days": float((pnl[pnl != 0] > 0).mean() * 100) if (pnl != 0).any() else None,
+                    "worst_day_rs": float(pnl.min()), "best_day_rs": float(pnl.max()), "rs_per_point": qty,
+                    "charges_per_trade": float(sum(t["charges"] for t in trades) / nt),
+                    "spread_at_entry": float(np.mean([t["spread_in"] for t in trades])) if trades else None,
+                    "unpriced_signals": stats["unpriced"]})
+    # the same entries on the index (futures-like), same sessions: what the option wrapper costs or adds
+    irule = Rule.from_dict({**rule.to_dict(), "option": None})
+    itr, ipnl = E.simulate(mk, irule, days, ev)
+    name = O.describe(rule)
+    sell = opt.get("mode") == "sell"
+    notes = [f"Option quotes: {len(days)} sessions, {mk.days[days[0]].date()} to {mk.days[days[-1]].date()}"
+             + (f" ({left_out} more with incomplete quotes left out)" if left_out > 0 else "") + ".",
+             f"In rupees: {pnl.sum():+,.0f} over {len(trades)} trades ({pnl.sum() / nt:+,.0f} a trade, "
+             f"{metrics['points_per_trade'] or 0:+.1f} premium points), worst day {pnl.min():+,.0f}. "
+             f"{max(rule.lots, 1)} lot of {meta['lot']}; charges {metrics['charges_per_trade']:,.0f} a trade; bid/ask "
+             f"spread at entry {metrics['spread_at_entry'] or 0:.1f} points on average.",
+             f"Same entries on the index, same sessions (index exits only): {ipnl.sum():+,.0f} points over {len(itr)} "
+             f"trades = Rs {ipnl.sum() * qty:+,.0f}. The difference comes from delta, time decay, the bid/ask spread "
+             "and charges" + (" (option selling collects the decay)." if sell else "."),
+             "Fills: " + ("sell at the bid, buy back at the ask" if sell else "buy at the ask, sell at the bid")
+             + " of each minute's quote (taken a few seconds into the minute); index stops/targets touched inside a "
+               "minute fill at the next minute's quote.",
+             f"Walk-forward is not run: option quotes cover only {len(days)} sessions. The same rule without the "
+             "option words is tested on 10 years of index data with walk-forward.",
+             "Benchmark (B&H) here = buy the index at 09:15 and sell at 15:25 every day, same lot size."]
+    if stats["unpriced"]:
+        notes.insert(2, f"{stats['unpriced']} signals had no usable quote for the chosen contract and were skipped.")
+    result = {
+        "kind": "backtest", "mode": "intraday_options", "symbol": rule.symbol, "name": meta["name"],
+        "asset_class": "index", "interval": "1d", "strategy": "intraday_rule", "strategy_label": "Intraday option rule",
+        "strategy_name": name,
+        "strategy_description": "Intraday rule on one-minute index bars, traded in real options priced from the labs "
+                                "one-minute option quotes: the contract is chosen on the entry minute's quotes, "
+                                "filled at the ask / bid, index exits touched inside a minute fill at the next "
+                                "minute's quote, premium exits on each minute's quote; NSE/BSE option charges. "
+                                f"P&L in rupees on Rs {CAPITAL:,.0f} capital.",
+        "family": "Intraday", "params": {k: v for k, v in rule.to_dict().items() if v not in (None, [], {})},
+        "rule": rule.to_dict(),
+        "config": {"capital": CAPITAL, "allow_short": True, "commission_bps": None, "slippage_bps": None,
+                   "stop_loss_pct": None, "take_profit_pct": None, "trailing_stop_pct": None, "position_size": 1.0},
+        "period": {"start": str(idx[0].date()), "end": str(idx[-1].date())},
+        "metrics": metrics, "benchmark": pnl_metrics(bench_rs, None), "notes": notes,
+    }
+    candles = [{"time": str(mk.days[d].date()), "open": round(float(mk.o[d, 0]), 2), "high": round(float(mk.h[d].max()), 2),
+                "low": round(float(mk.l[d].min()), 2), "close": round(float(mk.c[d, -1]), 2)} for d in days]
+    markers = [{"time": t["entry_time"].strftime("%Y-%m-%d"), "position": "belowBar" if t["side"] == "Long" else "aboveBar",
+                "shape": "arrowUp" if t["side"] == "Long" else "arrowDown", "kind": "entry",
+                "text": t["contract"].split(" ")[0] + " " + t["contract"].split(" ")[2]} for t in out_trades[-400:]]
+    result["series"] = {"equity": daily_engine._line(equity, False, 2), "benchmark": daily_engine._line(bench, False, 2),
+                        "drawdown": daily_engine._line(_dd_pct(pnl_rs), False, 2),
+                        "benchmark_drawdown": daily_engine._line(_dd_pct(bench_rs), False, 2),
+                        "price": candles, "overlays": {}}
+    result["markers"] = sorted(markers, key=lambda m: m["time"])
+    result["trades"] = [{**t, "entry_time": t["entry_time"].strftime("%Y-%m-%d %H:%M"),
+                         "exit_time": t["exit_time"].strftime("%Y-%m-%d %H:%M")} for t in out_trades]
+    mret, yret, bmret = _period(pnl_rs, "M"), _period(pnl_rs, "Y"), _period(bench_rs, "M")
+    result["monthly"] = _monthly_table(mret, yret)
+    result["benchmark_monthly"] = _monthly_table(bmret, _period(bench_rs, "Y"))
+    val: dict = {"monthly": V.monthly_stability(None, CAPITAL, monthly=mret, yearly=yret, bench_monthly=bmret),
+                 "sr_stats": V.sr_stats(None, returns=pnl_rs.to_numpy() / CAPITAL), "walk_forward": None}
+    val["confidence"] = V.sharpe_confidence(val["sr_stats"], 1, None, 252.0)
+    val["random"] = O.random_entries(mk, rule, book, trades, days)
+    if validate:
+        xs_def = [("stop", rule.stop_pts, "Stop (index pts)"), ("stop_pct", opt.get("stop_pct"), "Premium stop (%)"),
+                  ("stop_pts", opt.get("stop_pts"), "Premium stop (pts)"),
+                  ("trail", rule.trail_pts, "Trailing stop (index pts)"), ("trail_pct", opt.get("trail_pct"), "Premium trail (%)"),
+                  ("trail_pts", opt.get("trail_pts"), "Premium trail (pts)")]
+        ys_def = [("target", rule.target_pts, "Target (index pts)"), ("target_pct", opt.get("target_pct"), "Premium target (%)"),
+                  ("target_pts", opt.get("target_pts"), "Premium target (pts)")]
+        xk = next((x for x in xs_def if x[1]), None)
+        yk = next((y for y in ys_def if y[1]), None)
+        mults = (0.5, 0.75, 1.0, 1.25, 1.5)
+        xs = sorted({round(xk[1] * m, 1) for m in mults}) if xk else [None]
+        ys = sorted({round(yk[1] * m, 1) for m in mults}) if yk else [None]
+        if len(xs) * len(ys) > 1:
+            cells = []
+            for y in ys:
+                row = []
+                for x in xs:
+                    ov = {}
+                    if xk:
+                        ov[xk[0]] = x
+                    if yk:
+                        ov[yk[0]] = y
+                    p = pnl if (not xk or x == xk[1]) and (not yk or y == yk[1]) else O.simulate(mk, rule, book, days, ev, ov)[1]
+                    row.append(round(_sharpe(p), 2))
+                cells.append(row)
+            result["robustness"] = {"split": None, "sensitivity": _sensitivity(
+                xk[2] if xk else "-", xs, yk[2] if yk else None, ys, cells, xk[1] if xk else None,
+                yk[1] if yk else None, _sharpe(pnl))}
+    result["validation"] = val
+    verdict = daily_engine.strategy_verdict(result)
+    if len(days) < 250:
+        verdict["cons"].append(f"Only {len(days)} sessions of option quotes: too short a history to rely on (no walk-forward).")
+        if verdict["label"] == "Promising":
+            verdict.update(label="Mixed", score=min(verdict["score"], 60),
+                           summary="Good on the option history available, but it is too short to call; check the index "
+                                   "version over 10 years and paper-trade it first.")
+    result["verdict"] = verdict
+    return result
+
+
 def run(rule: Rule, start: str | None, end: str | None, validate: bool = True) -> dict:
+    if rule.option:
+        return run_options(rule, start, end, validate)
     meta = store.INDICES[rule.symbol]
     mk = market(rule.symbol)
     days = mk.slice_days(start, end)

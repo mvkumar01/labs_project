@@ -22,6 +22,13 @@ class Rule:
     max_trades: int = 1
     day_loss_pts: float | None = None
     lots: int = 1
+    day_loss_rs: float | None = None      # stop for the day once the day's net P&L is this many rupees down
+    day_target_rs: float | None = None    # ... or this many rupees up
+    max_losses: int | None = None         # ... or after this many losing trades
+    # Trade an option instead of the index (None = index points). Keys: mode buy|sell, strike atm|otm|itm|delta|premium,
+    # value (steps / delta / rupees), expiry nearest|next, roll_on_expiry, expiry_day only|skip|None,
+    # premium exits stop_pct / target_pct / stop_pts / target_pts / trail_pts.
+    option: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -35,8 +42,10 @@ class Rule:
 SYMBOLS = [("bank nifty", "BANKNIFTY"), ("banknifty", "BANKNIFTY"), ("nifty bank", "BANKNIFTY"), ("sensex", "SENSEX"),
            ("nifty 50", "NIFTY"), ("nifty50", "NIFTY"), ("nifty", "NIFTY"), ("^nsebank", "BANKNIFTY"), ("^bsesn", "SENSEX"),
            ("^nsei", "NIFTY")]
+OPTION_CUES = re.compile(r"\b(options?|ce|pe|calls?|puts?|premium|atm|itm|otm|strikes?|delta|expiry)\b", re.I)
 INTRADAY_CUES = re.compile(
     r"\b(intraday|intra-day|scalp\w*|opening range|\borb\b|gap[- ]?(?:up|down)|gaps? (?:up|down)|at \d{1,2}[:.]\d{2}|"
+    r"options?|ce|pe|calls?|puts?|premium|atm|itm|otm|"
     r"\d{1,2}[:.]\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm)\b|points?\b|pts\b|cpr|previous day'?s? high|previous day'?s? low|"
     r"pdh|pdl|\d+[- ]?min(?:ute)?s?\b|same day|square off|exit at)\b", re.I)
 
@@ -86,8 +95,29 @@ def parse(text: str) -> tuple[Rule, list[str]]:
     notes: list[str] = []
     r = Rule(symbol=symbol_of(text) or "NIFTY")
 
+    is_option = bool(OPTION_CUES.search(low))
+    sell_option = False
+    if is_option:
+        sell_option = bool(re.search(r"\b(writ(?:e|es|ing)|option sell\w*|sell(?:ing)? (?:\w+ ){0,2}options?)\b", low)) or (
+            bool(re.search(r"\b(sell|short|selling)\b[^.;]{0,30}?\b(options?|calls?|puts?|ce|pe|premium|straddles?|strangles?)\b", low))
+            and not re.search(r"\b(buy|buying|long)\b", low))
+    has_call = bool(re.search(r"\b(calls?|ce)\b", low))
+    has_put = bool(re.search(r"\b(puts?|pe)\b", low))
+
     # ---- direction
     if re.search(r"\b(with the gap|gap direction|direction of the gap)\b", low):
+        r.side = "gap"
+    elif re.search(r"\b(with the (?:day'?s )?(?:trend|move)|direction of the day)\b", low):
+        r.side = "trend"
+    elif is_option and re.search(r"\b(both (?:sides|directions|ways)|either (?:side|direction|way))\b", low):
+        r.side = "both"
+    elif is_option and has_call != has_put:
+        # buying calls / selling puts = up view; buying puts / selling calls = down view
+        r.side = "long" if has_call != sell_option else "short"
+    elif is_option:
+        r.side = "long" if re.search(r"\b(bullish|upside only|long only)\b", low) else (
+            "short" if re.search(r"\b(bearish|downside only|short only)\b", low) else "both")
+    elif re.search(r"\b(with the gap|gap direction|direction of the gap)\b", low):
         r.side = "gap"
     elif re.search(r"\b(with the (?:day'?s )?(?:trend|move)|direction of the day)\b", low):
         r.side = "trend"
@@ -178,6 +208,74 @@ def parse(text: str) -> tuple[Rule, list[str]]:
     elif re.search(r"inside (?:the )?cpr", low) and r.entry["type"] != "cpr":
         r.filters.append({"type": "cpr_position", "where": "inside"})
 
-    if not r.stop_pts and not r.trail_pts:
+    if is_option:
+        _option_spec(low, r, notes, sell_option)
+    if not r.stop_pts and not r.trail_pts and not (r.option and (r.option.get("stop_pct") or r.option.get("stop_pts")
+                                                                  or r.option.get("trail_pct") or r.option.get("trail_pts"))):
         notes.append("No stop given: trades run to the exit time.")
     return r, notes
+
+
+def _option_spec(low: str, r: Rule, notes: list[str], sell: bool) -> None:
+    """Option side of the rule: strike, expiry, premium exits (% or premium points), rupee day limits."""
+    o: dict = {"mode": "sell" if sell else "buy", "strike": "atm", "value": None, "expiry": "nearest"}
+    m = re.search(r"delta\s*(?:of|=|~|around|near|:)?\s*(0?\.\d+|\d+(?:\.\d+)?)", low)
+    m_n = re.search(r"(\d+)\s*(?:strikes?|steps?)?\s*(otm|itm)\b", low)
+    m_n2 = re.search(r"\b(otm|itm)\s*(\d+)\b(?!\s*[:.%])", low)
+    m_p = re.search(r"premium\s*(?:of|around|near|about|~|close to)?\s*(?:rs\.?|inr)?\s*(\d+)(?!\s*(?:%|points?|pts|\d))", low)
+    if m:
+        v = float(m.group(1))
+        o.update(strike="delta", value=v / 100 if v > 1 else v)
+    elif m_n:
+        o.update(strike=m_n.group(2), value=int(m_n.group(1)))
+    elif m_n2:
+        o.update(strike=m_n2.group(1), value=int(m_n2.group(2)))
+    elif re.search(r"\b(otm|itm)\b", low):
+        o.update(strike=re.search(r"\b(otm|itm)\b", low).group(1), value=1)
+    elif m_p:
+        o.update(strike="premium", value=float(m_p.group(1)))
+    elif not re.search(r"\batm\b", low):
+        notes.append("No strike given: the at-the-money option is used.")
+    if re.search(r"next (?:week'?s? )?expiry|next week(?:ly)?|second expiry|far expiry", low):
+        o["expiry"] = "next"
+    if re.search(r"roll (?:over )?on expiry|next expiry on expiry day", low):
+        o["roll_on_expiry"] = True
+    if re.search(r"only on expiry days?|on expiry days? only|expiry days? only|\b0 ?dte\b", low):
+        o["expiry_day"] = "only"
+    elif re.search(r"(?:skip|avoid|no trades? on|not on|except(?: on)?)\s+(?:the\s+)?expiry days?", low):
+        o["expiry_day"] = "skip"
+    pct = r"(\d+(?:\.\d+)?)\s*%"
+    for key, lead in (("stop", r"(?:stop(?:[- ]?loss)?|\bsl\b)"), ("target", r"(?:target|\btp\b|take[- ]?profit|profit)"),
+                      ("trail", r"trail(?:ing)?(?:[- ]?stop)?")):
+        v = _num(lead + r"\s*(?:of|at|=|:|by)?\s*" + pct, low) or _num(pct + r"\s*(?:premium\s*)?" + lead, low)
+        if v:
+            o[key + "_pct"] = v
+            setattr(r, key + "_pts", None)
+    index_pts = re.search(r"(?:index|spot|underlying|nifty|sensex|bank ?nifty)\s*points|points? (?:on|in) (?:the )?"
+                          r"(?:index|spot|underlying)", low)
+    if not index_pts:
+        moved = False
+        for key in ("stop", "target", "trail"):
+            if getattr(r, key + "_pts") and not o.get(key + "_pct"):
+                o[key + "_pts"] = getattr(r, key + "_pts")
+                setattr(r, key + "_pts", None)
+                moved = True
+        if moved:
+            notes.append("Stops / targets read as option premium points (say 'index points' to measure them on the index).")
+    rs = r"(?:rs\.?|inr)\s*([\d,]+)"
+
+    def rupees(pat):
+        mm = re.search(pat, low)
+        return float(mm.group(1).replace(",", "")) if mm else None
+
+    r.day_loss_rs = rupees(r"(?:daily|day'?s?|per day|a day)\s*(?:max(?:imum)?\s*)?(?:loss|stop)\s*(?:cap|limit|of)?\s*" + rs) or \
+        rupees(r"(?:stop (?:trading )?(?:for the day )?(?:after|at|once)|max(?:imum)? loss(?: of)?)\s*(?:a\s*)?" + rs)
+    r.day_target_rs = rupees(r"(?:daily|day'?s?|per day|a day)\s*(?:profit\s*)?target\s*(?:of)?\s*" + rs)
+    if r.day_loss_pts and not r.day_loss_rs:
+        r.day_loss_rs, r.day_loss_pts = r.day_loss_pts, None
+        notes.append(f"Daily loss limit read as Rs {r.day_loss_rs:,.0f}.")
+    words = {"one": 1, "two": 2, "three": 3, "four": 4}
+    ml = re.search(r"(?:after|max(?:imum)?)\s*(\d+|one|two|three|four)\s*(?:losing trades?|losses|losers|stop[- ]?outs?)", low)
+    if ml:
+        r.max_losses = int(words.get(ml.group(1), ml.group(1)))
+    r.option = o

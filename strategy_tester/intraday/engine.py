@@ -176,6 +176,17 @@ def events(mk: Market, rule: Rule) -> np.ndarray:
     return ev
 
 
+def day_stopped(rule: Rule, day_pts: float, day_rs: float, n_loss: int) -> bool:
+    """Daily limits: a loss cap in points or rupees, a profit target in rupees, a number of losing trades."""
+    if rule.day_loss_pts and day_pts <= -rule.day_loss_pts:
+        return True
+    if rule.day_loss_rs and day_rs <= -rule.day_loss_rs:
+        return True
+    if rule.day_target_rs and day_rs >= rule.day_target_rs:
+        return True
+    return bool(rule.max_losses and n_loss >= rule.max_losses)
+
+
 def day_filter(mk: Market, rule: Rule, sign: int, d: int, k: int) -> bool:
     for f in rule.filters:
         t = f.get("type")
@@ -208,6 +219,53 @@ def day_filter(mk: Market, rule: Rule, sign: int, d: int, k: int) -> bool:
     return True
 
 
+def exit_minute(rule: Rule) -> int:
+    return min(k_of(rule.exit_time), EOD_K) if rule.exit_time else EOD_K
+
+
+def index_exit(mk: Market, rule: Rule, d: int, k: int, sign: int, sp, tp, tr, k_exit: int) -> tuple[int, float, str, bool]:
+    """Where a trade entered at minute k's open leaves on the index: (minute, price, reason, at_open). `at_open` is
+    True when the exit is at a minute's open (time exit, or a bar that opens through the level), False when a level
+    is touched inside the minute."""
+    o, h, l = mk.o[d], mk.h[d], mk.l[d]
+    tr_after = rule.trail_after_pts or 0.0
+    entry = o[k]
+    seg_h, seg_l, seg_o = h[k:k_exit], l[k:k_exit], o[k:k_exit]
+    if sign > 0:
+        fav, adv = seg_h - entry, entry - seg_l
+    else:
+        fav, adv = entry - seg_l, seg_h - entry
+    n = len(seg_h)
+
+    def first(mask):
+        return int(np.argmax(mask)) if mask.any() else n
+
+    i_fix = first(adv >= sp) if sp else n
+    i_tr, trail_lvl = n, None
+    if tr:
+        best_prev = np.r_[0.0, np.maximum.accumulate(fav)[:-1]]   # best excursion up to the PREVIOUS bar
+        trail_lvl = entry + sign * (best_prev - tr)
+        touched = (seg_l <= trail_lvl) if sign > 0 else (seg_h >= trail_lvl)
+        i_tr = first((best_prev >= tr_after) & touched)
+    i_s = min(i_fix, i_tr)
+    i_t = first(fav >= tp) if tp else n
+    if i_s <= i_t and i_s < n:                            # stop first (also when both in one bar)
+        opts = []
+        if i_fix == i_s:
+            opts.append((entry - sign * sp, "Stop loss"))
+        if i_tr == i_s:
+            opts.append((float(trail_lvl[i_s]), "Trailing stop"))
+        # both in the same bar: the level nearer the trade is reached first
+        lvl, why = (max(opts) if sign > 0 else min(opts))
+        gap_through = bool((seg_o[i_s] - lvl) * sign < 0 and i_s > 0)
+        return k + i_s, float(seg_o[i_s] if gap_through else lvl), why, gap_through
+    if i_t < n:
+        lvl = entry + sign * tp
+        gap_through = bool((seg_o[i_t] - lvl) * sign > 0 and i_t > 0)
+        return k + i_t, float(seg_o[i_t] if gap_through else lvl), "Target", gap_through
+    return k_exit, float(o[k_exit]), ("Time exit" if rule.exit_time else "End of day"), True
+
+
 def simulate(mk: Market, rule: Rule, day_idx: np.ndarray, ev: np.ndarray | None = None,
              stop: float | None = ..., target: float | None = ..., trail: float | None = ...) -> tuple[list[dict], np.ndarray]:
     """Trades and the per-day net P&L in index points for the given days. `stop` / `target` override the rule's
@@ -216,9 +274,9 @@ def simulate(mk: Market, rule: Rule, day_idx: np.ndarray, ev: np.ndarray | None 
     sp = rule.stop_pts if stop is ... else stop
     tp = rule.target_pts if target is ... else target
     tr = rule.trail_pts if trail is ... else trail
-    tr_after = rule.trail_after_pts or 0.0
-    k_exit = min(k_of(rule.exit_time), EOD_K) if rule.exit_time else EOD_K
+    k_exit = exit_minute(rule)
     cost_frac = sum(COST_BPS) / 1e4
+    rs_pt = store.INDICES[rule.symbol]["lot"] * max(rule.lots, 1)
     trades: list[dict] = []
     pnl = np.zeros(len(day_idx))
     for j, d in enumerate(day_idx):
@@ -226,58 +284,24 @@ def simulate(mk: Market, rule: Rule, day_idx: np.ndarray, ev: np.ndarray | None 
         cand = np.flatnonzero(row[:k_exit])
         if not len(cand):
             continue
-        o, h, l, c = mk.o[d], mk.h[d], mk.l[d], mk.c[d]
-        k_from, n_tr, day_pts = 0, 0, 0.0
+        o = mk.o[d]
+        k_from, n_tr, n_loss, day_pts = 0, 0, 0, 0.0
         for k in cand:
             if k < k_from or n_tr >= rule.max_trades:
                 continue
-            if rule.day_loss_pts and day_pts <= -rule.day_loss_pts:
+            if day_stopped(rule, day_pts, day_pts * rs_pt, n_loss):
                 break
             sign = int(np.sign(row[k]))
             if not day_filter(mk, rule, sign, d, k):
                 continue
             entry = o[k]
-            seg_h, seg_l, seg_o = h[k:k_exit], l[k:k_exit], o[k:k_exit]
-            if sign > 0:
-                fav, adv = seg_h - entry, entry - seg_l
-            else:
-                fav, adv = entry - seg_l, seg_h - entry
-            n = len(seg_h)
-
-            def first(mask):
-                return int(np.argmax(mask)) if mask.any() else n
-
-            i_fix = first(adv >= sp) if sp else n
-            i_tr, trail_lvl = n, None
-            if tr:
-                best_prev = np.r_[0.0, np.maximum.accumulate(fav)[:-1]]   # best excursion up to the PREVIOUS bar
-                trail_lvl = entry + sign * (best_prev - tr)
-                touched = (seg_l <= trail_lvl) if sign > 0 else (seg_h >= trail_lvl)
-                i_tr = first((best_prev >= tr_after) & touched)
-            i_s = min(i_fix, i_tr)
-            i_t = first(fav >= tp) if tp else n
-            if i_s <= i_t and i_s < n:                            # stop first (also when both in one bar)
-                opts = []
-                if i_fix == i_s:
-                    opts.append((entry - sign * sp, "Stop loss"))
-                if i_tr == i_s:
-                    opts.append((float(trail_lvl[i_s]), "Trailing stop"))
-                # both in the same bar: the level nearer the trade is reached first
-                lvl, why = (max(opts) if sign > 0 else min(opts))
-                gap_through = (seg_o[i_s] - lvl) * sign < 0 and i_s > 0
-                exit_px = seg_o[i_s] if gap_through else lvl
-                k_out = k + i_s
-            elif i_t < n:
-                lvl = entry + sign * tp
-                gap_through = (seg_o[i_t] - lvl) * sign > 0 and i_t > 0
-                exit_px, why, k_out = (seg_o[i_t] if gap_through else lvl), "Target", k + i_t
-            else:
-                exit_px, why, k_out = o[k_exit], ("Time exit" if rule.exit_time else "End of day"), k_exit
+            k_out, exit_px, why, _ = index_exit(mk, rule, d, k, sign, sp, tp, tr, k_exit)
             gross = (exit_px - entry) * sign
             cost = (entry + exit_px) * cost_frac
             net = gross - cost
             day_pts += net
             n_tr += 1
+            n_loss += net < 0
             k_from = k_out + 1
             trades.append({"day": d, "k_in": int(k), "k_out": int(k_out), "side": "Long" if sign > 0 else "Short",
                            "entry_price": float(entry), "exit_price": float(exit_px), "gross_pts": float(gross),

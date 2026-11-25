@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 import time as _time
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -120,14 +120,16 @@ def refresh(symbol: str, kite=None, min_gap_s: float = 1800) -> int:
     try:
         if not years(symbol):
             return 0                                           # nothing stored: backfill first, never from a web request
-        y = date.today().year
+        now = datetime.now(timezone(timedelta(hours=5, minutes=30)))      # exchange clock (PA runs on UTC)
+        today = now.date()
+        y = today.year
         cur = _read(symbol, y)
         start = (cur.index[-1].date() + timedelta(days=1)) if cur is not None and len(cur) else date(y, 1, 1)
-        if start > date.today():
+        if start > today:
             return 0
-        new = _fetch(kite or _kite(), INDICES[symbol]["token"], start, date.today())
-        if datetime.now().time() < time(15, 31):              # completed sessions only
-            new = new[new.index.normalize() < pd.Timestamp(date.today())]
+        new = _fetch(kite or _kite(), INDICES[symbol]["token"], start, today)
+        if now.time() < time(15, 31):                        # completed sessions only
+            new = new[new.index.normalize() < pd.Timestamp(today)]
         if not len(new):
             return 0
         merged = pd.concat([cur, new]) if cur is not None else new

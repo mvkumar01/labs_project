@@ -595,19 +595,20 @@
   function tradesCard(r) {
     const t = r.trades || [];
     if (!t.length) return `<div class="card fade-in"><div class="card-title"><span>Trades</span></div><div class="hint">No trades were triggered in this period.</div></div>`;
+    const hasC = t.some((x) => x.contract);
     const rows = t.slice().reverse().map((x, i) => `<tr>
       <td class="n" style="color:var(--muted)">${t.length - i}</td>
-      <td><span class="tag ${x.side === "Long" ? "long" : "short"}">${x.side}</span></td>
+      <td><span class="tag ${x.side === "Long" ? "long" : "short"}">${x.side}</span></td>${hasC ? `<td class="num">${esc(x.contract || "")}</td>` : ""}
       <td class="num">${x.entry_time}</td><td class="n">${priceFmt(x.entry_price)}</td>
       <td class="num">${x.open ? '<span class="tag">Open</span>' : x.exit_time}</td><td class="n">${priceFmt(x.exit_price)}</td>
       <td class="n ${cls(x.return_pct)}">${pct(x.return_pct, 2, true)}</td>
       <td class="n ${cls(x.pnl)}">${money(x.pnl, r.symbol)}</td>
       <td class="n">${x.bars}</td><td style="color:var(--text-2)">${esc(x.exit_reason)}</td></tr>`).join("");
     return `<div class="card fade-in"><div class="card-title"><span>Trades <span class="hint">· ${t.length} total, newest first</span></span><button class="btn-sm" id="csvBtn" type="button">Export CSV</button></div>
-      <div class="table-wrap scroll-y"><table><thead><tr><th class="n">#</th><th>Side</th><th>Entry</th><th class="n">Price</th><th>Exit</th><th class="n">Price</th><th class="n">Return</th><th class="n">P&amp;L</th><th class="n">Bars</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      <div class="table-wrap scroll-y"><table><thead><tr><th class="n">#</th><th>Side</th>${hasC ? "<th>Contract</th>" : ""}<th>Entry</th><th class="n">Price</th><th>Exit</th><th class="n">Price</th><th class="n">Return</th><th class="n">P&amp;L</th><th class="n">Bars</th><th>Reason</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   }
   function downloadCSV(r) {
-    const head = ["side", "entry_time", "entry_price", "exit_time", "exit_price", "return_pct", "pnl", "bars", "exit_reason"];
+    const head = ["side"].concat(r.trades.some((t) => t.contract) ? ["contract"] : []).concat(["entry_time", "entry_price", "exit_time", "exit_price", "return_pct", "pnl", "bars", "exit_reason"]);
     const csv = [head.join(",")].concat(r.trades.map((t) => head.map((k) => JSON.stringify(t[k] ?? "")).join(","))).join("\n");
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
